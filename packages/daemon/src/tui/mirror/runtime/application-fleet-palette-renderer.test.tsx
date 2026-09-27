@@ -154,7 +154,7 @@ it("opens offline reference sheets and restores palette input after dismissal", 
     expect(key("q")).toBe(true);
     key("tab");
     await setup.renderOnce();
-    expect(setup.captureCharFrame()).toContain("2.9.0-beta.43");
+    expect(setup.captureCharFrame()).toContain("2.9.0-beta.44");
     key("pagedown");
     await setup.renderOnce();
     expect(setup.captureCharFrame()).toContain("2.9.0-beta.18");
@@ -280,7 +280,7 @@ for (const mode of ["light", "dark"] as const) {
       expect(setup.captureCharFrame()).toContain("No matching shortcuts");
       key("tab");
       await setup.renderOnce();
-      expect(setup.captureCharFrame()).toContain("2.9.0-beta.43");
+      expect(setup.captureCharFrame()).toContain("2.9.0-beta.44");
       key("tab");
       await setup.renderOnce();
       expect(setup.captureCharFrame()).toContain("Using tmux-ide");
@@ -343,7 +343,7 @@ for (const width of [40, 100]) {
       expect(setup.captureCharFrame()).toContain("Show working agents");
       key("tab");
       await setup.renderOnce();
-      expect(setup.captureCharFrame()).toContain("2.9.0-beta.43");
+      expect(setup.captureCharFrame()).toContain("2.9.0-beta.44");
       key("tab");
       await setup.renderOnce();
       expect(setup.captureCharFrame()).toContain("Using tmux-ide");
@@ -357,7 +357,7 @@ for (const width of [40, 100]) {
         stopPropagation() {},
       });
       await setup.renderOnce();
-      expect(setup.captureCharFrame()).toContain("2.9.0-beta.43");
+      expect(setup.captureCharFrame()).toContain("2.9.0-beta.44");
       key("escape");
       expect(closed).toBe(1);
     } finally {

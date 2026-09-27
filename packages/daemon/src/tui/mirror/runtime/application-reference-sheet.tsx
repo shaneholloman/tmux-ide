@@ -17,7 +17,7 @@ import {
 
 const releases = [
   {
-    version: "2.9.0-beta.43",
+    version: "2.9.0-beta.44",
     lines: [
       "One Agents sidebar across machines, with separate rows for each agent.",
       "A cleaner Home with shared search, Quick actions and a dismissible tip.",

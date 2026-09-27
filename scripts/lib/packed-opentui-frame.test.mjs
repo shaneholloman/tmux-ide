@@ -176,3 +176,16 @@ test("accepts the compact shortcut header on Linux while retaining focus checks"
   ])
     assert.equal(frameShowsTerminalFocus(invalid), false);
 });
+
+test("accepts icon-only new-window buttons at the hosted Linux width", () => {
+  const frame =
+    " F1   F2    Local · journey-beta\n Machines ? Help ● bash …     +\n ● Pack pane 1 ⋯\n F6 Sessions F7 Attention F5 Commands";
+  assert.equal(frameShowsTerminalFocus(frame), true);
+  for (const invalid of [
+    frame.replace("F2", ""),
+    frame.replace("+", ""),
+    frame.replace("F6 Sessions", "↑↓ Select"),
+    frame.replace("Local · journey-beta", "Reconnecting"),
+  ])
+    assert.equal(frameShowsTerminalFocus(invalid), false);
+});
