@@ -163,3 +163,16 @@ test("recognizes shared agent rows without redundant status words", () => {
     true,
   );
 });
+
+test("accepts the compact shortcut header on Linux while retaining focus checks", () => {
+  const frame =
+    " F1   F2    Local · journey-beta\n Agents ? Help ● bash … + New window\n ● electric-otter ⋯\n F6 Sessions F7 Attention F10 Sidebar F5 Commands";
+  assert.equal(frameShowsTerminalFocus(frame), true);
+  for (const invalid of [
+    frame.replace("F2", ""),
+    frame.replace("+ New window", ""),
+    frame.replace("F6 Sessions", "↑↓ Select"),
+    frame.replace("Local · journey-beta", "Unavailable"),
+  ])
+    assert.equal(frameShowsTerminalFocus(invalid), false);
+});

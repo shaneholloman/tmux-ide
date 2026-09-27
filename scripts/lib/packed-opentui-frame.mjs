@@ -13,7 +13,7 @@ export function frameShowsTerminalFocus(frame) {
   const lines = frame.trimEnd().split("\n");
   const contextualChrome =
     (/●❯/u.test(lines[0] ?? "") ||
-      (/F2\s+Terminals/u.test(lines[0] ?? "") && /\+ New window/u.test(lines[1] ?? ""))) &&
+      (/\bF1\b.*\bF2\b/u.test(lines[0] ?? "") && /\+ New window/u.test(lines[1] ?? ""))) &&
     /F6 Sessions/u.test(lines.at(-1) ?? "") &&
     /F5(?: Commands)?/u.test(lines.at(-1) ?? "") &&
     !/reconnect|disconnect|recover|read.only|unavailable/iu.test(lines[0] ?? "");

@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## 2.9.0-beta.42
+## 2.9.0-beta.43
 
 - Group agents across machines in one sidebar section, with shared rows and quiet machine/session context. Keep separate destinations for agents in the same session.
 - Refresh Home with a flat agent list, search accent rail, Quick actions, and a dismissible tip. Compact layouts preserve agent navigation.
