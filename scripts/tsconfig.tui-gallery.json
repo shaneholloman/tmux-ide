@@ -1,0 +1,9 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".."
+  },
+  "include": ["tui-gallery/**/*.ts", "tui-gallery/**/*.tsx", "../packages/daemon/src/js-yaml.d.ts"],
+  "exclude": ["tui-gallery/**/*.test.ts", "tui-gallery/**/*.test.tsx"]
+}

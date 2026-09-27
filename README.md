@@ -146,6 +146,11 @@ environment.
 
 Regenerate the production-renderer demo with `pnpm demo:tui`.
 
+Explore real Home, sidebar, Help, pane-header and footer components with `pnpm gallery:tui`. The
+development gallery uses fixture data and local actions, so it does not connect
+to your daemon or change live tmux sessions. See the
+[gallery controls and checks](scripts/tui-gallery/README.md).
+
 - [Documentation](https://github.com/wavyrai/tmux-ide/tree/main/docs)
 - [Contributing](CONTRIBUTING.md)
 - [Release checklist](RELEASE.md)

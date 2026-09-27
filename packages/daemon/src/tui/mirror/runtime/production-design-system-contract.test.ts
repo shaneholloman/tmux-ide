@@ -50,6 +50,12 @@ function localImports(source: string): string[] {
 }
 
 describe("production OpenTUI design-system boundary", () => {
+  it("keeps development gallery fixtures outside the production import graph", () => {
+    expect(productionGraph.files.filter((path) => path.startsWith("scripts/tui-gallery/"))).toEqual(
+      [],
+    );
+  });
+
   it("requires an explicit audited exception to restore bordered overlay chrome", () => {
     const overrides = productionGraph.files.filter((path) =>
       /surface=\{false\}/u.test(sourceFor(path)),

@@ -49,7 +49,7 @@ export default [
   {
     files: [
       "bin/**/*.ts",
-      "scripts/**/*.ts",
+      "scripts/**/*.{ts,tsx}",
       "src/**/*.ts",
       "packages/contracts/src/**/*.ts",
       "packages/core/src/**/*.ts",
