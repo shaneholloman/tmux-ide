@@ -159,7 +159,7 @@ describe("compact production Home presentation", () => {
       const frame = setup.captureCharFrame();
       expectFrameBounds(frame, width, height);
       const lines = frame.split("\n").map((line) => line.trimEnd());
-      const left = " ".repeat(Math.max(2, Math.floor((width - 96) / 2)));
+      const left = " ".repeat(Math.max(2, Math.floor((width - 88) / 2)));
       expect(lines[1]).toBe(`${left}tmux-ide`);
       expect(lines[3]).toBe(`${left}research · live`);
       expect(lines[4]).toBe(`${left}2 sessions in view`);
@@ -424,4 +424,45 @@ describe("Home observed pane activity", () => {
       setup.renderer.destroy();
     }
   });
+});
+
+it("routes fleet quick actions once and dismisses the optional tip", async () => {
+  const calls: string[] = [];
+  const setup = await renderForTest(
+    () => (
+      <ApplicationHomeSurface
+        {...homeProps({
+          width: 110,
+          height: 36,
+          note: null,
+          onBrowseSessions: () => calls.push("sessions"),
+          onAddMachine: () => calls.push("machine"),
+          onOpenTutorial: () => calls.push("help"),
+          tutorialLabel: "Using tmux-ide",
+        })}
+      />
+    ),
+    { width: 110, height: 36 },
+  );
+  try {
+    await setup.renderOnce();
+    const click = async (label: string) => {
+      const lines = setup.captureCharFrame().split("\n");
+      const y = lines.findIndex((line) => line.includes(label));
+      expect(y).toBeGreaterThanOrEqual(0);
+      await setup.mockMouse.click(lines[y]!.indexOf(label) + 1, y, MouseButtons.LEFT);
+      await setup.renderOnce();
+    };
+    expect(setup.captureCharFrame()).toContain("Quick actions");
+    await click("Browse sessions");
+    await click("Add machine");
+    await click("Using tmux-ide");
+    expect(calls).toEqual(["sessions", "machine", "help"]);
+    expect(setup.captureCharFrame()).toContain("opens the selected agent");
+    await click("×");
+    expect(setup.captureCharFrame()).not.toContain("opens the selected agent");
+    expectFrameBounds(setup.captureCharFrame(), 110, 36);
+  } finally {
+    setup.renderer.destroy();
+  }
 });

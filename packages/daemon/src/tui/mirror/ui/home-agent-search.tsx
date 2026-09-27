@@ -1,4 +1,5 @@
 /* @jsxImportSource @opentui/solid */
+import { InputSurface } from "./input-surface.tsx";
 import { createSignal } from "solid-js";
 import type { SemanticThemeSnapshot } from "../theme.ts";
 import { clipTerminalEnd } from "../terminal-text.ts";
@@ -52,9 +53,6 @@ export function HomeAgentSearch(props: {
       width={props.width}
       height={1}
       flexShrink={0}
-      paddingLeft={1}
-      paddingRight={1}
-      backgroundColor={props.theme.roles.surfaces.panel}
       onMouseDown={(event) => {
         if (!props.active || event.button !== 0) return;
         event.preventDefault();
@@ -62,20 +60,22 @@ export function HomeAgentSearch(props: {
         edit(true);
       }}
     >
-      <text
-        height={1}
-        width={Math.max(0, props.width - 2)}
-        fg={props.query ? props.theme.roles.text.primary : props.theme.roles.text.muted}
-      >
-        {clipTerminalEnd(
-          props.query
-            ? `${props.query}${editing() && props.active ? "▏" : ""}`
-            : editing() && props.active
-              ? "▏Find an agent or workspace"
-              : "/  Find an agent or workspace",
-          Math.max(0, props.width - 2),
-        )}
-      </text>
+      <InputSurface theme={props.theme} width={props.width} active={editing() && props.active}>
+        <text
+          height={1}
+          width={Math.max(0, props.width - 3)}
+          fg={props.query ? props.theme.roles.text.primary : props.theme.roles.text.muted}
+        >
+          {clipTerminalEnd(
+            props.query
+              ? `${props.query}${editing() && props.active ? "▏" : ""}`
+              : editing() && props.active
+                ? "▏Find an agent or workspace"
+                : "/  Find an agent or workspace",
+            Math.max(0, props.width - 3),
+          )}
+        </text>
+      </InputSurface>
     </box>
   );
 }

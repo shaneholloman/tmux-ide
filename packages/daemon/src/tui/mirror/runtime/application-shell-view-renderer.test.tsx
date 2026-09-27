@@ -959,8 +959,8 @@ describe("production ApplicationShellView", () => {
       await setup.renderOnce();
       const frame = setup.captureCharFrame();
       expectFrameBounds(frame, width, height);
-      expect(frame).toContain("⌂");
-      expect(frame).toContain("❯");
+      expect(frame).toContain("F1");
+      expect(frame).toContain("F2");
       expect(frame).toContain("website");
       expect(frame).toContain("Agents");
       expect(frame).toContain("Codex");

@@ -102,7 +102,7 @@ test("reference close and reset remove old modal routes", async () => {
   await setup.mockInput.pressKey("1");
   await setup.renderOnce();
   expect(setup.captureCharFrame()).toContain("quiet-otter");
-  expect(setup.captureCharFrame()).not.toContain("Using tmux-ide");
+  expect(setup.captureCharFrame()).toContain("Quick actions");
 });
 test("all fixture states are deterministic and offline rows cannot activate", () => {
   for (const state of GALLERY_STATES) {
@@ -157,13 +157,13 @@ test("short Home viewport keeps End selection visible before opening", async () 
     () => (
       <TuiGallery
         width={80}
-        height={14}
+        height={12}
         initial={{ interacting: true }}
         onAction={(value) => actions.push(value)}
         onQuit={() => {}}
       />
     ),
-    { width: 80, height: 14 },
+    { width: 80, height: 12 },
   );
   await setup.renderOnce();
   expect(setup.captureCharFrame()).toContain("quiet-otter");

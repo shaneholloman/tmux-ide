@@ -454,12 +454,14 @@ describe("ShellChrome OpenTUI renderer", () => {
 
     setup = await renderForTest(() => <ThemeModeShell />, { width: 80, height: 4 });
     await setup.renderOnce();
-    const darkBg = setup.captureSpans().lines[0]!.spans.find((span) => span.text.includes("❯"))!.bg;
+    const darkBg = setup
+      .captureSpans()
+      .lines[0]!.spans.find((span) => span.text.includes("F2"))!.bg;
     source.emit("light");
     await setup.renderOnce();
     const lightBg = setup
       .captureSpans()
-      .lines[0]!.spans.find((span) => span.text.includes("❯"))!.bg;
+      .lines[0]!.spans.find((span) => span.text.includes("F2"))!.bg;
     expect(colorKey(lightBg)).not.toBe(colorKey(darkBg));
   });
 });

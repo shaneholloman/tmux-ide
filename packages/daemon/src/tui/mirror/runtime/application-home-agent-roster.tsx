@@ -6,7 +6,7 @@ import {
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
 import type { SemanticThemeSnapshot } from "../theme.ts";
 import { clipTerminal, terminalDisplayWidth } from "../terminal-text.ts";
-import { NavigationRow } from "../ui/navigation-row.tsx";
+import { AgentRow } from "../ui/agent-row.tsx";
 import { KeyHint } from "../ui/key-hint.tsx";
 import { TuiButton } from "../ui/button.tsx";
 import { useKeyboardRoute } from "../ui/keyboard-router.tsx";
@@ -15,14 +15,8 @@ import {
   applicationPaneRenamePaste,
 } from "./application-pane-rename-input.ts";
 import { HomeAgentSearch } from "../ui/home-agent-search.tsx";
-import { createAgentStatusMarker } from "../ui/agent-status-marker.ts";
 import { ActivityIndicator } from "../ui/activity-indicator.tsx";
-import { componentPalette, type ComponentInteractionState } from "../ui/state.ts";
-import {
-  homeAgentStatusLabel,
-  type HomeAgentRow,
-  type HomeAgentSnapshot,
-} from "./application-home-agents.ts";
+import { type HomeAgentRow, type HomeAgentSnapshot } from "./application-home-agents.ts";
 import type { HomeAgentSelectionSnapshot } from "./application-home-agent-selection.ts";
 
 export interface HomeAgentRosterProps {
@@ -43,20 +37,9 @@ export interface HomeAgentRosterProps {
   readonly onMove: (delta: number) => void;
   readonly onViewport: (rows: number) => void;
   readonly onOpen: (row: HomeAgentRow, source: "keyboard" | "mouse") => void;
+  readonly fitContent?: boolean;
   readonly onRetry?: () => void;
   readonly onLoadMore?: () => void;
-}
-
-function padCells(text: string, width: number): string {
-  const clipped = clipTerminal(text, Math.max(0, width));
-  return clipped + " ".repeat(Math.max(0, width - terminalDisplayWidth(clipped)));
-}
-
-function statusTone(row: HomeAgentRow): ComponentInteractionState["status"] {
-  if (row.activity === "waiting" || row.activity === "failed") return "blocked";
-  if (row.activity === "running") return "working";
-  if (row.activity === "complete") return "done";
-  return row.activity === "idle" ? "idle" : "unknown";
 }
 
 /** A flat projected roster; no subscriptions, navigation effects, or terminal input ingress. */
@@ -75,14 +58,16 @@ export function HomeAgentRoster(props: HomeAgentRosterProps) {
         props.onRetry) ||
       (props.snapshot.truncatedSessions > 0 && props.onLoadMore),
     );
-  const rowHeight = () => (width() >= 60 && height() >= 16 ? 2 : 1);
-  const filterRows = () => (props.onSetActivityFilter && width() < 70 ? 2 : 1);
-  const searchRows = () => (props.onQueryChange ? 2 : 0);
+  const rowHeight = () => (height() >= 14 ? 2 : 1);
+  const compact = () => height() < 8;
+  const filterRows = () => (compact() ? 0 : props.onSetActivityFilter && width() < 70 ? 2 : 1);
+  const searchRows = () => (props.onQueryChange ? (compact() ? 1 : 2) : 0);
   const visibleCount = () =>
     Math.max(
       0,
       Math.floor(
-        (height() - 4 - filterRows() - searchRows() - (showRecovery() ? 1 : 0)) / rowHeight(),
+        (height() - (compact() ? 1 : 4) - filterRows() - searchRows() - (showRecovery() ? 1 : 0)) /
+          rowHeight(),
       ),
     );
   const openSelected = (source: "keyboard" | "mouse" = "keyboard") => {
@@ -104,12 +89,6 @@ export function HomeAgentRoster(props: HomeAgentRosterProps) {
   const keys = createMemo(() => visible().map((row) => row.key), undefined, {
     equals: (a, b) => a.length === b.length && a.every((key, index) => key === b[index]),
   });
-  const columns = () => {
-    const status = Math.min(12, Math.max(0, width() - 4));
-    const label = Math.max(0, width() - status - 3);
-    const session = width() >= 44 ? Math.floor(label * 0.43) : 0;
-    return { status, agent: label - session, session };
-  };
   const filtered = () =>
     Boolean(props.query || (props.activityFilter && props.activityFilter !== "all"));
   const title = () => {
@@ -204,7 +183,11 @@ export function HomeAgentRoster(props: HomeAgentRosterProps) {
     <box
       position="relative"
       width={width()}
-      height={height()}
+      height={
+        props.fitContent && props.snapshot.rows.length > 0
+          ? height() - (visibleCount() - visible().length) * rowHeight()
+          : height()
+      }
       flexShrink={0}
       flexDirection="column"
       overflow="hidden"
@@ -219,78 +202,84 @@ export function HomeAgentRoster(props: HomeAgentRosterProps) {
       onMouseOut={() => setHovered(null)}
     >
       <box height={searchRows()} flexShrink={0} />
-      <box width={width()} height={1} flexShrink={0} flexDirection="row">
-        <Show when={props.snapshot.phase === "loading" || props.snapshot.loadingSessions > 0}>
-          <ActivityIndicator theme={props.theme} active={props.inputActive} />
-        </Show>
-        <text height={1} flexGrow={1} fg={props.theme.roles.text.muted}>
-          {clipTerminal(title(), width())}
-        </text>
-      </box>
-      <box
-        width={width()}
-        height={filterRows()}
-        flexShrink={0}
-        flexDirection={filterRows() > 1 ? "column" : "row"}
-        overflow="hidden"
-      >
-        <KeyHint
-          theme={props.theme}
-          keys={HOME_ACTIONS.machine.keys}
-          label={props.filterLabel?.split(" · ")[0] ?? "All machines"}
-          width={
-            props.onSetActivityFilter && filterRows() === 1
-              ? Math.max(1, width() - 47)
-              : props.onSetActivityFilter
-                ? Math.min(width(), 28)
-                : Math.max(1, Math.min(28, width() - 16))
-          }
-          quiet
-          button
-          onPress={() => {
-            if (props.inputActive) props.onCycleMachine?.();
-          }}
-        />
+      <Show when={!compact()}>
+        <box width={width()} height={1} flexShrink={0} flexDirection="row">
+          <Show when={props.snapshot.phase === "loading" || props.snapshot.loadingSessions > 0}>
+            <ActivityIndicator theme={props.theme} active={props.inputActive} />
+          </Show>
+          <text height={1} flexGrow={1} fg={props.theme.roles.text.muted}>
+            {clipTerminal(title(), width())}
+          </text>
+        </box>
+      </Show>
+      <Show when={!compact()}>
         <box
-          height={1}
+          width={width()}
+          height={filterRows()}
           flexShrink={0}
-          flexDirection="row"
+          flexDirection={filterRows() > 1 ? "column" : "row"}
           overflow="hidden"
-          width={Math.min(width(), 47)}
         >
-          <Show
-            when={props.onSetActivityFilter}
-            fallback={
-              <KeyHint
-                theme={props.theme}
-                keys={HOME_ACTIONS.attention.keys}
-                label="Attention"
-                quiet
-                button
-                onPress={() => {
-                  if (props.inputActive) props.onToggleAttention?.();
-                }}
-              />
+          <KeyHint
+            theme={props.theme}
+            keys={HOME_ACTIONS.machine.keys}
+            label={props.filterLabel?.split(" · ")[0] ?? "All machines"}
+            width={
+              props.onSetActivityFilter && filterRows() === 1
+                ? Math.max(1, width() - 47)
+                : props.onSetActivityFilter
+                  ? Math.min(width(), 28)
+                  : Math.max(1, Math.min(28, width() - 16))
             }
+            quiet
+            button
+            onPress={() => {
+              if (props.inputActive) props.onCycleMachine?.();
+            }}
+          />
+          <box
+            height={1}
+            flexShrink={0}
+            flexDirection="row"
+            overflow="hidden"
+            width={Math.min(width(), 47)}
           >
-            <For each={HOME_ACTIVITY_ACTIONS}>
-              {(filter) => (
+            <Show
+              when={props.onSetActivityFilter}
+              fallback={
                 <KeyHint
                   theme={props.theme}
-                  keys={filter.keys}
-                  label={filter.value === "attention" && width() < 47 ? "Attention" : filter.label}
+                  keys={HOME_ACTIONS.attention.keys}
+                  label="Attention"
                   quiet
                   button
-                  selected={(props.activityFilter ?? "all") === filter.value}
                   onPress={() => {
-                    if (props.inputActive) props.onSetActivityFilter?.(filter.value);
+                    if (props.inputActive) props.onToggleAttention?.();
                   }}
                 />
-              )}
-            </For>
-          </Show>
+              }
+            >
+              <For each={HOME_ACTIVITY_ACTIONS}>
+                {(filter) => (
+                  <KeyHint
+                    theme={props.theme}
+                    keys={filter.keys}
+                    label={
+                      filter.value === "attention" && width() < 47 ? "Attention" : filter.label
+                    }
+                    quiet
+                    button
+                    selected={(props.activityFilter ?? "all") === filter.value}
+                    onPress={() => {
+                      if (props.inputActive) props.onSetActivityFilter?.(filter.value);
+                    }}
+                  />
+                )}
+              </For>
+            </Show>
+          </box>
         </box>
-      </box>
+      </Show>
       <Show
         when={props.snapshot.rows.length > 0}
         fallback={
@@ -319,9 +308,9 @@ export function HomeAgentRoster(props: HomeAgentRosterProps) {
           </box>
         }
       >
-        <box height={1} flexShrink={0} />
+        <box height={compact() ? 0 : 1} flexShrink={0} />
         <box
-          height={visibleCount() * rowHeight()}
+          height={(props.fitContent ? visible().length : visibleCount()) * rowHeight()}
           width={width()}
           flexShrink={0}
           flexDirection="column"
@@ -330,91 +319,36 @@ export function HomeAgentRoster(props: HomeAgentRosterProps) {
           <For each={keys()}>
             {(key) => {
               const row = () => byKey().get(key)!;
-              const marker = createAgentStatusMarker({
-                theme: () => props.theme,
-                status: () => row().activity,
-                attention: () => row().attention,
-                unavailable: () => stale(row()),
-              });
               return (
                 <box
                   height={rowHeight()}
-                  flexDirection="column"
-                  backgroundColor={
-                    componentPalette(props.theme, {
-                      selected: props.selection.selectedKey === key,
-                      hovered: hovered() === key,
-                      disabled: row().paneId === null || stale(row()),
-                    }).background
-                  }
                   width={width()}
                   flexShrink={0}
-                  onMouseDown={(event) => {
-                    if (!props.inputActive || event.button !== 0 || !row().paneId || stale(row()))
-                      return;
-                    event.preventDefault();
-                    event.stopPropagation();
-                    props.onSelect(key);
-                    props.onOpen(row(), "mouse");
-                  }}
                   onMouseOver={() => setHovered(key)}
                   onMouseMove={() => setHovered(key)}
                 >
-                  <NavigationRow
+                  <AgentRow
+                    surface="canvas"
                     theme={props.theme}
                     id={`home-agent:${key}`}
+                    name={row().name}
+                    context={[row().machineLabel, row().serverLabel, row().sessionName]
+                      .filter(Boolean)
+                      .join(" · ")}
                     width={width()}
-                    label={
-                      rowHeight() > 1
-                        ? row().name
-                        : padCells(row().name, columns().agent) +
-                          padCells(
-                            [row().machineLabel, row().serverLabel, row().sessionName]
-                              .filter(Boolean)
-                              .join(" / "),
-                            columns().session,
-                          )
-                    }
-                    detail={padCells(
-                      `${marker()} ${stale(row()) ? "last seen" : homeAgentStatusLabel(row().activity).toLowerCase()}`,
-                      columns().status,
-                    )}
-                    detailAlign="end"
-                    marker=" "
+                    compact={rowHeight() === 1}
+                    activity={row().activity}
+                    attention={row().attention}
+                    unavailable={row().paneId === null || stale(row())}
                     selected={props.selection.selectedKey === key}
                     focused={props.inputActive && !editing() && props.selection.selectedKey === key}
                     hovered={hovered() === key}
-                    status={stale(row()) ? "unknown" : statusTone(row())}
-                    disabled={row().paneId === null || stale(row())}
-                    onActivate={(source) => {
+                    onOpen={(source) => {
                       if (!props.inputActive || row().paneId === null || stale(row())) return;
                       props.onSelect(key);
                       props.onOpen(row(), source);
                     }}
                   />
-                  <Show when={rowHeight() > 1}>
-                    <text
-                      width={width()}
-                      height={1}
-                      fg={
-                        props.selection.selectedKey === key
-                          ? props.theme.roles.selection.selectionText
-                          : props.theme.roles.text.muted
-                      }
-                      bg={
-                        componentPalette(props.theme, {
-                          selected: props.selection.selectedKey === key,
-                          hovered: hovered() === key,
-                          disabled: row().paneId === null || stale(row()),
-                        }).background
-                      }
-                    >
-                      {clipTerminal(
-                        `  ${[row().sessionName, row().machineLabel, row().serverLabel, row().harness].filter(Boolean).join(" · ")}`,
-                        width(),
-                      )}
-                    </text>
-                  </Show>
                 </box>
               );
             }}
@@ -446,27 +380,29 @@ export function HomeAgentRoster(props: HomeAgentRosterProps) {
       <text width={width()} height={1} flexShrink={0} fg={props.theme.roles.text.muted}>
         {clipTerminal(coverage(), width())}
       </text>
-      <box width={width()} height={1} flexShrink={0} flexDirection="row" overflow="hidden">
-        <text
-          width={Math.min(
-            Math.max(0, width() - (footer().endsWith("Enter open") && width() >= 20 ? 12 : 0)),
-            terminalDisplayWidth(footer().replace(/ Enter open$/u, "")),
-          )}
-          fg={props.theme.roles.text.muted}
-        >
-          {clipTerminal(footer().replace(/ Enter open$/u, ""), width())}
-        </text>
-        <Show when={footer().endsWith("Enter open") && width() >= 20}>
-          <KeyHint
-            theme={props.theme}
-            keys={HOME_ACTIONS.open.keys}
-            label={HOME_ACTIONS.open.label}
-            quiet
-            button
-            onPress={() => openSelected("mouse")}
-          />
-        </Show>
-      </box>
+      <Show when={!compact()}>
+        <box width={width()} height={1} flexShrink={0} flexDirection="row" overflow="hidden">
+          <text
+            width={Math.min(
+              Math.max(0, width() - (footer().endsWith("Enter open") && width() >= 20 ? 12 : 0)),
+              terminalDisplayWidth(footer().replace(/ Enter open$/u, "")),
+            )}
+            fg={props.theme.roles.text.muted}
+          >
+            {clipTerminal(footer().replace(/ Enter open$/u, ""), width())}
+          </text>
+          <Show when={footer().endsWith("Enter open") && width() >= 20}>
+            <KeyHint
+              theme={props.theme}
+              keys={HOME_ACTIONS.open.keys}
+              label={HOME_ACTIONS.open.label}
+              quiet
+              button
+              onPress={() => openSelected("mouse")}
+            />
+          </Show>
+        </box>
+      </Show>
       <Show when={showRecovery()}>
         <box height={1} width={width()} flexShrink={0} flexDirection="row" gap={1}>
           <Show

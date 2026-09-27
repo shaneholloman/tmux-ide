@@ -151,14 +151,13 @@ export function shellChromeLayout(
 export function shellPanelCell(
   view: Pick<ShellChromeView, "glyph" | "title" | "shortcut">,
   variant: ShellChromeVariant,
-  selected = false,
+  _selected = false,
   attention = false,
 ): string {
-  const glyph = `${attention ? "!" : selected ? "●" : " "}${view.glyph}`;
-  if (variant === "compact") return ` ${glyph} `;
+  const indicator = attention ? "!" : " ";
   const shortcut = view.shortcut ? `${view.shortcut.label} ` : "";
-  if (variant === "standard") return ` ${glyph} ${view.title} `;
-  return ` ${shortcut}${glyph} ${view.title} `;
+  if (variant === "compact") return ` ${view.shortcut?.label ?? view.glyph}${indicator} `;
+  return ` ${shortcut}${view.title} ${indicator} `;
 }
 
 /** Distinguishes the primary workspace switcher from the contextual tool dock. */

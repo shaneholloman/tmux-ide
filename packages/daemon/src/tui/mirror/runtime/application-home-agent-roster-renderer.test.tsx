@@ -87,7 +87,7 @@ describe("flat Home agent roster", () => {
         expect(frame).toContain("3 observed agents · 1 needs attention · 1 working");
         expect(frame).toContain("Scope: 3 of 3 sessions observed");
         expect(frame).not.toContain("Workspace / machine");
-        expect(frame).toContain("! blocked");
+        expect(frame).toContain("! quiet-otter");
         expect(frame).toContain("disconnected");
         expect(frame).toContain("分析 Café 👨‍💻");
       }
@@ -275,7 +275,7 @@ describe("flat Home agent roster", () => {
     );
     await setup.renderOnce();
     const frame = setup.captureCharFrame();
-    expect(frame).toContain("last seen");
+    expect(frame).toContain("unavailable");
     expect(frame).toContain("0 working");
     expect(frame).toContain("last observed");
     await setup.mockInput.pressEnter();
@@ -469,7 +469,7 @@ it("does not open a search selection when a short viewport cannot display its ro
         <HomeAgentRoster
           theme={createSemanticThemeSnapshot({ mode: "light" })}
           width={20}
-          height={6}
+          height={2}
           snapshot={snapshot([row("hidden")])}
           selection={{ selectedKey: "hidden", scrollOffset: 0 }}
           query=""
@@ -482,7 +482,7 @@ it("does not open a search selection when a short viewport cannot display its ro
         />
       </KeyboardRouteProvider>
     ),
-    { width: 20, height: 6 },
+    { width: 20, height: 2 },
   );
   try {
     await setup.renderOnce();
@@ -497,7 +497,7 @@ it("does not open a search selection when a short viewport cannot display its ro
         stopPropagation() {},
       });
     expect(calls).toEqual([]);
-    expectFrameBounds(setup.captureCharFrame(), 20, 6);
+    expectFrameBounds(setup.captureCharFrame(), 20, 2);
   } finally {
     setup.renderer.destroy();
     routes.dispose();

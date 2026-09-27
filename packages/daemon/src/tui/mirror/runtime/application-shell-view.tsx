@@ -503,6 +503,8 @@ export function ApplicationShellView(props: ApplicationShellViewProps): JSX.Elem
                   theme={appearance.theme}
                   onOpenTerminals={() => props.onOpenSurface("terminals", "mouse")}
                   onOpenCommands={() => props.onSetPaletteOpen(true, "mouse")}
+                  onBrowseSessions={props.machineSidebar?.onOpenSwitcher}
+                  onAddMachine={props.machineSidebar?.onAddMachine}
                   onCycleTheme={props.onCycleTheme}
                   onOpenTutorial={props.onOpenTutorial}
                   tutorialLabel={props.tutorialLabel}

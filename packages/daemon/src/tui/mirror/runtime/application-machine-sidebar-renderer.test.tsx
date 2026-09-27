@@ -363,7 +363,7 @@ it("retains agents across machine selection and routes identical pane IDs only t
       .findIndex((line) => line.includes("server agent"));
   expect(setup.captureCharFrame()).toContain("local agent");
   expect(setup.captureCharFrame()).toContain("server agent");
-  expect(setup.captureCharFrame()).toContain("working");
+  expect(setup.captureCharFrame()).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/u);
   setActiveMachine("server");
   await setup.renderOnce();
   expect(setup.captureCharFrame()).toContain("local agent");
@@ -455,7 +455,7 @@ it("offers keyboard and mouse connection controls for the focused remote only", 
   owner.dispose();
 });
 
-it("renders bounded host tabs and scopes mouse open/close to their exact keys", async () => {
+it("keeps retained session tabs out of the agent-first sidebar", async () => {
   const calls: string[] = [];
   const setup = await renderForTest(
     () => (
@@ -486,13 +486,10 @@ it("renders bounded host tabs and scopes mouse open/close to their exact keys", 
   );
   await setup.renderOnce();
   const lines = setup.captureCharFrame().split("\n");
-  expect(lines[0]).toContain("F9 Tabs");
-  const gpu = lines.findIndex((line) => line.includes("GPU · default"));
-  expect(gpu).toBeGreaterThan(0);
-  expect(lines[gpu - 1]).toContain("offline");
-  await setup.mockMouse.click(6, gpu, MouseButtons.LEFT);
-  await setup.mockMouse.click(lines[gpu - 1].indexOf("×"), gpu - 1, MouseButtons.LEFT);
-  expect(calls).toEqual(["close:gpu-api"]);
+  expect(lines[0]).toContain("Machines");
+  expect(lines.join("\n")).not.toContain("Working sessions");
+  expect(lines.join("\n")).not.toContain("GPU · default");
+  expect(calls).toEqual([]);
   setup.renderer.destroy();
 });
 
@@ -569,11 +566,11 @@ it("keeps collapsed activity visible, handles vim/page navigation and scopes hel
   await setup.renderOnce();
   key("h");
   await setup.renderOnce();
-  expect(setup.captureCharFrame()).toContain("! 1");
-  expect(setup.captureCharFrame()).not.toContain("work-0");
+  expect(setup.captureCharFrame()).toContain("! Agent");
+  expect(setup.captureCharFrame()).toContain("Mini · work-0");
   setOffline(true);
   await setup.renderOnce();
-  expect(setup.captureCharFrame()).not.toContain("! 1");
+  expect(setup.captureCharFrame()).toContain("unavailable");
   setOffline(false);
   key("l");
   key("j");
@@ -701,7 +698,7 @@ it("uses shortcut-first buttons for sidebar actions with isolated clicks", async
   }
 });
 
-it("routes focus between working sessions and machine tree without duplicate activation", async () => {
+it("routes focus between agents and machine tree without duplicate activation", async () => {
   const owner = createKeyboardRouteOwner();
   const opened: string[] = [];
   const setup = await renderForTest(
@@ -719,9 +716,17 @@ it("routes focus between working sessions and machine tree without duplicate act
                 label: "Local",
                 state: "ready",
                 sessions: [{ id: "s", name: "shell", paneCount: 1 }],
+                agents: ["a", "b"].map((id) => ({
+                  id,
+                  name: id,
+                  sessionName: "shell",
+                  paneId: id,
+                  activity: "idle" as const,
+                  attention: false,
+                })),
               },
             ],
-            activeMachineId: () => "local",
+            activeMachineId: () => null,
             activeSessionName: () => "shell",
             onOpen: () => opened.push("tree"),
             onSelectMachine() {},
@@ -736,7 +741,7 @@ it("routes focus between working sessions and machine tree without duplicate act
                 available: true,
               },
             ],
-            onOpenTab: (key) => opened.push(key),
+            onOpenAgent: (_machine, _session, pane) => opened.push(pane),
           }}
         />
       </KeyboardRouteProvider>

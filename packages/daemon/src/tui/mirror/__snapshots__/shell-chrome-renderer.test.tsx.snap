@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`ShellChrome OpenTUI renderer renders deterministic %sx%s compact shell chrome 1`] = `
-"  ⌂  !❯   ▤   ±   ◆                                   ⧉ web !blocked F5 palette
+" F1   F2!  F3   F4   F6                               ⧉ web !blocked F5 palette
   tmux              ┌──────────────────────────────────────────────────────────┐
  ● web              │ › compact workspace                                      │
  ○ api              │● Active view and keyboard focus are selected     terminal│
@@ -28,7 +28,7 @@ exports[`ShellChrome OpenTUI renderer renders deterministic %sx%s compact shell 
 `;
 
 exports[`ShellChrome OpenTUI renderer renders deterministic %sx%s standard shell chrome 1`] = `
-" ▸ tmux-ide   ⌂ Home  !❯ Terminal   ▤ Files   ± Diff   ◆ Missions                             ⧉ web !blocked F5 palette
+" ▸ tmux-ide  F1 Home    F2 Terminal !  F3 Files    F4 Diff    F6 Missions                     ⧉ web !blocked F5 palette
   tmux-ide                  ┌──────────────────────────────────────────────────────────────────────────────────────────┐
  ● web                      │ › standard workspace                                                                     │
  ○ api                      │● Active view and keyboard focus are selected                                     terminal│
@@ -71,7 +71,7 @@ exports[`ShellChrome OpenTUI renderer renders deterministic %sx%s standard shell
 `;
 
 exports[`ShellChrome OpenTUI renderer renders deterministic %sx%s wide shell chrome 1`] = `
-" ▸ tmux-ide  F1  ⌂ Home  F2 !❯ Terminal  F3  ▤ Files  F4  ± Diff  F6  ◆ Missions                                                                                              ⧉ web !blocked F5 palette
+" ▸ tmux-ide  F1 Home    F2 Terminal !  F3 Files    F4 Diff    F6 Missions                                                                                                     ⧉ web !blocked F5 palette
   tmux-ide                  ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
  ● web                      │ › wide workspace                                                                                                                                                         │
  ○ api                      │● Active view and keyboard focus are selected                                                                                                                     terminal│

@@ -135,10 +135,10 @@ describe("shell chrome responsive projection", () => {
 
   it("keeps surface tab labels and spans deterministic by variant", () => {
     const compact = shellSurfaceTabs(views, "files", "compact", 1);
-    expect(compact.map((tab) => tab.label)).toEqual(["  ⌂ ", "  ❯ ", " ●▤ ", "  ± ", "  ◆ "]);
+    expect(compact.map((tab) => tab.label)).toEqual([" F1  ", " F2  ", " F3  ", " F4  ", " F6  "]);
     expect(compact[1]!.hovered).toBe(true);
     expect(compact[2]!.selected).toBe(true);
-    expect(compact.map((tab) => tab.span.start)).toEqual([0, 4, 8, 12, 16]);
+    expect(compact.map((tab) => tab.span.start)).toEqual([0, 5, 10, 15, 20]);
 
     const navigation = shellNavigationPresentation("wide", true);
     const wide = shellSurfaceTabs(views, "missions", "wide", null, new Set(), {
@@ -158,7 +158,7 @@ describe("shell chrome responsive projection", () => {
   it("keeps attention inside fixed-width tab labels and spans", () => {
     const alerted = shellSurfaceTabs(views, "terminal", "standard", null, new Set(["terminal"]));
     const normal = shellSurfaceTabs(views, "terminal", "standard", null);
-    expect(alerted[1]!.label).toBe(" !❯ Terminal ");
+    expect(alerted[1]!.label).toBe(" F2 Terminal ! ");
     expect(alerted[1]!.span).toEqual(normal[1]!.span);
     expect(alerted[2]!.span).toEqual(normal[2]!.span);
     expect(alerted.map((tab) => tab.span.start)).toEqual(normal.map((tab) => tab.span.start));

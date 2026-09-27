@@ -11,7 +11,7 @@ import {
   For,
 } from "solid-js";
 import { createHomeAgentSelectionOwner } from "../../packages/daemon/src/tui/mirror/runtime/application-home-agent-selection.ts";
-import { HomeAgentRoster } from "../../packages/daemon/src/tui/mirror/runtime/application-home-agent-roster.tsx";
+import { ApplicationHomeSurface } from "../../packages/daemon/src/tui/mirror/runtime/application-shell-home.tsx";
 import { ApplicationMachineSidebar } from "../../packages/daemon/src/tui/mirror/runtime/application-machine-sidebar.tsx";
 import { ApplicationReferenceSheet } from "../../packages/daemon/src/tui/mirror/runtime/application-reference-sheet.tsx";
 import { createSemanticThemeSnapshot } from "../../packages/daemon/src/tui/mirror/theme.ts";
@@ -161,27 +161,38 @@ function GalleryStory(props: {
     <box width={props.width} height={props.height} flexShrink={0} overflow="hidden">
       <Switch>
         <Match when={props.story === 0}>
-          <HomeAgentRoster
+          <ApplicationHomeSurface
+            project="tmux-ide"
+            status="live"
+            note={null}
+            sessionCount={2}
+            branded
+            onOpenTerminals={() => props.record("Terminals (simulated)")}
+            onOpenCommands={() => props.record("Commands (simulated)")}
+            onBrowseSessions={() => props.record("Sessions (simulated)")}
+            onAddMachine={() => props.record("Add machine (simulated)")}
+            onOpenTutorial={() => props.record("Help (simulated)")}
+            tutorialLabel="Using tmux-ide"
             theme={props.theme}
             width={props.width}
             height={props.height}
-            snapshot={snapshot()}
-            selection={selection()}
-            inputActive={props.interacting}
-            query={query()}
-            onQueryChange={setQuery}
-            activityFilter={filter()}
-            onSetActivityFilter={setFilter}
-            onToggleAttention={() =>
+            agentRoster={snapshot()}
+            agentSelection={selection()}
+            agentInputActive={props.interacting}
+            agentQuery={query()}
+            onAgentQueryChange={setQuery}
+            agentActivityFilter={filter()}
+            onSetAgentActivityFilter={setFilter}
+            onToggleAgentAttention={() =>
               setFilter((value) => (value === "attention" ? "all" : "attention"))
             }
-            filterLabel={local() ? "Local" : "All machines"}
-            onCycleMachine={() => setLocal((v) => !v)}
-            onSelect={selectionOwner.select}
-            onMove={selectionOwner.move}
-            onViewport={selectionOwner.setViewport}
-            onOpen={(row, source) => props.record(`Open ${row.name} (${source}; simulated)`)}
-            onRetry={() => props.record("Retry (simulated)")}
+            agentFilterLabel={local() ? "Local" : "All machines"}
+            onCycleAgentMachine={() => setLocal((v) => !v)}
+            onSelectAgent={selectionOwner.select}
+            onMoveAgent={selectionOwner.move}
+            onAgentViewport={selectionOwner.setViewport}
+            onOpenAgent={(row, source) => props.record(`Open ${row.name} (${source}; simulated)`)}
+            onRetryAgents={() => props.record("Retry (simulated)")}
           />
         </Match>
         <Match when={props.story === 1}>

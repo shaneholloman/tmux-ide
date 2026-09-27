@@ -2,10 +2,13 @@ import type { InteractionReceipt } from "@tmux-ide/contracts";
 import { interactionReceiptTargetLabel } from "@tmux-ide/core";
 /* @jsxImportSource @opentui/solid */
 import type { JSX } from "solid-js";
-import { For, Show } from "solid-js";
+import { For, Show, createSignal } from "solid-js";
 
 import type { SemanticThemeSnapshot } from "../theme.ts";
 import { clipTerminal, terminalDisplayWidth } from "../terminal-text.ts";
+import { SectionHeading } from "../ui/section-heading.tsx";
+import { KeyHint } from "../ui/key-hint.tsx";
+import { CHROME_ACTIONS, HOME_ACTIONS } from "../workspace/application-action-descriptions.ts";
 import { DetailRow } from "../ui/detail-row.tsx";
 import { TuiButton } from "../ui/button.tsx";
 import type { ApplicationTerminalAgentIndicator } from "./application-terminal-workspace-policy.ts";
@@ -38,6 +41,8 @@ export interface ApplicationHomeSurfaceProps {
   readonly theme: SemanticThemeSnapshot;
   readonly onOpenTerminals: () => void;
   readonly onOpenCommands: () => void;
+  readonly onBrowseSessions?: () => void;
+  readonly onAddMachine?: () => void;
   readonly onOpenTutorial?: () => void;
   readonly tutorialLabel?: string;
   readonly onCycleTheme?: () => void;
@@ -63,12 +68,13 @@ export interface ApplicationHomeSurfaceProps {
 
 /** Presentation only: session data, commands, and keyboard admission stay with the shell. */
 export function ApplicationHomeSurface(props: ApplicationHomeSurfaceProps): JSX.Element {
+  const [tipHidden, setTipHidden] = createSignal(false);
   const width = () => Math.max(0, Math.floor(props.width));
   const height = () => Math.max(0, Math.floor(props.height));
   const inset = () =>
     Math.max(
       width() >= 40 ? 2 : width() >= 12 ? 1 : 0,
-      props.branded ? Math.floor((width() - 96) / 2) : 0,
+      props.branded ? Math.floor((width() - 88) / 2) : 0,
     );
   const bodyWidth = () => Math.max(0, width() - inset() * 2);
   const showAscii = () =>
@@ -93,6 +99,14 @@ export function ApplicationHomeSurface(props: ApplicationHomeSurfaceProps): JSX.
     const attention = props.agents.filter((agent) => agent.attention).length;
     return `Current session · ${working} working · ${attention} ${attention === 1 ? "needs" : "need"} attention`;
   };
+  const showSections = () => props.branded && height() >= 20;
+  const showTip = () => props.branded && height() >= 30 && bodyWidth() >= 48 && !tipHidden();
+  const primaryLabel = () => (props.onBrowseSessions ? "Browse sessions" : "Open terminals");
+  const primaryKey = () =>
+    props.onBrowseSessions ? CHROME_ACTIONS.sessions.keys : CHROME_ACTIONS.terminals.keys;
+  const secondaryLabel = () => (props.onAddMachine ? "Add machine" : "Commands");
+  const secondaryKey = () => (props.onAddMachine ? undefined : CHROME_ACTIONS.commands.keys);
+  const showTheme = () => !props.onAddMachine && props.onCycleTheme;
   const themeLabel = () => `Theme: ${props.theme.setting}`;
   // Use the existing TuiButton cell budget for both its label and hit target.
   const naturalButtonWidth = (label: string, shortcut?: string) =>
@@ -101,16 +115,18 @@ export function ApplicationHomeSurface(props: ApplicationHomeSurfaceProps): JSX.
     Math.min(bodyWidth(), naturalButtonWidth(label, shortcut));
   const actionsInRow = () =>
     bodyWidth() >=
-    naturalButtonWidth("Open terminals", "F2") +
-      naturalButtonWidth("Commands", "F5") +
-      (props.onCycleTheme ? naturalButtonWidth(themeLabel()) + 2 : 0) +
+    naturalButtonWidth(primaryLabel(), primaryKey()) +
+      naturalButtonWidth(secondaryLabel(), secondaryKey()) +
+      (showTheme() ? naturalButtonWidth(themeLabel()) + 2 : 0) +
       (props.onOpenTutorial ? naturalButtonWidth(props.tutorialLabel ?? "Learn tmux-ide") + 2 : 0) +
       2;
   const reservedRows = () =>
+    (showSections() ? 1 : 0) +
+    (showTip() ? 2 : 0) +
     brandRows() -
     1 +
     (spacious() ? 4 : 2) +
-    (actionsInRow() ? 1 : 2 + (props.onCycleTheme ? 1 : 0) + (props.onOpenTutorial ? 1 : 0)) +
+    (actionsInRow() ? 1 : 2 + (showTheme() ? 1 : 0) + (props.onOpenTutorial ? 1 : 0)) +
     (spacious() ? 1 : 0) +
     (props.note ? (spacious() ? 2 : 1) : 0);
   const activityRows = () => (height() >= 24 && bodyWidth() >= 48 ? 2 : 1);
@@ -141,7 +157,7 @@ export function ApplicationHomeSurface(props: ApplicationHomeSurfaceProps): JSX.
             Math.min(
               1,
               Math.floor(
-                (height() - reservedRows() - (props.agentRoster ? 12 : 2) - 2) / activityRows(),
+                (height() - reservedRows() - (props.agentRoster ? 10 : 2) - 2) / activityRows(),
               ),
             ),
           )
@@ -192,7 +208,14 @@ export function ApplicationHomeSurface(props: ApplicationHomeSurfaceProps): JSX.
           fallback={
             <text width={bodyWidth()} height={1} fg={props.theme.roles.text.primary}>
               <strong>
-                {clipTerminal(props.branded ? "tmux-ide" : props.project, bodyWidth())}
+                {clipTerminal(
+                  props.branded
+                    ? props.agentRoster?.rows.length
+                      ? "Agents"
+                      : "tmux-ide"
+                    : props.project,
+                  bodyWidth(),
+                )}
               </strong>
             </text>
           }
@@ -241,6 +264,7 @@ export function ApplicationHomeSurface(props: ApplicationHomeSurfaceProps): JSX.
         >
           {(snapshot) => (
             <HomeAgentRoster
+              fitContent
               query={props.agentQuery}
               onQueryChange={props.onAgentQueryChange}
               filterLabel={props.agentFilterLabel}
@@ -292,6 +316,9 @@ export function ApplicationHomeSurface(props: ApplicationHomeSurfaceProps): JSX.
           </box>
         </Show>
         <box height={spacious() ? 1 : 0} flexShrink={0} />
+        <Show when={showSections()}>
+          <SectionHeading theme={props.theme} width={bodyWidth()} title="Quick actions" />
+        </Show>
         <box
           width={bodyWidth()}
           flexShrink={0}
@@ -301,23 +328,23 @@ export function ApplicationHomeSurface(props: ApplicationHomeSurfaceProps): JSX.
         >
           <TuiButton
             theme={props.theme}
-            label="Open terminals"
-            shortcut="F2"
-            width={buttonWidth("Open terminals", "F2")}
+            label={primaryLabel()}
+            shortcut={primaryKey()}
+            width={buttonWidth(primaryLabel(), primaryKey())}
             size="compact"
             variant="ghost"
             background={props.theme.roles.surfaces.canvas}
-            onPress={props.onOpenTerminals}
+            onPress={props.onBrowseSessions ?? props.onOpenTerminals}
           />
           <TuiButton
             theme={props.theme}
-            label="Commands"
+            label={secondaryLabel()}
             size="compact"
             variant="ghost"
             background={props.theme.roles.surfaces.canvas}
-            shortcut="F5"
-            width={buttonWidth("Commands", "F5")}
-            onPress={props.onOpenCommands}
+            shortcut={secondaryKey()}
+            width={buttonWidth(secondaryLabel(), secondaryKey())}
+            onPress={props.onAddMachine ?? props.onOpenCommands}
           />
           <Show when={props.onOpenTutorial}>
             {(open) => (
@@ -332,7 +359,7 @@ export function ApplicationHomeSurface(props: ApplicationHomeSurfaceProps): JSX.
               />
             )}
           </Show>
-          <Show when={props.onCycleTheme}>
+          <Show when={showTheme()}>
             {(onCycleTheme) => (
               <TuiButton
                 theme={props.theme}
@@ -345,6 +372,29 @@ export function ApplicationHomeSurface(props: ApplicationHomeSurfaceProps): JSX.
               />
             )}
           </Show>
+        </box>
+      </Show>
+      <Show when={showTip()}>
+        <box
+          height={2}
+          width={bodyWidth()}
+          flexShrink={0}
+          paddingTop={1}
+          flexDirection="row"
+          overflow="hidden"
+        >
+          <text fg={props.theme.roles.text.link}>Tip </text>
+          <KeyHint theme={props.theme} keys={HOME_ACTIONS.open.keys} quiet />
+          <text fg={props.theme.roles.text.muted} width={Math.max(0, bodyWidth() - 14)}>
+            {clipTerminal(" opens the selected agent’s pane.", Math.max(0, bodyWidth() - 14))}
+          </text>
+          <TuiButton
+            theme={props.theme}
+            label="×"
+            size="compact"
+            width={3}
+            onPress={() => setTipHidden(true)}
+          />
         </box>
       </Show>
       <Show when={props.note}>
