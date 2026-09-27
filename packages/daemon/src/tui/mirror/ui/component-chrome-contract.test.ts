@@ -22,6 +22,9 @@ const PRESENTATION_SOURCES = [
   "ui/key-hint.tsx",
   "ui/menu.tsx",
   "ui/navigation-row.tsx",
+  "ui/session-row.tsx",
+  "ui/working-sessions.tsx",
+  "ui/icons.ts",
   "ui/overlay-frame.tsx",
   "ui/state.ts",
   "ui/status-bar.tsx",
@@ -46,6 +49,18 @@ function runtimeImports(source: string): string[] {
 }
 
 describe("OpenTUI component and chrome contract", () => {
+  it("shares working-session presentation with the production sidebar and gallery", () => {
+    expect(
+      readFileSync(join(mirrorRoot, "runtime/application-machine-sidebar.tsx"), "utf8"),
+    ).toContain("<WorkingSessions");
+    expect(
+      readFileSync(
+        join(mirrorRoot, "../../../../../scripts/tui-gallery/working-sessions.tsx"),
+        "utf8",
+      ),
+    ).toContain("<WorkingSessions");
+  });
+
   it.each([
     [200, 60, "wide", 28, 172, 57, 56],
     [120, 40, "standard", 28, 92, 37, 36],

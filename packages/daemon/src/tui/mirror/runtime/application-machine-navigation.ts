@@ -9,7 +9,7 @@ import {
   createApplicationMachineAgents,
   type ApplicationMachineAgent,
 } from "./application-machine-agents.ts";
-import { createSignal, onCleanup } from "solid-js";
+import { createEffect, createSignal, onCleanup } from "solid-js";
 import { applicationMachineAuthorityManager as manager } from "./application-machine-authority.ts";
 import { createApplicationMachineCatalog } from "./application-machine-catalog.ts";
 import { ephemeralMachineProfile } from "./application-machine-startup.ts";
@@ -195,7 +195,8 @@ export function createApplicationMachineNavigation(options: {
             machineId: id,
             liveSessionId: session.liveSessionId,
             label: session.name,
-            hostLabel: `${manager.getMachine(id)?.label ?? id}${session.serverLabel ? ` / ${session.serverLabel}` : ""}`,
+            hostLabel: manager.getMachine(id)?.label ?? id,
+            serverLabel: session.serverLabel ?? "default",
           });
         preferences.change({ type: "visit", key: session.id });
         if (remember && history[historyIndex] !== session.id) {
@@ -246,6 +247,27 @@ export function createApplicationMachineNavigation(options: {
   const isDefaultSession = (machineId: string, session: { server?: TmuxServerScope }) =>
     !session.server ||
     session.server.generation === manager.getMachine(machineId)?.read()?.instanceId;
+  const tabAgents = (tab: FleetTabTarget) => {
+    const group = agentGroups().find((value) => value.machineId === tab.machineId);
+    // This observer covers only the default tmux server; never guess for other scopes.
+    if (!resolveTab(tab) || !group?.available || !isDefaultSession(tab.machineId, tab)) return null;
+    const observation = group.observation;
+    if (
+      observation &&
+      (observation.loadingSessions > 0 ||
+        observation.unavailableSessions > 0 ||
+        observation.truncatedSessions > 0 ||
+        observation.refreshingSessionKeys.length > 0)
+    )
+      return null;
+    const rows = group.agents.filter((agent) => agent.liveSessionId === tab.liveSessionId);
+    if (rows.some((agent) => agent.disabled)) return null;
+    return rows;
+  };
+  createEffect(() => {
+    tabRevision();
+    for (const tab of tabs.snapshot().tabs) tabs.observe(tab.key, tabAgents(tab));
+  });
   const sidebar: ApplicationMachineSidebarModel = {
     groups: () =>
       snapshot().groups.map((group) => ({
@@ -269,11 +291,26 @@ export function createApplicationMachineNavigation(options: {
     tabs: () => {
       tabRevision();
       const value = tabs.snapshot();
-      return value.tabs.map((tab) => ({
-        ...tab,
-        active: value.active === tab.key,
-        available: !!resolveTab(tab),
-      }));
+      return value.tabs.map((tab) => {
+        const agents = tabAgents(tab);
+        const activity = !agents
+          ? undefined
+          : agents.some((agent) => agent.activity === "failed")
+            ? ("failed" as const)
+            : agents.some((agent) => agent.attention || agent.activity === "waiting")
+              ? ("waiting" as const)
+              : agents.some((agent) => agent.activity === "running")
+                ? ("running" as const)
+                : ("idle" as const);
+        return {
+          ...tab,
+          active: value.active === tab.key,
+          available: !!resolveTab(tab),
+          activity,
+          attention: agents?.some((agent) => agent.attention || agent.activity === "waiting"),
+          unread: value.unread.includes(tab.key),
+        };
+      });
     },
     onOpenTab: (key) => {
       void tabs.activate(key);

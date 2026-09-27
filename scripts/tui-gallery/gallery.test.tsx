@@ -329,7 +329,7 @@ test("short working-session viewport keeps End target visible and offline cannot
   await setup.renderOnce();
   expect(setup.captureCharFrame()).toContain("Spark · development");
   key(setup, "return");
-  expect(actions).toEqual(["Unavailable: Spark · development (simulated)"]);
+  expect(actions).toEqual([]);
 });
 test("working-session pointer opens once and acknowledges the same result as Enter", async () => {
   const actions: string[] = [];

@@ -2,7 +2,8 @@ import { CHROME_ACTIONS, SIDEBAR_ACTIONS } from "../workspace/application-action
 import { createAgentStatusMarker } from "../ui/agent-status-marker.ts";
 import type { TmuxServerDescriptor, TmuxServerScope } from "@tmux-ide/contracts";
 import { fleetHostColor, summarizeFleetActivity } from "./fleet-presentation.ts";
-import { TuiButton } from "../ui/button.tsx";
+import { WorkingSessions } from "../ui/working-sessions.tsx";
+import type { SessionRowModel } from "../ui/session-row.tsx";
 /* @jsxImportSource @opentui/solid */
 import {
   fleetConnectionMessage,
@@ -80,15 +81,7 @@ export interface ApplicationMachineSidebarModel {
     paneId: string,
     source: "keyboard" | "mouse",
   ) => void;
-  readonly tabs?: Accessor<
-    readonly {
-      key: string;
-      label: string;
-      hostLabel: string;
-      active: boolean;
-      available: boolean;
-    }[]
-  >;
+  readonly tabs?: Accessor<readonly SessionRowModel[]>;
   readonly onOpenTab?: (key: string) => void;
   readonly onCloseTab?: (key: string) => void;
   readonly onOpenSwitcher?: () => void;
@@ -134,14 +127,13 @@ export function ApplicationMachineSidebar(props: {
   const controlsHeight = () => (props.height >= 8 && controlGroup() ? 4 : 0);
   const searchHeight = () =>
     (props.model.onOpenSwitcher ? 1 : 0) + (props.model.onOpenAttention ? 1 : 0);
+  const [workingFocused, setWorkingFocused] = createSignal(true);
   const tabHeight = () =>
-    Math.min(props.model.tabs?.().length ?? 0, Math.max(0, Math.floor(props.height / 3)));
-  const visibleTabs = () => {
-    const tabs = props.model.tabs?.() ?? [];
-    const active = tabs.findIndex((tab) => tab.active);
-    const start = Math.max(0, active - tabHeight() + 1);
-    return tabs.slice(start, start + tabHeight());
-  };
+    (props.model.tabs?.().length ?? 0) > 0 && props.height >= 12
+      ? 1 +
+        Math.min(props.model.tabs!().length, Math.max(1, Math.floor((props.height / 2 - 1) / 3))) *
+          3
+      : 0;
   const machineHeight = () =>
     Math.max(
       0,
@@ -274,6 +266,7 @@ export function ApplicationMachineSidebar(props: {
     props.model.onCollapse?.(preferenceKey(group), value);
   };
   const activate = (row: Row, source: "keyboard" | "mouse") => {
+    setWorkingFocused(false);
     setSelectedKey(row.key);
     setLocalFocused(true);
     props.model.onFocus?.();
@@ -313,7 +306,7 @@ export function ApplicationMachineSidebar(props: {
   const rowHeight = (row: Row) =>
     (row.agent ? (row.agentHeading ? 3 : 2) : row.serverHeading ? 2 : 1) + sectionGap(row);
   const revealFocusedRow = () => {
-    if (!focused() || !scroll) return;
+    if (!focused() || (workingFocused() && tabHeight()) || !scroll) return;
     const y = rows()
       .slice(0, index())
       .reduce((sum, row) => sum + rowHeight(row), 0);
@@ -331,6 +324,14 @@ export function ApplicationMachineSidebar(props: {
   useKeyboardRoute((event) => {
     if (!focused() || event.eventType !== "press" || event.meta) return false;
     let key = event.name.toLowerCase();
+    if (key === "tab" && tabHeight()) {
+      setWorkingFocused((value) => !value);
+      event.preventDefault();
+      event.stopPropagation();
+      return true;
+    }
+    if (workingFocused() && tabHeight() && !["escape", "?", "question", "/", "a"].includes(key))
+      return false;
     if (event.ctrl && key === "d") key = "halfdown";
     else if (event.ctrl && key === "u") key = "halfup";
     else if (!event.ctrl && !event.meta)
@@ -454,7 +455,9 @@ export function ApplicationMachineSidebar(props: {
       overflow="hidden"
     >
       <box height={1} flexShrink={0} flexDirection="row" overflow="hidden">
-        <text fg={props.theme.roles.text.secondary}>{" Machines"}</text>
+        <text fg={props.theme.roles.text.secondary}>
+          {tabHeight() ? " Workspace" : " Machines"}
+        </text>
         <box flexGrow={1} />
         <Show when={props.model.tabs?.().length && props.width >= 28}>
           <KeyHint
@@ -473,29 +476,22 @@ export function ApplicationMachineSidebar(props: {
           onPress={() => props.onHelp?.("mouse")}
         />
       </box>
-      <For each={visibleTabs()}>
-        {(tab) => (
-          <box height={1} flexDirection="row">
-            <NavigationRow
-              theme={props.theme}
-              width={Math.max(1, props.width - 4)}
-              id={`fleet-tab:${tab.key}`}
-              label={`${tab.hostLabel} / ${tab.label}`}
-              marker={tab.active ? "●" : "○"}
-              detail={tab.available ? "" : "offline"}
-              focused={false}
-              onActivate={() => props.model.onOpenTab?.(tab.key)}
-            />
-            <TuiButton
-              theme={props.theme}
-              label="×"
-              size="compact"
-              width={3}
-              onPress={() => props.model.onCloseTab?.(tab.key)}
-            />
-          </box>
-        )}
-      </For>
+      <Show when={tabHeight() > 0}>
+        <WorkingSessions
+          theme={props.theme}
+          rows={props.model.tabs?.() ?? []}
+          width={props.width}
+          height={tabHeight()}
+          focused={focused() && workingFocused()}
+          onFocus={() => {
+            setWorkingFocused(true);
+            setLocalFocused(true);
+            props.model.onFocus?.();
+          }}
+          onOpen={(key) => props.model.onOpenTab?.(key)}
+          onClose={props.model.onCloseTab}
+        />
+      </Show>
       <scrollbox
         ref={(value) => {
           scroll = value;
@@ -618,7 +614,9 @@ export function ApplicationMachineSidebar(props: {
                             : `${connectionDetail(row.group)}${row.group.agents?.length ? " ?" : ""}`
                   }
                   selected={Boolean((row.session || row.agent) && active(row))}
-                  focused={Boolean(focused() && row.key === selectedKey())}
+                  focused={Boolean(
+                    focused() && !(workingFocused() && tabHeight()) && row.key === selectedKey(),
+                  )}
                   status={
                     (row.agent?.attention ?? activity(row).kind === "attention")
                       ? "blocked"
@@ -660,7 +658,7 @@ export function ApplicationMachineSidebar(props: {
         <KeyHint
           theme={props.theme}
           keys={CHROME_ACTIONS.sessions.keys}
-          label={CHROME_ACTIONS.sessions.label}
+          label="Browse all sessions"
           width={props.width}
           quiet
           button

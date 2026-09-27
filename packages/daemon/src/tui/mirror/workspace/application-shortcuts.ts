@@ -28,6 +28,7 @@ export const APPLICATION_SHORTCUTS: readonly ApplicationShortcut[] = [
     label: action.description,
     keys: action.keys,
   })),
+  { category: "Sidebar (when focused)", label: "Switch working sessions / machines", keys: "Tab" },
   ...Object.values(SIDEBAR_ACTIONS).map((action) => ({
     category: "Sidebar (when focused)",
     label: action.description,

@@ -2,6 +2,8 @@ import { batch, createEffect, createSignal, onCleanup } from "solid-js";
 import type { AgentActivity } from "@tmux-ide/contracts";
 import type { SemanticThemeSnapshot } from "../theme.ts";
 
+import { UI_ICONS } from "./icons.ts";
+
 const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const listeners = new Set<(frame: number) => void>();
 let timer: ReturnType<typeof setInterval> | undefined;
@@ -46,24 +48,24 @@ export function createAgentStatusMarker(options: {
     if (animated()) onCleanup(subscribe(setCurrent));
   });
   return () => {
-    if (options.unavailable?.()) return "·";
-    if (options.attention?.()) return "!";
+    if (options.unavailable?.()) return UI_ICONS.unknown;
+    if (options.attention?.()) return UI_ICONS.attention;
     switch (options.status()) {
       case "running":
       case "working":
         return animated() ? FRAMES[current()]! : options.theme().glyphs.active;
       case "waiting":
       case "blocked":
-        return "!";
+        return UI_ICONS.attention;
       case "complete":
       case "done":
         return options.theme().glyphs.check;
       case "failed":
-        return "×";
+        return UI_ICONS.failed;
       case "idle":
         return options.theme().glyphs.inactive;
       default:
-        return "·";
+        return UI_ICONS.unknown;
     }
   };
 }

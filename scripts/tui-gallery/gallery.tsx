@@ -101,12 +101,8 @@ export function TuiGallery(props: {
       </text>
       <text fg={theme().colors.mutedForeground}>t Theme v Size s State r Reset q Quit</text>
       <text fg={theme().colors.foreground}>
-        {
-          ["Home", "Sidebar", "Help", "Pane header", "Footer", "Working sessions prototype"][
-            story()
-          ]
-        }{" "}
-        · {GALLERY_STATES[state()]} · {light() ? "light" : "dark"} · {width()}×{height()}
+        {["Home", "Sidebar", "Help", "Pane header", "Footer", "Working sessions"][story()]} ·{" "}
+        {GALLERY_STATES[state()]} · {light() ? "light" : "dark"} · {width()}×{height()}
       </text>
       <KeyboardRouteProvider owner={owner}>
         <For each={[revision()]}>

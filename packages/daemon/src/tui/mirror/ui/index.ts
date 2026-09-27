@@ -57,3 +57,7 @@ export {
   type StatusBarSegmentProps,
   type StatusSegmentProps,
 } from "./status-bar.tsx";
+
+export { UI_ICONS } from "./icons.ts";
+export { SessionRow, sessionRowStatus, type SessionRowModel } from "./session-row.tsx";
+export { WorkingSessions } from "./working-sessions.tsx";

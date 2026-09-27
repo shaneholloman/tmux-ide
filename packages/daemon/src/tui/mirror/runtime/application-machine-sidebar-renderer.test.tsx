@@ -461,7 +461,7 @@ it("renders bounded host tabs and scopes mouse open/close to their exact keys", 
     () => (
       <ApplicationMachineSidebar
         width={38}
-        height={12}
+        height={20}
         theme={createSemanticThemeSnapshot({ mode: "dark" })}
         model={{
           groups: () => [],
@@ -482,17 +482,17 @@ it("renders bounded host tabs and scopes mouse open/close to their exact keys", 
         }}
       />
     ),
-    { width: 38, height: 12 },
+    { width: 38, height: 20 },
   );
   await setup.renderOnce();
   const lines = setup.captureCharFrame().split("\n");
   expect(lines[0]).toContain("F9 Tabs");
-  const gpu = lines.findIndex((line) => line.includes("GPU / api"));
+  const gpu = lines.findIndex((line) => line.includes("GPU · default"));
   expect(gpu).toBeGreaterThan(0);
-  expect(lines[gpu]).toContain("offline");
+  expect(lines[gpu - 1]).toContain("offline");
   await setup.mockMouse.click(6, gpu, MouseButtons.LEFT);
-  await setup.mockMouse.click(lines[gpu].indexOf("×"), gpu, MouseButtons.LEFT);
-  expect(calls).toEqual(["open:gpu-api", "close:gpu-api"]);
+  await setup.mockMouse.click(lines[gpu - 1].indexOf("×"), gpu - 1, MouseButtons.LEFT);
+  expect(calls).toEqual(["close:gpu-api"]);
   setup.renderer.destroy();
 });
 
@@ -685,7 +685,7 @@ it("uses shortcut-first buttons for sidebar actions with isolated clicks", async
   try {
     await setup.renderOnce();
     const lines = setup.captureCharFrame().split("\n");
-    for (const label of ["F6 Sessions", "F7 Attention (0)", "A Add machine"]) {
+    for (const label of ["F6 Browse all sessions", "F7 Attention (0)", "A Add machine"]) {
       const y = lines.findIndex((line) => line.includes(label));
       expect(y).toBeGreaterThanOrEqual(0);
       await setup.mockMouse.click(lines[y]!.indexOf(label), y, MouseButtons.LEFT);
@@ -699,4 +699,72 @@ it("uses shortcut-first buttons for sidebar actions with isolated clicks", async
   } finally {
     setup.renderer.destroy();
   }
+});
+
+it("routes focus between working sessions and machine tree without duplicate activation", async () => {
+  const owner = createKeyboardRouteOwner();
+  const opened: string[] = [];
+  const setup = await renderForTest(
+    () => (
+      <KeyboardRouteProvider owner={owner}>
+        <ApplicationMachineSidebar
+          theme={createSemanticThemeSnapshot({ mode: "dark" })}
+          width={40}
+          height={20}
+          model={{
+            focused: () => true,
+            groups: () => [
+              {
+                id: "local",
+                label: "Local",
+                state: "ready",
+                sessions: [{ id: "s", name: "shell", paneCount: 1 }],
+              },
+            ],
+            activeMachineId: () => "local",
+            activeSessionName: () => "shell",
+            onOpen: () => opened.push("tree"),
+            onSelectMachine() {},
+            tabs: () => [
+              { key: "a", label: "one", hostLabel: "Local", active: true, available: true },
+              {
+                key: "b",
+                label: "two",
+                hostLabel: "Spark",
+                serverLabel: "dev",
+                active: false,
+                available: true,
+              },
+            ],
+            onOpenTab: (key) => opened.push(key),
+          }}
+        />
+      </KeyboardRouteProvider>
+    ),
+    { width: 40, height: 20 },
+  );
+  const press = (name: string) =>
+    owner.route({
+      name,
+      ctrl: false,
+      meta: false,
+      shift: false,
+      eventType: "press",
+      preventDefault() {},
+      stopPropagation() {},
+    });
+  await setup.renderOnce();
+  press("down");
+  press("return");
+  expect(opened).toEqual(["b"]);
+  press("tab");
+  press("end");
+  press("return");
+  expect(opened).toEqual(["b", "tree"]);
+  press("tab");
+  press("home");
+  press("return");
+  expect(opened).toEqual(["b", "tree", "a"]);
+  setup.renderer.destroy();
+  owner.dispose();
 });
