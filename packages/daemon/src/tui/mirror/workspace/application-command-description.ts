@@ -1,3 +1,4 @@
+import { CHROME_ACTIONS } from "./application-action-descriptions.ts";
 import type { TmuxServerScope } from "@tmux-ide/contracts";
 import { fuzzyTermsMatch as commandSearchMatch } from "../../team/fuzzy.ts";
 export { fuzzyTermsMatch as commandSearchMatch } from "../../team/fuzzy.ts";
@@ -40,6 +41,7 @@ export type ApplicationPaletteCommand =
   | "hide-sidebar"
   | "show-sidebar"
   | "switch-session"
+  | "help"
   | "shortcuts"
   | "whats-new"
   | "home"
@@ -66,18 +68,20 @@ export function applicationCommandDescription(command: ApplicationPaletteCommand
   detail: string;
   shortcut?: string;
 } {
+  if (command === "help")
+    return { id: command, label: "Using tmux-ide", detail: "Help and getting started" };
   if (command === "hide-sidebar" || command === "show-sidebar")
     return {
       id: command,
       label: command === "hide-sidebar" ? "Hide sidebar" : "Show sidebar",
       detail: "Terminal layout",
-      shortcut: "F10",
+      shortcut: CHROME_ACTIONS.sidebar.keys,
     };
   if (command === "switch-session")
     return {
       id: command,
       label: "Switch session",
-      shortcut: "F6",
+      shortcut: CHROME_ACTIONS.sessions.keys,
       detail: "Sessions across machines",
     };
   if (command === "shortcuts" || command === "whats-new")
@@ -133,7 +137,12 @@ export function applicationCommandDescription(command: ApplicationPaletteCommand
           ? "Zoom / unzoom pane"
           : undefined) ??
       (command === "home" ? "Home" : command === "terminals" ? "Terminals" : "New terminal window"),
-    shortcut: command === "home" ? "F1" : command === "terminals" ? "F2" : undefined,
+    shortcut:
+      command === "home"
+        ? CHROME_ACTIONS.home.keys
+        : command === "terminals"
+          ? CHROME_ACTIONS.terminals.keys
+          : undefined,
     detail:
       command === "home"
         ? "sessions and agent state"

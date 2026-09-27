@@ -26,6 +26,7 @@ const BASE_COMMANDS: readonly ApplicationPaletteCommand[] = [
   "close-pane",
   "zoom-pane",
   "appearance",
+  "help",
   "shortcuts",
   "whats-new",
   "switch-session",

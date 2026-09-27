@@ -66,9 +66,11 @@ export function createApplicationPaletteCommandOwner(options: {
     confirmed = false,
   ): void => {
     if (busy()) return;
-    if (command === "shortcuts" || command === "whats-new") {
+    if (command === "help" || command === "shortcuts" || command === "whats-new") {
       setCloseArmed(false);
-      setReferencePage(command === "shortcuts" ? "shortcuts" : "changes");
+      setReferencePage(
+        command === "help" ? "help" : command === "shortcuts" ? "shortcuts" : "changes",
+      );
       return;
     }
     if (command === "switch-session") {

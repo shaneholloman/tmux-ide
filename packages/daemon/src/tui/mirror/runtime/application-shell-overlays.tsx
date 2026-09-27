@@ -344,7 +344,8 @@ export function MinimalPalette(props: {
                           onPress={() => {
                             props.onSelect?.(row().index);
                             const command = row().command;
-                            if (command === "shortcuts" || command === "whats-new")
+                            if (command === "help") openSheet("help");
+                            else if (command === "shortcuts" || command === "whats-new")
                               openSheet(PALETTE_REFERENCE_COMMANDS[command].page);
                             else props.onActivate(command);
                           }}

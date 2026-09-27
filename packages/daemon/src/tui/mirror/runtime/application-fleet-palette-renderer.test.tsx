@@ -277,8 +277,10 @@ for (const mode of ["light", "dark"] as const) {
       expect(setup.captureCharFrame()).toContain("No matching shortcuts");
       key("tab");
       await setup.renderOnce();
-      expect(setup.captureCharFrame()).toContain("2.9.0-beta.30");
-      expect(setup.captureCharFrame()).toContain("2.9.0-beta.29");
+      expect(setup.captureCharFrame()).toContain("2.9.0-beta.40");
+      key("tab");
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).toContain("Using tmux-ide");
       key("tab");
       await setup.renderOnce();
       expect(setup.captureCharFrame()).toContain("unmatchable");
@@ -333,6 +335,26 @@ for (const width of [40, 100]) {
       key("tab");
       await setup.renderOnce();
       expect(setup.captureCharFrame()).toContain("Keyboard shortcuts");
+      owner.routePaste(new TextEncoder().encode("working"));
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).toContain("Show working agents");
+      key("tab");
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).toContain("2.9.0-beta.40");
+      key("tab");
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).toContain("Using tmux-ide");
+      owner.route({
+        name: "tab",
+        ctrl: false,
+        meta: false,
+        shift: true,
+        eventType: "press",
+        preventDefault() {},
+        stopPropagation() {},
+      });
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).toContain("2.9.0-beta.40");
       key("escape");
       expect(closed).toBe(1);
     } finally {

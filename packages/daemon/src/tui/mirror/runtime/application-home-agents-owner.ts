@@ -307,6 +307,7 @@ export function createApplicationHomeNavigationOwner(options: {
         command === "appearance" ||
         command === "hide-sidebar" ||
         command === "show-sidebar" ||
+        command === "help" ||
         command === "shortcuts" ||
         command === "whats-new" ||
         command === "switch-session"

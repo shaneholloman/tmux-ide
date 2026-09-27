@@ -1,4 +1,8 @@
 /* @jsxImportSource @opentui/solid */
+import {
+  HOME_ACTIONS,
+  HOME_ACTIVITY_ACTIONS,
+} from "../workspace/application-action-descriptions.ts";
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
 import type { SemanticThemeSnapshot } from "../theme.ts";
 import { clipTerminal, terminalDisplayWidth } from "../terminal-text.ts";
@@ -151,13 +155,13 @@ export function HomeAgentRoster(props: HomeAgentRosterProps) {
     const key = event.name.toLowerCase();
     const filter =
       !editing() &&
-      (key === "f"
+      (key === HOME_ACTIONS.machine.key
         ? props.onCycleMachine
-        : key === "a"
+        : key === HOME_ACTIONS.attention.key
           ? props.onToggleAttention
-          : key === "w" && props.onSetActivityFilter
+          : key === HOME_ACTIONS.working.key && props.onSetActivityFilter
             ? () => props.onSetActivityFilter?.("working")
-            : key === "0" && props.onSetActivityFilter
+            : key === HOME_ACTIONS.all.key && props.onSetActivityFilter
               ? () => props.onSetActivityFilter?.("all")
               : undefined);
     if (filter) {
@@ -232,7 +236,7 @@ export function HomeAgentRoster(props: HomeAgentRosterProps) {
       >
         <KeyHint
           theme={props.theme}
-          keys="f"
+          keys={HOME_ACTIONS.machine.keys}
           label={props.filterLabel?.split(" · ")[0] ?? "All machines"}
           width={
             props.onSetActivityFilter && filterRows() === 1
@@ -259,7 +263,7 @@ export function HomeAgentRoster(props: HomeAgentRosterProps) {
             fallback={
               <KeyHint
                 theme={props.theme}
-                keys="a"
+                keys={HOME_ACTIONS.attention.keys}
                 label="Attention"
                 quiet
                 button
@@ -269,19 +273,11 @@ export function HomeAgentRoster(props: HomeAgentRosterProps) {
               />
             }
           >
-            <For
-              each={
-                [
-                  { key: "0", label: "All", value: "all" },
-                  { key: "w", label: "Working", value: "working" },
-                  { key: "a", label: "Needs attention", value: "attention" },
-                ] as const
-              }
-            >
+            <For each={HOME_ACTIVITY_ACTIONS}>
               {(filter) => (
                 <KeyHint
                   theme={props.theme}
-                  keys={filter.key}
+                  keys={filter.keys}
                   label={filter.value === "attention" && width() < 47 ? "Attention" : filter.label}
                   quiet
                   button
@@ -463,8 +459,8 @@ export function HomeAgentRoster(props: HomeAgentRosterProps) {
         <Show when={footer().endsWith("Enter open") && width() >= 20}>
           <KeyHint
             theme={props.theme}
-            keys="Enter"
-            label="open"
+            keys={HOME_ACTIONS.open.keys}
+            label={HOME_ACTIONS.open.label}
             quiet
             button
             onPress={() => openSelected("mouse")}

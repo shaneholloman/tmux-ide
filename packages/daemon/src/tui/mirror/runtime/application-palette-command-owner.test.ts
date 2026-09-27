@@ -72,6 +72,13 @@ describe("application palette command owner", () => {
       expect(splitPane).not.toHaveBeenCalled();
       owner.setReferencePage(undefined);
       expect(owner.query()).toBe("Ctrl+B");
+      owner.setQuery("Using tmux-ide");
+      expect(owner.commands()).toEqual(["help"]);
+      owner.handleKey({ name: "enter", ctrl: false, meta: false, shift: false });
+      expect(owner.referencePage()).toBe("help");
+      expect(setPaletteOpen).not.toHaveBeenCalled();
+      expect(splitPane).not.toHaveBeenCalled();
+      owner.setReferencePage(undefined);
       owner.activate("shortcuts", "mouse");
       expect(owner.referencePage()).toBe("shortcuts");
       owner.setOpen(false, "keyboard");

@@ -7,6 +7,7 @@ import { OverlaySearchField } from "../ui/overlay-search-field.tsx";
 import { overlaySurfaceMetrics } from "../ui/overlay-model.ts";
 import { useKeyboardRoute, usePasteRoute } from "../ui/keyboard-router.tsx";
 import { clipTerminal, terminalDisplayWidth } from "../terminal-text.ts";
+import { CHROME_ACTIONS } from "../workspace/application-action-descriptions.ts";
 import { APPLICATION_SHORTCUTS } from "../workspace/application-shortcuts.ts";
 import { commandSearchMatch } from "../workspace/application-command-description.ts";
 import {
@@ -15,6 +16,15 @@ import {
 } from "./application-pane-rename-input.ts";
 
 const releases = [
+  {
+    version: "2.9.0-beta.40",
+    lines: [
+      "Using tmux-ide: a scrollable guide to machines, sessions and agents.",
+      "Home filters for All, Working and Needs attention, with a clear Open action.",
+      "Consistent shortcut buttons in the sidebar and footer.",
+      "Segmented pane headers and dimmed backgrounds for dialogs.",
+    ],
+  },
   {
     version: "2.9.0-beta.30",
     lines: [
@@ -91,8 +101,15 @@ export function ApplicationReferenceSheet(props: {
               {
                 version: "Move around",
                 lines: [
-                  "F1 Home · F2 Terminals · F6 Sessions · F7 Attention",
-                  "F10 shows or hides the sidebar. F5 opens Commands for actions, appearance and keyboard shortcuts.",
+                  [
+                    CHROME_ACTIONS.home,
+                    CHROME_ACTIONS.terminals,
+                    CHROME_ACTIONS.sessions,
+                    CHROME_ACTIONS.attention,
+                  ]
+                    .map((action) => `${action.keys} ${action.label}`)
+                    .join(" · "),
+                  `${CHROME_ACTIONS.sidebar.keys} shows or hides the sidebar. ${CHROME_ACTIONS.commands.keys} opens Commands for actions, appearance and keyboard shortcuts.`,
                 ],
               },
               {
@@ -156,7 +173,8 @@ export function ApplicationReferenceSheet(props: {
     const key = event.name.toLowerCase();
     if (key === "escape") props.onClose();
     else if (key === "tab") {
-      setPage(page() === "shortcuts" ? "changes" : "shortcuts");
+      const pages = ["help", "shortcuts", "changes"] as const;
+      setPage(pages[(pages.indexOf(page()) + (event.shift ? 2 : 1)) % pages.length]!);
       setOffset(0);
     } else if (key === "down") move(1);
     else if (key === "up") move(-1);
@@ -187,11 +205,7 @@ export function ApplicationReferenceSheet(props: {
             ? "Keyboard shortcuts"
             : "What's new"
       }
-      footer={
-        page() === "help"
-          ? "Tab shortcuts · ↑↓ scroll · Esc back"
-          : "Tab switch sheet · ↑↓ scroll · Esc back"
-      }
+      footer={`Tab ${page() === "help" ? "shortcuts" : page() === "shortcuts" ? "what’s new" : "help"} · ↑↓ scroll · Esc back`}
       zIndex={100}
       onDismiss={props.onClose}
     >
@@ -211,6 +225,7 @@ export function ApplicationReferenceSheet(props: {
         flexDirection="column"
         overflow="hidden"
         onMouseScroll={(event) => {
+          if (!event.scroll) return;
           event.preventDefault();
           move(event.scroll.direction === "up" ? -3 : 3);
         }}

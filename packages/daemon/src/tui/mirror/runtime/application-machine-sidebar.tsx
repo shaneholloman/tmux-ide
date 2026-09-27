@@ -1,3 +1,4 @@
+import { CHROME_ACTIONS, SIDEBAR_ACTIONS } from "../workspace/application-action-descriptions.ts";
 import { createAgentStatusMarker } from "../ui/agent-status-marker.ts";
 import type { TmuxServerDescriptor, TmuxServerScope } from "@tmux-ide/contracts";
 import { fleetHostColor, summarizeFleetActivity } from "./fleet-presentation.ts";
@@ -342,7 +343,7 @@ export function ApplicationMachineSidebar(props: {
             l: "right",
             g: event.shift ? "end" : "home",
             "/": "search",
-            "?": "help",
+            [SIDEBAR_ACTIONS.help.key]: "help",
             question: "help",
           } as Record<string, string>
         )[key] ?? key;
@@ -365,9 +366,9 @@ export function ApplicationMachineSidebar(props: {
         "return",
         "space",
         "escape",
-        "a",
-        "r",
-        "d",
+        SIDEBAR_ACTIONS.add.key,
+        SIDEBAR_ACTIONS.retry.key,
+        SIDEBAR_ACTIONS.disconnect.key,
         "f",
       ].includes(key)
     )
@@ -387,7 +388,7 @@ export function ApplicationMachineSidebar(props: {
       props.model.onBlur?.();
       return true;
     }
-    if (key === "a") {
+    if (key === SIDEBAR_ACTIONS.add.key) {
       props.model.onAddMachine?.();
       return true;
     }
@@ -402,9 +403,9 @@ export function ApplicationMachineSidebar(props: {
         );
       return true;
     }
-    if (key === "r" || key === "d") {
+    if (key === SIDEBAR_ACTIONS.retry.key || key === SIDEBAR_ACTIONS.disconnect.key) {
       if (row.group.id !== "local") {
-        if (key === "r") props.model.onRetryMachine?.(row.group.id);
+        if (key === SIDEBAR_ACTIONS.retry.key) props.model.onRetryMachine?.(row.group.id);
         else props.model.onDisconnectMachine?.(row.group.id);
       }
       return true;
@@ -456,12 +457,17 @@ export function ApplicationMachineSidebar(props: {
         <text fg={props.theme.roles.text.secondary}>{" Machines"}</text>
         <box flexGrow={1} />
         <Show when={props.model.tabs?.().length && props.width >= 28}>
-          <KeyHint theme={props.theme} keys="F9" label="Tabs" quiet />
+          <KeyHint
+            theme={props.theme}
+            keys={CHROME_ACTIONS.tabs.keys}
+            label={CHROME_ACTIONS.tabs.label}
+            quiet
+          />
         </Show>
         <KeyHint
           theme={props.theme}
-          keys="?"
-          label={props.width >= 20 ? "Help" : undefined}
+          keys={SIDEBAR_ACTIONS.help.keys}
+          label={props.width >= 20 ? SIDEBAR_ACTIONS.help.label : undefined}
           quiet
           button
           onPress={() => props.onHelp?.("mouse")}
@@ -653,8 +659,8 @@ export function ApplicationMachineSidebar(props: {
       <Show when={props.model.onOpenSwitcher}>
         <KeyHint
           theme={props.theme}
-          keys="F6"
-          label="Sessions"
+          keys={CHROME_ACTIONS.sessions.keys}
+          label={CHROME_ACTIONS.sessions.label}
           width={props.width}
           quiet
           button
@@ -664,8 +670,8 @@ export function ApplicationMachineSidebar(props: {
       <Show when={props.model.onOpenAttention}>
         <KeyHint
           theme={props.theme}
-          keys="F7"
-          label={`Attention (${props.model.groups().reduce((sum, group) => sum + (group.state === "ready" ? (group.agents ?? []).filter((agent) => agent.attention && !agent.disabled).length : 0), 0)})`}
+          keys={CHROME_ACTIONS.attention.keys}
+          label={`${CHROME_ACTIONS.attention.label} (${props.model.groups().reduce((sum, group) => sum + (group.state === "ready" ? (group.agents ?? []).filter((agent) => agent.attention && !agent.disabled).length : 0), 0)})`}
           width={props.width}
           quiet
           button
@@ -682,8 +688,8 @@ export function ApplicationMachineSidebar(props: {
             </text>
             <KeyHint
               theme={props.theme}
-              keys="R"
-              label="Retry connection"
+              keys={SIDEBAR_ACTIONS.retry.keys}
+              label={SIDEBAR_ACTIONS.retry.label}
               width={props.width}
               quiet
               button
@@ -691,8 +697,8 @@ export function ApplicationMachineSidebar(props: {
             />
             <KeyHint
               theme={props.theme}
-              keys="D"
-              label="Disconnect"
+              keys={SIDEBAR_ACTIONS.disconnect.keys}
+              label={SIDEBAR_ACTIONS.disconnect.label}
               width={props.width}
               quiet
               button
@@ -705,8 +711,8 @@ export function ApplicationMachineSidebar(props: {
         {(add) => (
           <KeyHint
             theme={props.theme}
-            keys="A"
-            label="Add machine"
+            keys={SIDEBAR_ACTIONS.add.keys}
+            label={SIDEBAR_ACTIONS.add.label}
             width={props.width}
             quiet
             button

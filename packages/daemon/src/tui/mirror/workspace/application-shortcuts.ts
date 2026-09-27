@@ -1,3 +1,8 @@
+import {
+  HOME_ACTIONS,
+  CHROME_ACTIONS,
+  SIDEBAR_ACTIONS,
+} from "./application-action-descriptions.ts";
 import { applicationCommandDescription } from "./application-command-description.ts";
 
 export interface ApplicationShortcut {
@@ -12,16 +17,22 @@ export const APPLICATION_SHORTCUTS: readonly ApplicationShortcut[] = [
     const description = applicationCommandDescription(command);
     return { category: "Application", label: description.label, keys: description.shortcut! };
   }),
-  { category: "Application", label: "Commands", keys: "F5" },
-  { category: "Application", label: "Show / hide sidebar", keys: "F10" },
-  { category: "Application", label: "Agent attention", keys: "F7" },
+  { category: "Application", ...CHROME_ACTIONS.commands },
+  { category: "Application", ...CHROME_ACTIONS.sidebar },
+  { category: "Application", ...CHROME_ACTIONS.attention },
   { category: "Application", label: "Sidebar / Sessions when hidden", keys: "Ctrl+G" },
   { category: "Terminals", label: "Open link", keys: "Shift+click" },
   { category: "Terminals", label: "Select and copy text", keys: "Shift+drag" },
-  { category: "Home", label: "Find an agent or workspace", keys: "/" },
-  { category: "Home", label: "Cycle machine filter", keys: "f" },
-  { category: "Home", label: "Toggle attention filter", keys: "a" },
-  { category: "Home", label: "Open selected agent", keys: "Enter" },
+  ...Object.values(HOME_ACTIONS).map((action) => ({
+    category: "Home",
+    label: action.description,
+    keys: action.keys,
+  })),
+  ...Object.values(SIDEBAR_ACTIONS).map((action) => ({
+    category: "Sidebar (when focused)",
+    label: action.description,
+    keys: action.keys,
+  })),
   { category: "Command and session menus", label: "Search actions or sessions", keys: "Type" },
   { category: "Command and session menus", label: "Choose a result", keys: "↑ / ↓" },
   { category: "Command and session menus", label: "Activate selected result", keys: "Enter" },
