@@ -65,67 +65,61 @@ panes:
 
 ## Architecture
 
-The project is written in TypeScript. Source lives in `src/`, compiled output in `dist/`. Tests run via Node's `--experimental-strip-types`; the published package ships compiled JS from `tsc`.
+This TypeScript monorepo uses pnpm and Turbo. The terminal CLI/daemon is the
+current npm release surface; web and desktop packages have separate development
+and validation paths. See `ARCHITECTURE.md` for import direction and
+`eslint.config.js` for enforced package boundaries.
 
-### Core CLI
+### CLI and daemon
 
-- `bin/cli.js` — CLI entry point and top-level error boundary (stays JS, imports from `dist/`)
-- `src/launch.ts` — Launch orchestration for tmux sessions
-- `src/restart.ts` — Stop + relaunch flow
-- `src/init.ts` — Scaffolds `.tmux-ide/workspace.yml` with smart detection
-- `src/stop.ts` — Kills the tmux session
-- `src/attach.ts` — Reattach to running session
-- `src/send.ts` — Send messages to panes by name/title/role/ID
-- `src/config.ts` — Programmatic config mutations
-- `src/status.ts`, `src/inspect.ts`, `src/validate.ts`, `src/detect.ts`, `src/ls.ts`, `src/doctor.ts`
+- `bin/cli.ts` — CLI source; `scripts/build-cli.mjs` bundles it into `bin/cli.js`.
+  Edit source rather than generated output.
+- `packages/daemon/src/` — CLI operations (`launch.ts`, `init.ts`, `stop.ts`,
+  `attach.ts`, `send.ts`, `config.ts`, `inspect.ts`) and daemon implementation.
+- `packages/daemon/src/lib/canonical-daemon.ts` and
+  `packages/daemon/src/lib/canonical-daemon-bootstrap.ts` — canonical ownership,
+  discovery and bootstrap. Use the supported CLI rather than launching internal
+  daemon modules directly.
+- `packages/daemon/src/command-center/` — HTTP/WebSocket APIs and resource/action
+  handlers; `server.ts` composes the server.
+- `packages/daemon/src/terminal/` — tmux mirroring, canonical session runtime,
+  terminal delivery and native-grid integration.
+- `packages/daemon/src/schemas/` — daemon-local schemas and legacy config support.
+- `packages/daemon/dist/` — compiled daemon output shipped with the root package.
 
-### Daemon & Process Lifecycle
+### Contracts and shared packages
 
-- `src/lib/daemon.ts` — Unified background process: pane monitor + command-center HTTP server. Entry: `node dist/lib/daemon.js <session> [port]`
-- `src/lib/daemon-watchdog.ts` — Crash recovery wrapper: respawns daemon on crash with exponential backoff (1s→30s cap, 5 crashes/60s limit). Zero business imports.
-- `src/lib/session-monitor.ts` — Pure helper functions (computePortPanes, computeAgentStates) used by daemon.ts
+- `packages/contracts/` — shared wire schemas, resource vocabulary and visual tokens.
+- `packages/core/` — renderer-neutral application models.
+- `packages/daemon-client/` — client connections, resource replication and workspace clients.
+- `packages/presentation/` — shared renderer-neutral presentation models.
+- `packages/sdk/` — typed host-neutral SDK built from shared contracts.
+- `packages/tmux-bridge/` — tmux bridge package.
 
-### Schemas
+### User interfaces
 
-- `src/schemas/ide-config.ts` — Zod schemas for legacy `ide.yml` compatibility
-- `src/schemas/domain.ts` — Zod schemas for runtime events, panes, and agent details
+- `packages/daemon/src/tui/mirror/` — production OpenTUI/Solid Home and Terminals
+  UI; `runtime/` owns application integration, `ui/` shared primitives,
+  `workspace/` workspace presentation, and `features/` optional feature modules.
+- `packages/daemon/src/widgets/` — explorer, changes, preview, config, setup and
+  sidebar widgets; `resolve.ts` resolves entries and `lib/` holds shared helpers.
+- `apps/desktop-renderer/`, `apps/web-workspace/`, `apps/electron-shell/` — separate
+  web/desktop surfaces; not prerequisites for the terminal-only release gate.
+- Do not add an external or closed-source canvas SDK to the core, TUI or web GUI.
 
-### Command Center (REST API + SSE + WebSocket)
+### Development, native inputs and documentation
 
-- `src/command-center/server.ts` — Hono REST API with SSE event streaming
-- `src/command-center/discovery.ts` — Session discovery and project detail
-- `src/command-center/pane-mirror.ts` — WebSocket terminal mirroring (raw ANSI)
-- `src/command-center/schemas.ts` — Request validation schemas
+- `docs/guides/development-worktrees.md` — isolated `pnpm dev:instance` workflow;
+  keep development daemons/tmux servers separate from production sessions.
+- `patches/README.md` — dependency/native maintenance inventory and upgrade proofs.
+- `native/tmux/provenance.json` — bundled tmux source and patch identity.
+- `scripts/` — build, installed-package, live testdrive and qualification tools.
+- `templates/` — workspace presets; `docs/content/docs/` — user-facing docs.
+- `.github/workflows/ci.yml` — contributor CI; `release-binaries.yml` and
+  `release.yml` in the same directory own runtime and npm publication.
 
-### Widgets (OpenTUI/Solid TUI)
-
-- `src/widgets/resolve.ts` — Widget type → entry point resolution
-- `src/widgets/lib/` — Shared: theme, pane-comms, watcher, git, files, config-model
-- `src/widgets/explorer/` — File tree navigator
-- `src/widgets/costs/` — Token/cost tracking
-- `src/widgets/changes/` — Git diff viewer
-- `src/widgets/preview/` — File preview
-- `src/widgets/config/` — Interactive TUI config editor
-- `src/widgets/setup/` — Setup wizard
-
-### Native macOS App (in development)
-
-- `app/` — Swift/SwiftUI native gateway app with Ghostty terminal embedding
-- `app/project.yml` — XcodeGen build config
-- `app/TmuxIde/` — App source (services, models, UI, terminal bridge)
-- Consumes command-center REST/SSE/WebSocket APIs
-- Tiled terminal workbench UI (workspace > rows > panes)
-- Infinite-canvas experiments are outside the current architecture. Do not add
-  an external or closed-source canvas SDK to the core, TUI, or web GUI.
-
-### Other
-
-- `src/lib/tmux.ts` — Shared tmux process helpers
-- `src/lib/yaml-io.ts` — Config read/write
-- `src/lib/errors.ts` — Error class hierarchy
-- `templates/` — Preset configs
-- `docs/content/docs/` — User-facing docs site
-- `.github/workflows/ci.yml` — CI quality gates
+Tests use package-specific Vitest, Bun and Node runners. Use the scripts in
+`package.json` and the affected package instead of assuming one universal runner.
 
 ## Programmatic CLI Reference
 
@@ -308,7 +302,10 @@ pnpm test
 pnpm pack:check
 ```
 
-- Main release gate: `pnpm check`
+- Broad contributor gate: `pnpm check`
+- Terminal release gate: `pnpm release:opentui:check`; follow `RELEASE.md`.
+  `prepublishOnly` runs this focused gate and the prepublish artifact check,
+  not the broad contributor gate. Web/desktop checks remain independent signals.
 - Docs build: `pnpm docs:build`
 
 ### Best practices

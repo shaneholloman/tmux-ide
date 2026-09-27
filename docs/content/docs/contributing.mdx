@@ -49,7 +49,10 @@ What they do:
 - `pnpm check` runs the main contributor gate, including installed-runtime, docs, native and desktop checks
 - `pnpm release:opentui:check` separately qualifies terminal release artifacts and the installed journey
 
-`npm publish` is guarded by `prepublishOnly`, so publishing runs `pnpm check` automatically before npm actually publishes the package.
+`npm publish` is guarded by `prepublishOnly`, which runs `pnpm release:opentui:check`
+and `scripts/prepublish-opentui-check.mjs`. It does not run the broad `pnpm check`
+gate automatically. Deferred web/desktop checks remain independent CI signals.
+See the [native and dependency maintenance inventory](https://github.com/wavyrai/tmux-ide/blob/main/patches/README.md) before changing native inputs or dependency patches.
 
 ## Manual Smoke Tests
 
@@ -151,14 +154,17 @@ explains resource bounds, evidence and cancellation limits. These jobs supplemen
 
 ## Release Workflow
 
-Before publishing a release:
+Follow the current [terminal release checklist](https://github.com/wavyrai/tmux-ide/blob/main/RELEASE.md).
+Confirm the intended version, dist-tag and release notes; run
+`pnpm release:opentui:check`, `pnpm docs:build` and `git diff --check` against the
+candidate. Run the broader `pnpm check` for contributor changes and record its
+result separately; it is not the terminal publication workflow's gate.
 
-1. Update `CHANGELOG.md` under `Unreleased`.
-2. Confirm the version in `package.json`.
-3. Run `pnpm check`.
-4. Do the manual smoke test if the release includes CLI behavior changes.
-5. Move `Unreleased` notes into the final version entry.
-6. Tag and publish the release.
+The binary and npm workflows require matching release identity. Runtime artifacts
+must identify the candidate commit, version and platform before npm publication.
+Use the repository release workflows rather than bypassing their artifact checks
+with a standalone publish. Stable releases additionally require the native notifier
+artifact; see `.github/workflows/release.yml` for the enforced conditions.
 
 The repository root also includes:
 

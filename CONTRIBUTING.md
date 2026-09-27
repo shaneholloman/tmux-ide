@@ -30,7 +30,9 @@ pnpm check
 
 `pnpm check` is the main contributor gate: workspace lint/format/types, package and runtime tests, docs, packing, installed-runtime qualification and native/desktop smoke checks. `pnpm release:opentui:check` separately qualifies the terminal release artifacts and installed journey. Keep both results tied to the exact candidate commit.
 
-`npm publish` is guarded by `prepublishOnly`, so a publish attempt runs the same full check path automatically.
+`npm publish` is guarded by `prepublishOnly`, which runs `pnpm release:opentui:check` and `scripts/prepublish-opentui-check.mjs`, not the broad `pnpm check` gate. Follow [RELEASE.md](RELEASE.md) for the terminal release checklist. Deferred web/desktop checks remain independent CI signals.
+
+Consult the [native and dependency maintenance inventory](patches/README.md) before changing OpenTUI, bundled tmux or terminal parser inputs. It records pins, patches, regression evidence and upgrade/removal conditions.
 
 See [isolated development CI](scripts/development-ci.md) for scoped lanes,
 resource bounds and evidence requirements.
