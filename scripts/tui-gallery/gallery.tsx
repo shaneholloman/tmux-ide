@@ -19,6 +19,7 @@ import {
   createKeyboardRouteOwner,
   KeyboardRouteProvider,
 } from "../../packages/daemon/src/tui/mirror/ui/keyboard-router.tsx";
+import { WorkingSessionsStory } from "./working-sessions.tsx";
 import { PaneHeaderStory, FooterStory } from "./chrome-stories.tsx";
 import { GALLERY_STATES, galleryAgents, galleryMachines } from "./fixtures.ts";
 
@@ -66,7 +67,7 @@ export function TuiGallery(props: {
       return;
     }
     if (event.ctrl || event.meta) return;
-    if (["1", "2", "3", "4", "5"].includes(event.name)) {
+    if (["1", "2", "3", "4", "5", "6"].includes(event.name)) {
       setStory(Number(event.name) - 1);
       reset();
     } else if (event.name === "t") setLight((v) => !v);
@@ -95,11 +96,17 @@ export function TuiGallery(props: {
       <text fg={theme().colors.foreground}>
         Production TUI gallery · {interacting() ? "INTERACT" : "CONTROLS"} · F12 toggle
       </text>
-      <text fg={theme().colors.mutedForeground}>1 Home 2 Sidebar 3 Help 4 Pane 5 Footer</text>
+      <text fg={theme().colors.mutedForeground}>
+        1 Home 2 Sidebar 3 Help 4 Pane 5 Footer 6 Work
+      </text>
       <text fg={theme().colors.mutedForeground}>t Theme v Size s State r Reset q Quit</text>
       <text fg={theme().colors.foreground}>
-        {["Home", "Sidebar", "Help", "Pane header", "Footer"][story()]} · {GALLERY_STATES[state()]}{" "}
-        · {light() ? "light" : "dark"} · {width()}×{height()}
+        {
+          ["Home", "Sidebar", "Help", "Pane header", "Footer", "Working sessions prototype"][
+            story()
+          ]
+        }{" "}
+        · {GALLERY_STATES[state()]} · {light() ? "light" : "dark"} · {width()}×{height()}
       </text>
       <KeyboardRouteProvider owner={owner}>
         <For each={[revision()]}>
@@ -230,6 +237,9 @@ function GalleryStory(props: {
         </Match>
         <Match when={props.story === 4}>
           <FooterStory {...props} state={GALLERY_STATES[props.state]!} />
+        </Match>
+        <Match when={props.story === 5}>
+          <WorkingSessionsStory {...props} state={GALLERY_STATES[props.state]!} />
         </Match>
       </Switch>
     </box>

@@ -247,3 +247,110 @@ test("footer actions remain simulated and controls mode owns story selection", a
   await setup.mockMouse.click(x + 2, y, 0);
   expect(actions).toEqual(["Sessions (simulated)", "Sessions (simulated)"]);
 });
+
+for (const light of [false, true]) {
+  for (const state of [0, 3, 4, 5]) {
+    test(`working sessions prototype: light=${light}, state=${state}`, async () => {
+      const setup = await renderForTest(
+        () => (
+          <TuiGallery
+            width={60}
+            height={26}
+            initial={{ story: 5, light, narrow: true, state }}
+            onQuit={() => {}}
+          />
+        ),
+        { width: 60, height: 26 },
+      );
+      await setup.renderOnce();
+      const frame = setup.captureCharFrame();
+      expectFrameBounds(frame, 60, 26);
+      expect(frame).toContain("Working sessions");
+      expect(frame).toContain("Browse all sessions");
+      expect(frame).not.toContain("�");
+      if (state === 0) {
+        expect(frame).toContain("new result");
+        expect(frame).toContain("needs input");
+        expect(frame).toContain("Spark · development");
+      }
+      if (state === 3) expect(frame).toContain("offline");
+      if (state === 4) expect(frame).toContain("No working sessions yet");
+    });
+  }
+}
+test("working session results clear only on open; attention survives opening", async () => {
+  const actions: string[] = [];
+  const setup = await renderForTest(
+    () => (
+      <TuiGallery
+        width={60}
+        height={26}
+        initial={{ story: 5 }}
+        onQuit={() => {}}
+        onAction={(value) => actions.push(value)}
+      />
+    ),
+    { width: 60, height: 26 },
+  );
+  await setup.renderOnce();
+  key(setup, "return");
+  expect(actions).toEqual([]);
+  key(setup, "f12");
+  key(setup, "down");
+  key(setup, "down");
+  await setup.renderOnce();
+  expect(setup.captureCharFrame()).toContain("new result");
+  key(setup, "return");
+  await setup.renderOnce();
+  expect(setup.captureCharFrame()).not.toContain("new result");
+  expect(actions).toEqual(["Open documentation · Spark · default (simulated)"]);
+  key(setup, "up");
+  key(setup, "return");
+  await setup.renderOnce();
+  expect(setup.captureCharFrame()).toContain("needs input");
+  key(setup, "f6");
+  expect(actions.at(-1)).toBe("Browse all sessions (simulated)");
+});
+test("short working-session viewport keeps End target visible and offline cannot open", async () => {
+  const actions: string[] = [];
+  const setup = await renderForTest(
+    () => (
+      <TuiGallery
+        width={60}
+        height={14}
+        initial={{ story: 5, interacting: true, state: 3 }}
+        onQuit={() => {}}
+        onAction={(value) => actions.push(value)}
+      />
+    ),
+    { width: 60, height: 14 },
+  );
+  key(setup, "end");
+  await setup.renderOnce();
+  expect(setup.captureCharFrame()).toContain("Spark · development");
+  key(setup, "return");
+  expect(actions).toEqual(["Unavailable: Spark · development (simulated)"]);
+});
+test("working-session pointer opens once and acknowledges the same result as Enter", async () => {
+  const actions: string[] = [];
+  const setup = await renderForTest(
+    () => (
+      <TuiGallery
+        width={60}
+        height={26}
+        initial={{ story: 5, interacting: true }}
+        onQuit={() => {}}
+        onAction={(value) => actions.push(value)}
+      />
+    ),
+    { width: 60, height: 26 },
+  );
+  await setup.renderOnce();
+  const lines = setup.captureCharFrame().split("\n");
+  const y = lines.findIndex((line) => line.includes("documentation"));
+  expect(y).toBeGreaterThan(0);
+  await setup.mockMouse.click(5, y, 0);
+  await setup.renderOnce();
+  expect(actions).toEqual(["Open documentation · Spark · default (simulated)"]);
+  expect(setup.captureCharFrame()).not.toContain("new result");
+});
