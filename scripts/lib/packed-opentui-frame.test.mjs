@@ -127,3 +127,39 @@ test("accepts contextual terminal chrome without discovery chatter", () => {
   ])
     assert.equal(frameShowsTerminalFocus(invalid), false);
 });
+
+test("accepts shortcut tabs only with terminal window chrome and terminal footer", () => {
+  const frame =
+    "tmux-ide F1 Home F2 Terminals Local · main\n ● zsh … + New window\n F6 Sessions F7 Attention F5 Commands";
+  assert.equal(frameShowsTerminalFocus(frame), true);
+  for (const invalid of [
+    frame.replace("F2 Terminals", "F1 Home"),
+    frame.replace("+ New window", ""),
+    frame.replace("F6 Sessions", "↑↓ Select"),
+    frame.replace("Local · main", "Reconnecting"),
+  ])
+    assert.equal(frameShowsTerminalFocus(invalid), false);
+});
+
+test("recognizes shared agent rows without redundant status words", () => {
+  const frame =
+    "1 observed agent · 0 need attention · 0 working\n  Codex\n  Local · Default · journey-beta\n Local / Default / journey-beta · Enter open";
+  assert.equal(frameShowsSelectedHomeAgent(frame, "Codex", "journey-beta", "idle"), true);
+  for (const invalid of [
+    frame.replace("  Codex", "  Other"),
+    frame.replace("Local · Default", "Remote · Default"),
+    frame.replace("Default · journey-beta", "Default · another"),
+    frame.replace("journey-beta · Enter", "another · Enter"),
+    frame.replace("  Codex", "⠋ Codex"),
+  ])
+    assert.equal(frameShowsSelectedHomeAgent(invalid, "Codex", "journey-beta", "idle"), false);
+  assert.equal(
+    frameShowsSelectedHomeAgent(
+      frame.replace("  Codex", "⠋ Codex"),
+      "Codex",
+      "journey-beta",
+      "working",
+    ),
+    true,
+  );
+});

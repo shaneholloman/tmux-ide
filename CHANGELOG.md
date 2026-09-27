@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2.9.0-beta.42
+
+- Group agents across machines in one sidebar section, with shared rows and quiet machine/session context. Keep separate destinations for agents in the same session.
+- Refresh Home with a flat agent list, search accent rail, Quick actions, and a dismissible tip. Compact layouts preserve agent navigation.
+- Simplify Home/Terminals tabs with clearer shortcuts and stable attention spacing. Reuse shared input surfaces in dialogs.
+- Keep unavailable agents explicit and prevent navigation to stale panes.
+
 ## 2.9.0-beta.41
 
 - Working sessions appear above machine discovery, with shared two-line session rows, machine/server context, and consistent status icons. Tab switches sidebar keyboard sections.

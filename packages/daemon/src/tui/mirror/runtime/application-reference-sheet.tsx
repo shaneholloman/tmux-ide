@@ -17,6 +17,15 @@ import {
 
 const releases = [
   {
+    version: "2.9.0-beta.42",
+    lines: [
+      "One Agents sidebar across machines, with separate rows for each agent.",
+      "A cleaner Home with shared search, Quick actions and a dismissible tip.",
+      "Quieter Home/Terminals tabs with clear shortcuts and stable attention markers.",
+      "Compact layouts preserve navigation; unavailable agents stay explicit.",
+    ],
+  },
+  {
     version: "2.9.0-beta.41",
     lines: [
       "Working sessions with clear machine/server context and shared status icons.",
