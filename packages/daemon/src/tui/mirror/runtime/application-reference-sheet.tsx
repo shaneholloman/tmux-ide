@@ -17,6 +17,15 @@ import {
 
 const releases = [
   {
+    version: "2.9.0-beta.41",
+    lines: [
+      "Working sessions with clear machine/server context and shared status icons.",
+      "New-result markers for observed background completions; open to acknowledge.",
+      "Tab switches sidebar sections. Browse all sessions with F6.",
+      "Using tmux-ide in Commands, with reversible Help and shortcut navigation.",
+    ],
+  },
+  {
     version: "2.9.0-beta.40",
     lines: [
       "Using tmux-ide: a scrollable guide to machines, sessions and agents.",

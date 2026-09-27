@@ -11279,7 +11279,7 @@ var require_package = __commonJS({
   "package.json"(exports, module) {
     module.exports = {
       name: "tmux-ide",
-      version: "2.9.0-beta.40",
+      version: "2.9.0-beta.41",
       description: "A visual, agent-aware IDE for any tmux session, with optional workspace presets",
       type: "module",
       bin: {
@@ -11339,7 +11339,7 @@ var require_package = __commonJS({
         "test:pack-installed": "node scripts/pack-check-run.mjs",
         "release:opentui:check": "node scripts/opentui-release-check.mjs",
         "check:native-deps": "node packages/daemon/scripts/check-native-deps.mjs",
-        check: "pnpm run lint:workspace && pnpm run check:control-bytes && pnpm run format:check && pnpm run typecheck:workspace && pnpm run test:postinstall && pnpm run test:portable-release-contract && pnpm run test:benchmark-comparative && pnpm run test:contracts-initializer-purity && pnpm run test:unit && pnpm run test:tui-testdrive && pnpm run test:product-test-rig && pnpm run test:daemon-bun && pnpm run test:tui-renderer && pnpm run test:workbench-dock-package && pnpm run test:pane-frame-package && pnpm run docs:build && pnpm run pack:check && pnpm run test:pack-installed && pnpm run check:native-deps && pnpm run smoke:desktop",
+        check: "pnpm run lint:workspace && pnpm run check:control-bytes && pnpm run format:check && pnpm run typecheck:workspace && pnpm run test:postinstall && pnpm run test:portable-release-contract && pnpm run test:benchmark-comparative && pnpm run test:contracts-initializer-purity && pnpm run test:unit && pnpm run test:tui-testdrive && pnpm run test:product-test-rig && pnpm run test:daemon-bun && pnpm run test:tui-renderer && pnpm run typecheck:tui-gallery && pnpm run test:tui-gallery && pnpm run test:workbench-dock-package && pnpm run test:pane-frame-package && pnpm run docs:build && pnpm run pack:check && pnpm run test:pack-installed && pnpm run check:native-deps && pnpm run smoke:desktop",
         postinstall: "node scripts/postinstall.js",
         docs: "turbo run dev --filter=@tmux-ide/docs",
         "demo:tui": "bun --preload @opentui/solid/preload docs/scripts/render-tui-demo.tsx",
@@ -11374,7 +11374,10 @@ var require_package = __commonJS({
         "test:postinstall": "node --test scripts/postinstall-daemon-upgrade.test.mjs",
         "test:development-isolation": "tsx scripts/lib/development-isolation-qualification.ts",
         "test:development-isolation-unit": "node --test scripts/lib/development-isolation-resources.test.mjs",
-        "test:development-ci": "node --test scripts/lib/development-ci.test.mjs"
+        "test:development-ci": "node --test scripts/lib/development-ci.test.mjs",
+        "gallery:tui": "bun --preload @opentui/solid/preload scripts/tui-gallery/index.tsx",
+        "test:tui-gallery": "bun test --preload @opentui/solid/preload --preload ./packages/daemon/test-support/opentui-renderer-preload.ts ./scripts/tui-gallery/gallery.test.tsx",
+        "typecheck:tui-gallery": "tsc --noEmit -p scripts/tsconfig.tui-gallery.json"
       },
       keywords: [
         "tmux",

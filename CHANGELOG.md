@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2.9.0-beta.41
+
+- Working sessions appear above machine discovery, with shared two-line session rows, machine/server context, and consistent status icons. Tab switches sidebar keyboard sections.
+- Background sessions show new results after an observed agent completion. Successful opening acknowledges the result; unavailable activity coverage remains explicit.
+- Using tmux-ide is discoverable through Commands. Help, shortcuts and What's new form a reversible navigation cycle, with Home activity filters included in shortcut help.
+- Add a development gallery of production components, shared design-contract checks, and updated contributor/native-dependency guidance.
+
 ## 2.9.0-beta.35
 
 - F10 toggles the sidebar, with the shortcut shown in Commands and keyboard help.
