@@ -45,11 +45,31 @@ function pane(overrides: Partial<TerminalPaneChromePane>): TerminalPaneChromePan
   };
 }
 
+const endpoint = (semanticPaneId: string) => ({
+  kind: "pane" as const,
+  environmentId: "00000000-0000-4000-8000-000000000001",
+  serverScope: {
+    serverId: `tmux-server.${"a".repeat(32)}`,
+    generation: "00000000-0000-4000-8000-000000000002",
+  },
+  workspaceName: "test",
+  paneLifetimeId:
+    semanticPaneId === "pane.editor"
+      ? "00000000-0000-4000-8000-000000000003"
+      : "00000000-0000-4000-8000-000000000004",
+  semanticPaneId,
+});
+
 function interaction(
   overrides: Partial<PaneInteractionProjection> = {},
 ): PaneInteractionProjection {
   return {
     paneId: "pane.tests",
+    endpoint: endpoint("pane.tests"),
+    sourceEndpoint: endpoint("pane.editor"),
+    destinationEndpoint: endpoint("pane.tests"),
+    effect: { kind: "unknown" },
+    operationKey: "test-send",
     direction: "incoming",
     sourcePaneId: "pane.editor",
     destinationPaneId: "pane.tests",
@@ -201,7 +221,11 @@ describe("terminal pane chrome projection", () => {
           chromeState: projectPaneChromeState({
             keyboardFocused: false,
             inputOwned: false,
-            interaction: interaction({ operationKind: "workspace.pane.read", phase: "observed" }),
+            interaction: interaction({
+              operationKind: "workspace.pane.read",
+              phase: "observed",
+              effect: { kind: "snapshot-produced" },
+            }),
           }),
         },
       ],
