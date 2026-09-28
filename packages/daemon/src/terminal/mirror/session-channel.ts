@@ -47,6 +47,7 @@ import { textToHexKeys } from "../protocol/control.ts";
 import { InputCoalescer } from "../protocol/input-coalescer.ts";
 import { NativeGridCaptureReader, type NativeGridReadResult } from "./native-grid-reader.ts";
 import type { InputAction } from "../protocol/input-coalescer.ts";
+import type { OwnedViewerAdapter } from "./owned-viewer-adapter.ts";
 import {
   parseLayout,
   parseLayoutChange,
@@ -227,6 +228,7 @@ export interface MirrorFlowRecoveryObservation {
 }
 
 export interface SessionChannelOptions {
+  ownedViewer?: Pick<OwnedViewerAdapter, "bindIo" | "tryDispatch" | "dispose">;
   executeWindowLinkGuard?: (args: string[]) => Promise<{ status: number | null; stdout: string }>;
   session: string;
   createIo: (handlers: MirrorChannelHandlers) => MirrorChannelIo;
@@ -504,7 +506,10 @@ export class SessionChannel {
         ? (reply: { ok: boolean }) =>
             this.opts.onInputAccepted?.(action, Math.floor(performance.now() * 1_000), reply.ok)
         : undefined;
-      if (action.kind === "literal") {
+      if (this.trySendOwnedInput(action, onReply)) {
+        // The existing coalescer still owns ordering. Never replay an accepted
+        // native dispatch even when its attribution metadata is unavailable.
+      } else if (action.kind === "literal") {
         this.io.send(
           `send-keys -t ${action.pane} -H ${textToHexKeys(action.text).join(" ")}`,
           onReply,
@@ -528,6 +533,36 @@ export class SessionChannel {
     (flush) => queueMicrotask(flush),
   );
 
+  private trySendOwnedInput(
+    action: InputAction,
+    onReply?: (reply: { ok: boolean }) => void,
+  ): boolean {
+    const adapter = this.opts.ownedViewer;
+    if (!adapter) return false;
+    const birth = this.panesByRuntime.get(action.pane)?.descriptor?.nativePaneBirthId;
+    if (!birth) return false;
+    // Legacy callers may supply a tmux key expression. Only a single named key
+    // can be moved into structured argv without changing its interpretation.
+    if (action.kind === "key" && !/^[A-Za-z0-9_-]+$/.test(action.key)) return false;
+    const keys =
+      action.kind === "literal"
+        ? ["-H", ...textToHexKeys(action.text)]
+        : action.kind === "bytes"
+          ? ["-H", ...Array.from(action.data, (byte) => byte.toString(16).padStart(2, "0"))]
+          : [action.key];
+    return adapter.tryDispatch(
+      this.io,
+      {
+        paneId: action.pane,
+        paneBirthId: birth,
+        commands: [["send-keys", "-t", action.pane, ...keys]],
+        resultIndex: 0,
+        limits: { maxBytes: 65536, maxLines: 1024 },
+      },
+      onReply ?? (() => {}),
+    );
+  }
+
   constructor(opts: SessionChannelOptions) {
     this.opts = opts;
     this.io = opts.createIo({
@@ -535,6 +570,7 @@ export class SessionChannel {
       onNotify: (name, rest) => this.onNotify(name, rest),
       onExit: () => this.onChannelExit(),
     });
+    opts.ownedViewer?.bindIo(this.io);
     this.nativeGrid = new NativeGridCaptureReader({
       commandBoundedInline: this.io.commandListBoundedInline
         ? (command, limits, onReply) => {
@@ -1164,6 +1200,7 @@ export class SessionChannel {
     this.continueNotificationQueues.clear();
     this.discovery.dispose();
     this.input.flush();
+    this.opts.ownedViewer?.dispose();
     for (const pane of this.panesByRuntime.values()) {
       for (const sub of pane.subs) {
         if (!sub.closed) {
@@ -3668,6 +3705,7 @@ export class SessionChannel {
 
   private onChannelExit(): void {
     if (this.disposed) return;
+    this.opts.ownedViewer?.dispose();
     this.windowLinkAuthority?.dispose();
     this.nativeGrid.dispose();
     this.settleFirstJoin();

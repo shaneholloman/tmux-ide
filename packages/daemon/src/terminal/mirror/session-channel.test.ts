@@ -20,6 +20,7 @@ import type {
 import { PaneFeed } from "./pane-feed.ts";
 import { SessionChannel } from "./session-channel.ts";
 import type { MirrorFlowRecoveryObservation } from "./session-channel.ts";
+import type { SessionChannelOptions } from "./session-channel.ts";
 import type { MirrorOutputTiming } from "./control-channel.ts";
 import type { AtomicPaneSnapshotCollector } from "./control-channel.ts";
 import {
@@ -48,6 +49,8 @@ interface Rig {
 
 async function startedRig(
   options: {
+    ownedViewer?: SessionChannelOptions["ownedViewer"];
+    nativeBirth?: string;
     executeWindowLinkGuard?: (args: string[]) => Promise<{ status: number | null; stdout: string }>;
     onNativeClientActivity?: () => void;
     onOutputObserved?: (
@@ -64,6 +67,8 @@ async function startedRig(
   } = {},
 ): Promise<Rig> {
   const state = fixtureState();
+  if (options.nativeBirth)
+    state.descriptorRows = state.descriptorRows.map((row) => row + options.nativeBirth);
   const pendingSyncs: Array<() => void> = [];
   const recoveryClock = { nowMs: 0 };
   const pendingRecoveries: Rig["pendingRecoveries"] = [];
@@ -72,6 +77,7 @@ async function startedRig(
   const atomicHookValues = new Map<string, string>();
   let sim: SimulatedChannel | null = null;
   const channel = new SessionChannel({
+    ownedViewer: options.ownedViewer,
     session: FIXTURE.session,
     executeWindowLinkGuard: options.executeWindowLinkGuard,
     createIo: (handlers) => {
@@ -2949,6 +2955,53 @@ describe("window viewport scope", () => {
 });
 
 describe("input path", () => {
+  it.each([true, false])(
+    "preserves coalescing and single dispatch when native accepts=%s",
+    async (accepted) => {
+      const events: string[] = [];
+      const adapter = {
+        bindIo: vi.fn(),
+        dispose: vi.fn(() => {
+          events.push("disposed");
+        }),
+        tryDispatch: vi.fn<NonNullable<SessionChannelOptions["ownedViewer"]>["tryDispatch"]>(
+          (_io, request, reply) => {
+            events.push(request.commands[0]!.join(" "));
+            if (accepted) reply({ ok: false, lines: [] });
+            return accepted;
+          },
+        ),
+      };
+      const rig = await startedRig({ ownedViewer: adapter, nativeBirth: "11" });
+      expect(adapter.bindIo).toHaveBeenCalledExactlyOnceWith(rig.sim);
+      const handle = rig.channel.subscribePane("pane.alpha", () => {});
+      rig.sim.reply(["s"]);
+      rig.sim.reply(["0 0 100 50"]);
+      const before = rig.sim.written.length;
+      handle.sendText("hi");
+      handle.sendText("!");
+      handle.sendKey("Enter");
+      expect(events).toEqual(["send-keys -t %1 -H 68 69 21", "send-keys -t %1 Enter"]);
+      expect(rig.sim.written.slice(before)).toEqual(accepted ? [] : events);
+      expect(adapter.tryDispatch.mock.calls[0]![1]).toMatchObject({
+        paneId: "%1",
+        paneBirthId: "11",
+      });
+      handle.sendText("x");
+      await rig.channel.dispose();
+      expect(events.slice(-2)).toEqual(["send-keys -t %1 -H 78", "disposed"]);
+    },
+  );
+
+  it("keeps input on stock transport when physical birth is missing", async () => {
+    const adapter = { bindIo: vi.fn(), tryDispatch: vi.fn(), dispose: vi.fn() };
+    const rig = await startedRig({ ownedViewer: adapter });
+    rig.channel.sendKey("pane.alpha", "Enter");
+    expect(adapter.tryDispatch).not.toHaveBeenCalled();
+    expect(rig.sim.written.at(-1)).toBe("send-keys -t %1 Enter");
+    await rig.channel.dispose();
+  });
+
   it("coalesces literals per pane and sends named keys after pending literals", async () => {
     const rig = await startedRig();
     const handle = rig.channel.subscribePane("pane.alpha", () => {});
