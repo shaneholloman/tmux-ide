@@ -6,7 +6,7 @@ import {
   type InteractionReceipt,
   type InteractionEvidence,
 } from "@tmux-ide/contracts";
-import { canEnrichInteractionEvidence } from "@tmux-ide/core";
+import { canEnrichInteractionEvidence } from "@tmux-ide/core/interaction-evidence";
 import type { OwnedNativeInteractionDecision } from "./owned-native-interaction-bindings.ts";
 import type {
   InteractionReceiptDraft,
