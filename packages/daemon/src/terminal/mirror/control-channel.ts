@@ -75,6 +75,18 @@ interface NativeWrapperReplyState {
   settled: boolean;
 }
 
+/** Consumer exceptions cannot interrupt parsing or settlement of other FIFO requests. */
+function notifyNativeWrapper(
+  state: NativeWrapperReplyState,
+  reply: NativeViewerControlReply,
+): void {
+  try {
+    state.onReply(reply);
+  } catch {
+    // The request is already settled; keep draining the transport without replaying it.
+  }
+}
+
 export interface ControlReplyLimits {
   readonly maxBytes: number;
   readonly maxLines: number;
@@ -530,7 +542,7 @@ export class ControlChannelCore {
         sink.onReply({ ok: false, lines: [reason] });
       else if (sink.kind === "native-wrapper" && !sink.state.settled) {
         sink.state.settled = true;
-        sink.state.onReply({
+        notifyNativeWrapper(sink.state, {
           ok: false,
           lines: [],
           metadataStatus: sink.state.metadataStatus,
@@ -630,7 +642,7 @@ export class ControlChannelCore {
           }
           if (!state.settled && (event.kind === "error" || sink.index === state.resultIndex)) {
             state.settled = true;
-            state.onReply({
+            notifyNativeWrapper(state, {
               ok: event.kind === "end" && !sink.budget.overflowed,
               lines: sink.index === 0 ? [] : sink.budget.lines,
               metadataStatus: state.metadataStatus,

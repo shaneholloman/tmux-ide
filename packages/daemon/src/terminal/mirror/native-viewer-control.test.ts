@@ -241,6 +241,40 @@ describe("native wrapper FIFO boundaries", () => {
     });
     expect(c.pendingCount).toBe(0);
   });
+  it("isolates throwing native callbacks from later frames in the same feed", () => {
+    const c = core(),
+      next = vi.fn();
+    const throwing = vi.fn(() => {
+      throw new Error("consumer failed");
+    });
+    c.pushNativeWrapper({ ...identity, operationId }, request, throwing);
+    c.push({ kind: "inline", onReply: next, lines: [] });
+    expect(() =>
+      c.feed(block(1, [JSON.stringify(ack)]) + block(2, ["snapshot"]) + block(3, ["next"])),
+    ).not.toThrow();
+    expect(throwing).toHaveBeenCalledTimes(1);
+    expect(next).toHaveBeenCalledWith({ ok: true, lines: ["next"] });
+    expect(c.pendingCount).toBe(0);
+  });
+  it("drains every pending request after a native callback throws during failure", () => {
+    const c = core(),
+      next = vi.fn(),
+      other = vi.fn();
+    const throwing = vi.fn(() => {
+      throw new Error("consumer failed");
+    });
+    c.pushNativeWrapper({ ...identity, operationId }, request, throwing);
+    c.pushNativeWrapper({ ...identity, operationId }, request, other);
+    c.push({ kind: "inline", onReply: next, lines: [] });
+    expect(() => c.fail("gone")).not.toThrow();
+    expect(throwing).toHaveBeenCalledTimes(1);
+    expect(other).toHaveBeenCalledTimes(1);
+    expect(other.mock.calls[0]![0].ok).toBe(false);
+    expect(next).toHaveBeenCalledWith({ ok: false, lines: ["gone"] });
+    expect(c.pendingCount).toBe(0);
+    c.fail("again");
+    expect(throwing).toHaveBeenCalledTimes(1);
+  });
   it("caps captured rows and completes once on channel failure", () => {
     const c = core(),
       done = vi.fn();
