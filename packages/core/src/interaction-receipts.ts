@@ -293,7 +293,8 @@ export function interactionReceiptTargetLabel(
   const destination = receipt.evidence?.endpoints.destination;
   const source = receipt.evidence?.endpoints.source;
   if ("type" in receipt && receipt.type === "interaction.evidence") {
-    if (destination?.kind !== "pane") return "Unresolved pane";
+    if (destination?.kind !== "pane")
+      return destination?.kind === "native-pane" ? "Native pane" : "Unresolved pane";
     const kind = interactionActivityOperationKind(receipt);
     if (kind === null) return paneLabel(destination);
     return paneInteractionRelationshipLabel(
