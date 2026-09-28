@@ -36,6 +36,7 @@ import {
 import { WorkspaceMultiplexerAuthority } from "./workspace-multiplexer-verbs.ts";
 import {
   WorkspacePaneCreationAuthority,
+  createPinnedWorkspaceTmuxRunner,
   type WorkspacePaneTmuxAuthority,
 } from "./workspace-pane-creation.ts";
 import { WorkspaceRegistry } from "./workspace-registry.ts";
@@ -158,8 +159,9 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
       runAuthoredNative: createAuthoredNativeCommandRunner({
         environmentId: options.environmentId,
         serverScope: { serverId: options.serverId, generation },
+        canDispatch: () => !sessionMutationFence.active,
         observation: () => observationSelector,
-        runTmux: generationRun,
+        runPinnedTmux: createPinnedWorkspaceTmuxRunner(authority, { timeoutMs: 5_000 }),
       }),
     },
   });

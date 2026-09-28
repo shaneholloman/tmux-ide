@@ -31,15 +31,17 @@ function failurePrefix(error: unknown): string | null {
 export function createAuthoredNativeCommandRunner(options: {
   readonly environmentId: string;
   readonly serverScope: TmuxServerScope;
+  readonly canDispatch?: () => boolean;
   readonly observation: () => OwnerInteractionObservation | null;
-  readonly runTmux: (args: readonly string[], options?: WorkspaceTmuxRunOptions) => string;
+  readonly runPinnedTmux: (args: readonly string[], options?: WorkspaceTmuxRunOptions) => string;
 }) {
   return (
     request: AuthoredNativeCommandRequest,
     _runOptions?: WorkspaceTmuxRunOptions,
   ): { readonly output: string } | null => {
+    if (options.canDispatch && !options.canDispatch()) return null;
     const observer = options.observation();
-    if (!observer?.ownedOperationTransport) return null;
+    if (!observer?.ownedOperationTransport || !observer.ownedOperationEpochGuard) return null;
     const native = nativePaneIdentity(observer.nativeServerEpoch, request.targetBirthId);
     const destination = request.context.interactionContext.destination;
     if (
@@ -93,12 +95,12 @@ export function createAuthoredNativeCommandRunner(options: {
     };
     let output: string;
     try {
-      output = options.runTmux(
+      output = options.runPinnedTmux(
         [
           "tmux-ide-events",
           "-i",
           ";",
-          ...nativeOperationWrapperArgs(request.operationId, request.commands),
+          ...nativeOperationWrapperArgs(request.operationId, request.commands, native.serverEpoch),
         ],
         { preserveTrailingNewlines: true },
       );

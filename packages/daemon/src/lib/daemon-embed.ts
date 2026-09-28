@@ -1680,8 +1680,9 @@ async function startEmbeddedDaemonGeneration(
           authoredNativeRunner = createAuthoredNativeCommandRunner({
             environmentId,
             serverScope: scope,
+            canDispatch: () => !sessionMutationFence.active,
             observation: () => observationSelector,
-            runTmux: nativeGenerationTmuxRunner,
+            runPinnedTmux: createPinnedWorkspaceTmuxRunner(tmuxAuthority, { timeoutMs: 5_000 }),
           });
           observationSelector.stockAvailable(externalInteractionObserver.available);
           if (nativeObservationRequested) interactionObservation.noteGap("uncertain-consume");

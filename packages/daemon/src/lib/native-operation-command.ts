@@ -12,8 +12,10 @@ const MAX_BODY_BYTES = 262_144;
 export function nativeOperationWrapperArgs(
   operationId: string,
   commands: readonly (readonly string[])[],
+  serverEpoch?: string,
 ): readonly string[] {
   z.uuid().parse(operationId);
+  if (serverEpoch !== undefined) z.uuid().parse(serverEpoch);
   if (!commands.length || commands.length > MAX_COMMANDS)
     throw new Error("Invalid native operation command count");
   let bytes = 0;
@@ -33,5 +35,12 @@ export function nativeOperationWrapperArgs(
     .join(" ; ");
   if (Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES)
     throw new Error("Native operation command limit exceeded");
-  return ["tmux-ide-run", "-I", "-O", operationId, body];
+  return [
+    "tmux-ide-run",
+    "-I",
+    ...(serverEpoch ? ["-E", serverEpoch] : []),
+    "-O",
+    operationId,
+    body,
+  ];
 }

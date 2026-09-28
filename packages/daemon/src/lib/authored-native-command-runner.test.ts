@@ -14,9 +14,10 @@ const ack = {
   operationId: id,
 };
 const prefix = `${JSON.stringify(identity)}\n${JSON.stringify(ack)}\n`;
-function rig() {
+function rig(canDispatch?: () => boolean) {
   const observer = {
     ownedOperationTransport: true,
+    ownedOperationEpochGuard: true,
     nativeServerEpoch: id,
     admitOwnedOperation: vi.fn(() => ({ operationId: id })),
     registerOwnedConnection: vi.fn(() => ({ bindingId: id })),
@@ -26,10 +27,11 @@ function rig() {
   };
   const runTmux = vi.fn(() => prefix + "terminal\n\n");
   const run = createAuthoredNativeCommandRunner({
+    canDispatch,
     environmentId: id,
     serverScope: scope,
     observation: () => observer as unknown as OwnerInteractionObservation,
-    runTmux,
+    runPinnedTmux: runTmux,
   });
   const request: AuthoredNativeCommandRequest = {
     operationId: id,
@@ -58,12 +60,14 @@ it("dispatches identity and strict wrapper on one connection and preserves captu
   const r = rig();
   expect(r.run(r.request)).toEqual({ output: "terminal\n\n" });
   expect(r.runTmux).toHaveBeenCalledTimes(1);
-  expect(r.runTmux.mock.calls[0]![0].slice(0, 6)).toEqual([
+  expect(r.runTmux.mock.calls[0]![0].slice(0, 8)).toEqual([
     "tmux-ide-events",
     "-i",
     ";",
     "tmux-ide-run",
     "-I",
+    "-E",
+    id,
     "-O",
   ]);
   expect(r.observer.registerOwnedConnection).toHaveBeenCalledWith(identity, "authored");
@@ -79,6 +83,9 @@ it("falls back only before dispatch if capability or native birth is unavailable
   r.observer.ownedOperationTransport = false;
   expect(r.run(r.request)).toBeNull();
   r.observer.ownedOperationTransport = true;
+  r.observer.ownedOperationEpochGuard = false;
+  expect(r.run(r.request)).toBeNull();
+  r.observer.ownedOperationEpochGuard = true;
   expect(r.run({ ...r.request, targetBirthId: "0" })).toBeNull();
   expect(r.runTmux).not.toHaveBeenCalled();
 });
@@ -131,4 +138,11 @@ it("reports missing failure proof without changing or replaying the original err
   expect(() => r.run(r.request)).toThrow(failure);
   expect(r.runTmux).toHaveBeenCalledTimes(1);
   expect(r.observer.noteOwnedOperationUncertainty).toHaveBeenCalledOnce();
+});
+
+it("preserves an active outer session fence by declining native dispatch before admission", () => {
+  const r = rig(() => false);
+  expect(r.run(r.request)).toBeNull();
+  expect(r.observer.admitOwnedOperation).not.toHaveBeenCalled();
+  expect(r.runTmux).not.toHaveBeenCalled();
 });

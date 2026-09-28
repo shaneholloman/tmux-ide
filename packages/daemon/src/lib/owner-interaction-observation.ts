@@ -68,6 +68,12 @@ export class OwnerInteractionObservation {
   get selection() {
     return this.#selection;
   }
+  get ownedOperationEpochGuard(): boolean {
+    return (
+      this.ownedOperationTransport &&
+      this.#capability?.ownedOperationEpochGuard === "server-epoch-v1"
+    );
+  }
   get ownedOperationTransport(): boolean {
     return !this.#disposed && !this.#halted && this.#bindings !== null;
   }

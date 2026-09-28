@@ -7,7 +7,7 @@ import type { NativeJournalIdentity, NativeOperationIdentity } from "@tmux-ide/c
 import type { OwnerInteractionObservation } from "./owner-interaction-observation.ts";
 import type { AuthoredNativeCommandRequest } from "./workspace-multiplexer-verbs.ts";
 import { createAuthoredNativeCommandRunner } from "./authored-native-command-runner.ts";
-import { createServerGenerationFencedTmuxRunner } from "./tmux-server-generation-runner.ts";
+import { createPinnedWorkspaceTmuxRunner } from "./workspace-pane-creation.ts";
 import { shellEscape } from "./shell.ts";
 
 const binary = process.env.TMUX_IDE_NATIVE_JOURNAL_TEST_BINARY;
@@ -52,6 +52,7 @@ it.skipIf(!binary)(
       const scope = { serverId: `tmux-server.${"a".repeat(32)}`, generation: randomUUID() };
       const observer = {
         ownedOperationTransport: true,
+        ownedOperationEpochGuard: capability.ownedOperationEpochGuard === "server-epoch-v1",
         nativeServerEpoch: capability.serverEpoch,
         admitOwnedOperation: vi.fn(() => ({ operationId: id })),
         registerOwnedConnection: vi.fn((_identity: NativeJournalIdentity) => ({ bindingId: id })),
@@ -61,7 +62,7 @@ it.skipIf(!binary)(
         closeOwnedConnection: vi.fn(),
       };
       const runTmux = vi.fn(
-        createServerGenerationFencedTmuxRunner({
+        createPinnedWorkspaceTmuxRunner({
           executablePath: binary!,
           socketSelector: { kind: "path", path: socket },
         }),
@@ -70,7 +71,7 @@ it.skipIf(!binary)(
         environmentId: id,
         serverScope: scope,
         observation: () => observer as unknown as OwnerInteractionObservation,
-        runTmux,
+        runPinnedTmux: runTmux,
       });
       const request: AuthoredNativeCommandRequest = {
         operationId: id,

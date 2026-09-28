@@ -23,3 +23,14 @@ describe("strict native operation command serialization", () => {
     expect(() => nativeOperationWrapperArgs(id, [["send-keys", "'".repeat(70_000)]])).toThrow();
   });
 });
+it("carries a validated expected epoch into the native wrapper before its body", () => {
+  expect(nativeOperationWrapperArgs(id, [["capture-pane", "-p"]], id).slice(0, 6)).toEqual([
+    "tmux-ide-run",
+    "-I",
+    "-E",
+    id,
+    "-O",
+    id,
+  ]);
+  expect(() => nativeOperationWrapperArgs(id, [["capture-pane"]], "invalid")).toThrow();
+});
