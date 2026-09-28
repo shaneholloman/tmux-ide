@@ -32,7 +32,7 @@ const ack = {
   wrapperCommandId: "8",
   operationId,
 };
-function projection(extra: Partial<NativeJournalRecord> = {}, effect = true) {
+function projection(extra: Partial<NativeJournalRecord> = {}, effect = true, capture = false) {
   const record = (sequence: string, kind: number): NativeJournalRecord => ({
     sequence,
     kind,
@@ -41,7 +41,7 @@ function projection(extra: Partial<NativeJournalRecord> = {}, effect = true) {
     requestId: "5",
     parentCommandId: "8",
     monotonicUs: "100",
-    count: kind === 5 ? "3" : "0",
+    count: kind >= 5 ? "3" : "0",
     targetId: 0,
     targetBirthId: "1",
     outcome: 1,
@@ -51,7 +51,9 @@ function projection(extra: Partial<NativeJournalRecord> = {}, effect = true) {
     correlation: operationId,
     ...extra,
   });
-  const records = effect ? [record("1", 5), record("2", 1)] : [record("1", 1)];
+  const records = effect
+    ? [record("1", capture ? 6 : 5), record("2", capture ? 2 : 1)]
+    : [record("1", capture ? 2 : 1)];
   return new NativeInteractionProjector({ environmentId, serverScope, serverEpoch }).consume({
     schemaVersion: 2,
     type: "batch",
@@ -479,4 +481,69 @@ it("wrong command order, foreign wrappers and expired plans do not complete", ()
   r.authority.expire();
   r.authority.acknowledge(r.permit, r.connection, ack);
   expect(r.completed).not.toHaveBeenCalled();
+});
+
+it.each([true, false])(
+  "one-shot capture retains only exact closed-helper proof (beforeAck=%s)",
+  (beforeAck) => {
+    const completed = vi.fn();
+    const a = new OwnedNativeInteractionBindings({
+      environmentId,
+      serverScope,
+      serverEpoch,
+      onPlanComplete: completed,
+    });
+    const permit = a.admitOneShotViewerCapture({ operationId, target })!;
+    expect(permit).not.toBeNull();
+    expect(
+      a.admit({
+        operationId: id(20),
+        role: "viewer",
+        target,
+        commands: ["capture-pane"],
+        source: null,
+      }),
+    ).toBeNull();
+    const item = projection({}, true, true);
+    if (beforeAck) expect(a.ingest(item)).toEqual([]);
+    const acked = a.acknowledgeOneShotViewerCapture(permit, identity, ack);
+    expect(acked.acknowledged).toBe(true);
+    const result = beforeAck ? acked.decisions : a.ingest(item);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.disposition).toBe("viewer");
+    expect(result[0]!.evidence.endpoints.source).toBeNull();
+    expect(completed).not.toHaveBeenCalled();
+    expect(a.size).toMatchObject({ connections: 0, permits: 0, pending: 0 });
+    expect(a.acknowledgeOneShotViewerCapture(permit, identity, ack).acknowledged).toBe(false);
+  },
+);
+it("one-shot capture rejects copied permits, forged identity and input plans and expires bounded proof", () => {
+  let now = 0;
+  const a = new OwnedNativeInteractionBindings({
+    environmentId,
+    serverScope,
+    serverEpoch,
+    now: () => now,
+    maxPermits: 1,
+    permitMs: 100,
+  });
+  const permit = a.admitOneShotViewerCapture({ operationId, target })!;
+  expect(a.admitOneShotViewerCapture({ operationId: id(30), target })).toBeNull();
+  expect(() =>
+    a.admitOneShotViewerCapture({ operationId, target, commands: ["send-keys"] } as never),
+  ).toThrow();
+  expect(a.acknowledgeOneShotViewerCapture({ ...permit }, identity, ack).acknowledged).toBe(false);
+  expect(
+    a.acknowledgeOneShotViewerCapture(permit, { ...identity, connectionId: "9" }, ack).acknowledged,
+  ).toBe(false);
+  expect(
+    a.acknowledgeOneShotViewerCapture(permit, identity, { ...ack, serverEpoch: id(99) })
+      .acknowledged,
+  ).toBe(false);
+  expect(a.ingest(projection())[0]!.disposition).toBe("unknown");
+  expect(a.acknowledgeOneShotViewerCapture(permit, identity, ack).acknowledged).toBe(true);
+  now = 101;
+  a.expire();
+  expect(a.size).toMatchObject({ connections: 0, permits: 0, pending: 0 });
+  expect(a.ingest(projection({}, true, true))[0]!.disposition).toBe("unknown");
 });

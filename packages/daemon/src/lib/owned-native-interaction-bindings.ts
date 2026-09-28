@@ -89,8 +89,10 @@ interface Connection {
   readonly identity: NativeJournalIdentity;
   readonly role: Role;
   closedAt: number | null;
+  oneShotCapture: boolean;
 }
 interface Permit {
+  readonly oneShotCapture: boolean;
   readonly token: OwnedNativeOperation;
   readonly request: OwnedNativeOperationRequest;
   readonly expiresAt: number;
@@ -200,10 +202,54 @@ export class OwnedNativeInteractionBindings {
     )
       return null;
     const token = Object.freeze({ bindingId: randomUUID() });
-    this.#connections.set(token, { token, identity: freeze(identity), role, closedAt: null });
+    this.#connections.set(token, {
+      token,
+      identity: freeze(identity),
+      role,
+      closedAt: null,
+      oneShotCapture: false,
+    });
     return token;
   }
   admit(raw: OwnedNativeOperationRequest): OwnedNativeOperation | null {
+    return this.#admit(raw, false);
+  }
+  admitOneShotViewerCapture(
+    raw: Pick<OwnedNativeOperationRequest, "operationId" | "target">,
+  ): OwnedNativeOperation | null {
+    if (Object.keys(raw).some((key) => key !== "operationId" && key !== "target"))
+      throw new TypeError("Invalid one-shot capture admission");
+    return this.#admit({ ...raw, role: "viewer", commands: ["capture-pane"], source: null }, true);
+  }
+  acknowledgeOneShotViewerCapture(
+    token: OwnedNativeOperation,
+    rawIdentity: NativeJournalIdentity,
+    rawAck: NativeOperationIdentity,
+  ): { acknowledged: boolean; decisions: readonly OwnedNativeInteractionDecision[] } {
+    const released = [...this.expire()];
+    const permit = this.#permits.get(token.operationId);
+    if (!permit || permit.token !== token || !permit.oneShotCapture || permit.acknowledgement)
+      return { acknowledged: false, decisions: released };
+    const identity = NativeJournalIdentitySchemaZ.parse(rawIdentity),
+      ack = NativeOperationIdentitySchemaZ.parse(rawAck);
+    if (
+      identity.serverEpoch !== this.#serverEpoch ||
+      ack.serverEpoch !== identity.serverEpoch ||
+      ack.connectionId !== identity.connectionId ||
+      ack.operationId !== token.operationId
+    )
+      return { acknowledged: false, decisions: released };
+    const connectionToken = this.registerConnection(identity, "viewer");
+    if (!connectionToken) return { acknowledged: false, decisions: released };
+    this.#connections.get(connectionToken)!.oneShotCapture = true;
+    try {
+      released.push(...this.acknowledge(token, connectionToken, ack));
+    } finally {
+      released.push(...this.closeConnection(connectionToken));
+    }
+    return { acknowledged: true, decisions: released };
+  }
+  #admit(raw: OwnedNativeOperationRequest, oneShotCapture: boolean): OwnedNativeOperation | null {
     const id = NativeOperationIdentitySchemaZ.parse({
       schemaVersion: 2,
       type: "operation-identity",
@@ -258,10 +304,13 @@ export class OwnedNativeInteractionBindings {
     const connection = raw.connection ? this.#connections.get(raw.connection) : null;
     if (
       raw.connection &&
-      (!connection || connection.closedAt !== null || connection.role !== raw.role)
+      (!connection ||
+        connection.closedAt !== null ||
+        connection.role !== raw.role ||
+        connection.oneShotCapture)
     )
       return null;
-    if (raw.role === "viewer" && !connection) return null;
+    if (raw.role === "viewer" && !connection && !oneShotCapture) return null;
     if (this.#disposed || this.#permits.has(id) || this.#permits.size >= this.#maxPermits)
       return null;
     const token = Object.freeze({ operationId: id });
@@ -271,6 +320,7 @@ export class OwnedNativeInteractionBindings {
       connection: raw.connection,
     });
     this.#permits.set(id, {
+      oneShotCapture,
       token,
       request,
       expiresAt: this.#now() + this.#permitMs,
@@ -381,11 +431,12 @@ export class OwnedNativeInteractionBindings {
     return released;
   }
   /** Authored helper exit preserves acknowledged proof until bounded permit expiry.
-   * New admissions are denied; viewer closure always retires immediately. */
+   * New admissions are denied; retained viewer closure retires immediately. */
   closeConnection(token: OwnedNativeConnection): readonly OwnedNativeInteractionDecision[] {
     const connection = this.#connections.get(token);
     if (!connection) return [];
-    if (connection.role === "viewer") return this.retireConnection(token);
+    if (connection.role === "viewer" && !connection.oneShotCapture)
+      return this.retireConnection(token);
     connection.closedAt ??= this.#now();
     return this.expire();
   }

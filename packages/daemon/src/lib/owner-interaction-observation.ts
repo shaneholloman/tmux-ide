@@ -118,6 +118,30 @@ export class OwnerInteractionObservation {
       return permit;
     }, null);
   }
+  admitOneShotViewerCapture(
+    request: Pick<OwnedNativeOperationRequest, "operationId" | "target">,
+  ): OwnedNativeOperation | null {
+    return this.#withBindings((bindings) => {
+      this.#decisions(bindings.expire());
+      const permit = bindings.admitOneShotViewerCapture(request);
+      if (!permit) this.#options.status.noteGap("uncertain-consume", 0);
+      this.#scheduleBindings();
+      return permit;
+    }, null);
+  }
+  acknowledgeOneShotViewerCapture(
+    permit: OwnedNativeOperation,
+    identity: NativeJournalIdentity,
+    acknowledgement: NativeOperationIdentity,
+  ): boolean {
+    return this.#withBindings((bindings) => {
+      const result = bindings.acknowledgeOneShotViewerCapture(permit, identity, acknowledgement);
+      this.#decisions(result.decisions);
+      if (!result.acknowledged) this.#options.status.noteGap("uncertain-consume", 0);
+      this.#scheduleBindings();
+      return result.acknowledged;
+    }, false);
+  }
   cancelUndispatchedOwnedOperation(permit: OwnedNativeOperation): void {
     this.#withBindings((bindings) => {
       this.#decisions(bindings.cancelUndispatchedOperation(permit));
