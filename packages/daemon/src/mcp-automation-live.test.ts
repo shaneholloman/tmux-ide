@@ -11,6 +11,8 @@ import {
   type AutomationClient,
 } from "@tmux-ide/daemon-client/automation-client";
 import {
+  TmuxInteractionCursorSchemaZ,
+  TmuxServerInteractionEventSchemaZ,
   AutomationPanesResponseSchemaZ,
   AutomationReserveResponseSchemaZ,
   AutomationExecuteResponseSchemaZ,
@@ -18,6 +20,7 @@ import {
   type AutomationOperationIntent,
 } from "@tmux-ide/contracts";
 import { createTmuxIdeMcpServer } from "./mcp.ts";
+import { mountTmuxServerRoutes } from "./command-center/tmux-servers.ts";
 import { mountAutomationRoutes } from "./command-center/automation.ts";
 import {
   createNativeTmuxServerOwner,
@@ -110,6 +113,9 @@ it.skipIf(!hasTmux)(
     });
     const app = new Hono();
     mountAutomationRoutes(app, { ownerToken: "owner", owners });
+    mountTmuxServerRoutes(app, { ownerToken: "owner", owners });
+    let activeStreams = 0;
+    let openedStreams = 0;
     const executionRequests: { operationId: string; generation: string; origin: string }[] = [];
     const preparedHandles: string[] = [];
     let reserveRequests = 0;
@@ -142,6 +148,41 @@ it.skipIf(!hasTmux)(
           headers: req.headers as Record<string, string>,
           ...(chunks.length ? { body: Buffer.concat(chunks) } : {}),
         });
+        if (response.headers.get("content-type")?.startsWith("text/event-stream")) {
+          if (!response.body) throw new Error("missing SSE body");
+          const reader = response.body.getReader();
+          activeStreams++;
+          openedStreams++;
+          const cancel = () => {
+            void reader.cancel().catch(() => undefined);
+          };
+          res.once("close", cancel);
+          try {
+            res.writeHead(response.status, Object.fromEntries(response.headers));
+            res.flushHeaders();
+            while (!res.destroyed) {
+              const chunk = await reader.read();
+              if (chunk.done) break;
+              if (!res.write(chunk.value))
+                await new Promise<void>((resolve) => {
+                  const done = () => {
+                    res.off("drain", done);
+                    res.off("close", done);
+                    resolve();
+                  };
+                  res.once("drain", done);
+                  res.once("close", done);
+                });
+            }
+            res.end();
+          } finally {
+            res.off("close", cancel);
+            await reader.cancel().catch(() => undefined);
+            reader.releaseLock();
+            activeStreams--;
+          }
+          return;
+        }
         const data = Buffer.from(await response.arrayBuffer());
         if (req.url?.endsWith("/execute") && response.ok && disrupt) {
           const mode = disrupt;
@@ -301,6 +342,26 @@ for line in sys.stdin.buffer:
             ),
         ).toBe(false);
       }
+      const retained = created[0]!.interactionReceipts.read(0);
+      const streamResult = toolValue(
+        await callTool("tmux_interactions", {
+          resume: { server: target.serverScope, cursor: 0 },
+          waitMs: 1000,
+        }),
+      ) as { cursor: unknown; batch: unknown };
+      const cursor = TmuxInteractionCursorSchemaZ.parse(streamResult.cursor);
+      const batch = TmuxServerInteractionEventSchemaZ.parse(streamResult.batch);
+      expect(batch.type).toBe("batch");
+      if (batch.type !== "batch") throw new Error("expected receipt batch");
+      expect(batch.server).toEqual(target.serverScope);
+      expect(batch.receipts).toEqual(retained.receipts);
+      expect(cursor).toEqual({ server: target.serverScope, cursor: retained.cursor });
+      expect(JSON.stringify(streamResult)).not.toContain("MCP_PRIVATE_");
+      await vi.waitFor(() => expect(activeStreams).toBe(0));
+      const follow = toolValue(await callTool("tmux_interactions", { resume: cursor, waitMs: 50 }));
+      expect(follow).toEqual({ cursor, batch: null });
+      await vi.waitFor(() => expect(activeStreams).toBe(0));
+      expect(openedStreams).toBe(2);
       const intent: AutomationOperationIntent = { kind: "read", target, source };
       const prepared = AutomationReserveResponseSchemaZ.parse(
         toolValue(await callTool("tmux_prepare", { intent })),
