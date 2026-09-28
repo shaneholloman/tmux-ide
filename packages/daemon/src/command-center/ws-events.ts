@@ -180,6 +180,7 @@ export function currentResourceRevision(
 }
 
 export interface InteractionReceiptBroadcast {
+  readonly evidence: InteractionReceipt["evidence"];
   readonly operationId: string;
   readonly origin: InteractionOrigin;
   readonly workspaceName: string;
@@ -211,6 +212,7 @@ export function broadcastInteractionReceipt(
     phase: receipt.phase,
     summary: receipt.summary,
     proof: receipt.proof,
+    evidence: receipt.evidence,
     at: receipt.at ?? new Date().toISOString(),
     resourceRevision: receipt.resourceRevision ?? null,
   });
