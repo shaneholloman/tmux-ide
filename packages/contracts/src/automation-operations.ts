@@ -36,7 +36,13 @@ export const AutomationOperationIntentSchemaZ = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("read"), ...endpoints }).strict(),
 ]);
 export const AutomationReserveRequestSchemaZ = z
-  .object({ version: z.literal(1), intent: AutomationOperationIntentSchemaZ })
+  .object({
+    version: z.literal(1),
+    intent: AutomationOperationIntentSchemaZ,
+    // Adapter metadata is a declaration, never evidence of the calling agent.
+    // Existing v1 clients omitted it and retain their original SDK label.
+    origin: z.enum(["cli", "sdk", "mcp"]).default("sdk"),
+  })
   .strict();
 export const AutomationExecuteRequestSchemaZ = AutomationReserveRequestSchemaZ.extend({
   handle: AutomationOperationHandleSchemaZ,

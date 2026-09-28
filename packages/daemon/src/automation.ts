@@ -55,6 +55,7 @@ export async function localAutomationClient(
     health: typeof probeCanonicalDaemonHealth;
     credential: typeof invokingPaneCredential;
   }> = {},
+  origin: "cli" | "mcp" = "cli",
 ): Promise<AutomationClient> {
   const read = dependencies.read ?? readCanonicalDaemonInfo;
   const unavailable = () =>
@@ -92,6 +93,7 @@ export async function localAutomationClient(
   )
     throw unavailable();
   return createAutomationClient({
+    origin,
     baseUrl: canonicalDaemonUrl("http", daemon.bindHostname, daemon.port),
     ownerToken: daemon.authToken,
     sourceCredential: (dependencies.credential ?? invokingPaneCredential)(),

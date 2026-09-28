@@ -8,10 +8,10 @@ import {
   TerminalAttachmentSemanticWindowIdSchemaZ,
 } from "./semantic-identity.ts";
 
-/** The trusted product surface that submitted an interaction. */
-export const InteractionOriginSchemaZ = z.enum(["gui", "tui", "cli", "sdk", "external"]);
+/** Declared product/adapter surface; agent identity requires separate evidence. */
+export const InteractionOriginSchemaZ = z.enum(["gui", "tui", "cli", "sdk", "mcp", "external"]);
 export type InteractionOrigin = z.infer<typeof InteractionOriginSchemaZ>;
-export const AuthoredInteractionOriginSchemaZ = z.enum(["gui", "tui", "cli", "sdk"]);
+export const AuthoredInteractionOriginSchemaZ = z.enum(["gui", "tui", "cli", "sdk", "mcp"]);
 export type AuthoredInteractionOrigin = z.infer<typeof AuthoredInteractionOriginSchemaZ>;
 
 /** Every semantic session-runtime verb; raw tmux addresses never enter this vocabulary. */

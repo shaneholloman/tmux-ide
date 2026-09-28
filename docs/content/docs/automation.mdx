@@ -64,6 +64,11 @@ credential using its actual `TMUX` socket and `TMUX_PANE`; the daemon validates
 it separately from the target. A title, native pane number, or matching text
 does not establish the sender's identity.
 
+Receipts distinguish `cli`, `sdk`, and `mcp` adapter origins. This is declared
+transport metadata, not proof of which agent called it. A reservation binds
+that origin along with the intent and source authority; retries must use the
+same adapter origin. Older automation clients that omit it retain `sdk`.
+
 Source and target may belong to different registered servers on the same
 daemon. Invalid or stale source claims are rejected rather than reassigned.
 

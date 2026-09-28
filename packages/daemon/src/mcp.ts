@@ -138,7 +138,7 @@ export function createTmuxIdeMcpServer(client: AutomationClient): McpServer {
 }
 
 export async function runMcp(): Promise<void> {
-  const client = await localAutomationClient();
+  const client = await localAutomationClient({}, "mcp");
   const handle = serveStdio(() => createTmuxIdeMcpServer(client), {
     transport: new StdioServerTransport(process.stdin, process.stdout, {
       maxBufferSize: 128 * 1024,

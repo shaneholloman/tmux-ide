@@ -21,6 +21,7 @@ export interface AutomationRequestOptions {
 }
 
 export interface AutomationClientOptions {
+  readonly origin?: "cli" | "sdk" | "mcp";
   readonly baseUrl: string;
   readonly ownerToken: string;
   readonly sourceCredential?: string;
@@ -82,6 +83,7 @@ async function boundedResponse(
 
 /** Shared closed transport for CLI, SDK and MCP. Daemon authority owns effects. */
 export function createAutomationClient(options: AutomationClientOptions) {
+  const origin = options.origin ?? "sdk";
   const baseUrl = options.baseUrl.replace(/\/+$/u, "");
   const requestFetch = options.fetch ?? fetch;
   const timeoutMs = options.timeoutMs ?? 15_000;
@@ -164,7 +166,7 @@ export function createAutomationClient(options: AutomationClientOptions) {
       return request(
         "/reserve",
         AutomationReserveResponseSchemaZ,
-        AutomationReserveRequestSchemaZ.parse({ version: 1, intent }),
+        AutomationReserveRequestSchemaZ.parse({ version: 1, intent, origin }),
         null,
         requestOptions.signal,
       );
@@ -174,7 +176,7 @@ export function createAutomationClient(options: AutomationClientOptions) {
       intent: AutomationOperationIntent,
       requestOptions: AutomationRequestOptions = {},
     ) {
-      const parsed = AutomationExecuteRequestSchemaZ.parse({ version: 1, handle, intent });
+      const parsed = AutomationExecuteRequestSchemaZ.parse({ version: 1, handle, intent, origin });
       const result = await request(
         "/execute",
         AutomationExecuteResponseSchemaZ,

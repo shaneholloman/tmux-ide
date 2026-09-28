@@ -30,6 +30,21 @@ function client(fetcher: typeof fetch) {
 }
 
 describe("shared automation transport", () => {
+  it("uses the declared adapter origin for both reservation and execution", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const api = createAutomationClient({
+      baseUrl: "http://localhost",
+      ownerToken: "owner",
+      origin: "mcp",
+      fetch: (async (url, init) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return Response.json(String(url).endsWith("/reserve") ? { version: 1, handle } : sent);
+      }) as typeof fetch,
+    });
+    await api.reserve(intent);
+    await api.execute(handle, intent);
+    expect(bodies.map((body) => body.origin)).toEqual(["mcp", "mcp"]);
+  });
   it("retries uncertain execution with the exact handle/body and never reserves", async () => {
     const requests: { path: string; init?: RequestInit }[] = [];
     const api = client((async (input, init) => {

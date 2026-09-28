@@ -159,6 +159,34 @@ function fixture(options: { capacity?: number; retentionMs?: number } = {}) {
   };
 }
 describe("daemon automation routes", () => {
+  it.each(
+    (["cli", "sdk", "mcp"] as const).flatMap((origin) =>
+      (["read", "send"] as const).map((kind) => ({ origin, kind })),
+    ),
+  )(
+    "preserves $origin $kind adapter origin and binds it to the handle",
+    async ({ origin, kind }) => {
+      const f = fixture();
+      const intent = kind === "read" ? { kind, target: f.intent.target, source: null } : f.intent;
+      const reserved = await f.request("/reserve", { version: 1, intent, origin });
+      expect(reserved.status).toBe(201);
+      const { handle } = await reserved.json();
+      const body = { version: 1, handle, intent, origin };
+      const changed = await f.request("/execute", {
+        ...body,
+        origin: origin === "mcp" ? "sdk" : "mcp",
+      });
+      expect(changed.status).not.toBe(200);
+      expect(f.records[0]!.submit).not.toHaveBeenCalled();
+      expect((await f.request("/execute", body)).status).toBe(200);
+      expect((await f.request("/execute", body)).status).toBe(200);
+      expect(f.records[0]!.submit).toHaveBeenCalledExactlyOnceWith(
+        handle.operationId,
+        expect.objectContaining({ origin }),
+        expect.objectContaining({ origin, source: null }),
+      );
+    },
+  );
   it("requires owner auth on every operation and exposes bounded meaningful pane descriptors", async () => {
     const f = fixture();
     for (const [path, body] of [

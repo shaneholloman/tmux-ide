@@ -61,7 +61,7 @@ export interface SessionRuntimeInteractionContext {
   } | null;
 }
 export interface SessionRuntimeAutomationAuthority extends SessionRuntimeInteractionContext {
-  readonly origin: "cli" | "sdk";
+  readonly origin: "cli" | "sdk" | "mcp";
   readonly authorizeBeforeEffect: () => void;
 }
 

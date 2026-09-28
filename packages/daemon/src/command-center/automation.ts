@@ -202,7 +202,7 @@ export function mountAutomationRoutes(app: Hono, options: AutomationRoutesOption
       const request = AutomationReserveRequestSchemaZ.parse(await boundedJson(c.req.raw));
       const authority = await validate(request.intent, c.req.header(PANE_SOURCE_CREDENTIAL_HEADER));
       try {
-        const handle = operations.reserve(authority.fingerprint);
+        const handle = operations.reserve(JSON.stringify([request.origin, authority.fingerprint]));
         return c.json(AutomationReserveResponseSchemaZ.parse({ version: 1, handle }), 201);
       } catch (error) {
         throw new AutomationRequestError(
@@ -223,7 +223,7 @@ export function mountAutomationRoutes(app: Hono, options: AutomationRoutesOption
       try {
         result = await operations.execute(
           request.handle,
-          authority.fingerprint,
+          JSON.stringify([request.origin, authority.fingerprint]),
           async (operationId) => {
             try {
               authority.authorizeBeforeEffect();
@@ -233,18 +233,18 @@ export function mountAutomationRoutes(app: Hono, options: AutomationRoutesOption
                       verb: "workspace.pane.read" as const,
                       workspaceName: request.intent.target.workspaceName,
                       semanticPaneId: request.intent.target.semanticPaneId,
-                      origin: "sdk" as const,
+                      origin: request.origin,
                     }
                   : {
                       verb: "workspace.pane.send" as const,
                       workspaceName: request.intent.target.workspaceName,
                       semanticPaneId: request.intent.target.semanticPaneId,
-                      origin: "sdk" as const,
+                      origin: request.origin,
                       text: request.intent.text,
                       submit: request.intent.enter,
                     };
               const response = await authority.target.submitAutomationIntent(operationId, intent, {
-                origin: "sdk",
+                origin: request.origin,
                 destination: request.intent.target,
                 source: authority.source,
                 authorizeBeforeEffect: authority.authorizeBeforeEffect,
