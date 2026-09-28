@@ -429,38 +429,21 @@ if (args[0] === "--client") {
       assert(!client.exited);
       return client.frame().includes(badge);
     });
-    await wait(() =>
-      client
-        .frame()
-        .split("\n")
-        .some(
-          (line: string) =>
-            line.slice(0, 29).includes(descriptor.session) && line.slice(0, 29).includes("1p"),
-        ),
-    );
-    const row =
-      client
-        .frame()
-        .split("\n")
-        .findIndex(
-          (line: string) =>
-            line.slice(0, 29).includes(descriptor.session) && line.slice(0, 29).includes("1p"),
-        ) + 1;
-    child.write(`\x1b[<0;12;${row}M\x1b[<0;12;${row}m`);
-    await delay(250);
-    child.write("\x1bOQ");
     await wait(() => {
       const frame = client.frame();
       return (
-        !frame.includes("Command palette") &&
+        frame.includes("Your agents, across your machines") && frame.includes(descriptor.session)
+      );
+    });
+    // Home now selects agents directly; there is no session sidebar here.
+    child.write("\r");
+    await wait(() => {
+      const frame = client.frame();
+      return (
+        !frame.includes("Your agents, across your machines") &&
         !frame.includes("Open terminals F2") &&
         !frame.includes("PASSIVE PREVIEW") &&
-        frame
-          .split("\n")
-          .some(
-            (line: string) =>
-              line.slice(0, 29).includes("›") && line.slice(0, 29).includes(descriptor.session),
-          )
+        frame.includes(descriptor.session)
       );
     });
     await tracker.capture();

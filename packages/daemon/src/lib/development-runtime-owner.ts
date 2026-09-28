@@ -1,13 +1,19 @@
 /** Durable ownership of the short runtime path, whose identity intentionally excludes the store. */
 import { randomUUID } from "node:crypto";
-import { linkSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { linkSync, lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { validateDevelopmentDirectory, type DevelopmentInstance } from "./development-instance.ts";
 import {
   DevelopmentOperationError,
   readPrivateDevelopmentRecord,
+  readPrivateDevelopmentFile,
   type DevelopmentIdentityRecord,
 } from "./development-state.ts";
+import { z } from "zod";
+import { TmuxServerRegistrationSchemaZ } from "./tmux-server-owners.ts";
+const DefaultRegistrations = z
+  .object({ version: z.literal(1), servers: z.array(TmuxServerRegistrationSchemaZ).max(1) })
+  .strict();
 const OWNER = "development-owner.json";
 function expected(instance: DevelopmentInstance, identity: DevelopmentIdentityRecord) {
   return {
@@ -85,10 +91,30 @@ export function releaseDevelopmentRuntimeOwner(
 ): void {
   if (!verifyDevelopmentRuntimeOwner(instance, identity)) return;
   const entries = readdirSync(instance.runtimeDir);
-  if (entries.some((entry) => entry !== OWNER))
+  if (entries.some((entry) => entry !== OWNER && entry !== "tmux-servers.json"))
     throw new DevelopmentOperationError(
       "owner-unverified",
       "Unknown runtime entries protect this instance from reset",
     );
+  const registrationsPath = join(instance.runtimeDir, "tmux-servers.json");
+  // Only metadata for this already-retired private socket is disposable. External
+  // registrations and unknown files remain protected, even when processes died.
+  const file = readPrivateDevelopmentFile(registrationsPath);
+  if (file) {
+    const registrations = DefaultRegistrations.safeParse(JSON.parse(file.bytes.toString("utf8")));
+    if (
+      !registrations.success ||
+      registrations.data.servers.some(
+        (entry) =>
+          entry.selector.kind !== "path" ||
+          entry.selector.path !== join(instance.runtimeDir, "tmux.sock"),
+      )
+    )
+      throw mismatch();
+    if (!verifyDevelopmentRuntimeOwner(instance, identity)) throw mismatch();
+    const current = lstatSync(registrationsPath);
+    if (!current.isFile() || current.dev !== file.dev || current.ino !== file.ino) throw mismatch();
+    rmSync(registrationsPath);
+  }
   rmSync(join(instance.runtimeDir, OWNER));
 }
