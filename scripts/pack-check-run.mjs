@@ -2061,7 +2061,9 @@ try {
   // persistent canonical daemon; running it before this section would make the
   // election warm and leave an untracked detached owner outside `children`.
   // This journey retires the last session; automation needs the initial live owner.
-  automationObservations = await runPackedAutomationJourney({
+  automationObservations = {};
+  await runPackedAutomationJourney({
+    evidence: automationObservations,
     root,
     directory: join(tmpRoot, "automation"),
     installedCli,
@@ -2147,6 +2149,7 @@ try {
     const copied = [];
     for (const source of [
       rootTarball,
+      automationObservations?.sdkTarballPath ?? null,
       mockReleaseBinaryPath,
       mockReleaseAssetPath,
       mockReleaseManifestPath,

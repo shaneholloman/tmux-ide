@@ -21,7 +21,9 @@ export async function runPackedAutomationJourney({
   run,
   runAsync,
   cancellation,
+  evidence,
 }) {
+  evidence.phase = "preparing-sdk";
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const consumer = join(directory, "consumer");
   mkdirSync(consumer, { mode: 0o700 });
@@ -40,6 +42,8 @@ export async function runPackedAutomationJourney({
     ).stdout,
   );
   const tarball = resolve(directory, packed.filename);
+  evidence.sdkTarballPath = tarball;
+  evidence.sdkTarballSha256 = sha256(tarball);
   writeFileSync(join(consumer, "package.json"), JSON.stringify({ private: true, type: "module" }));
   await runAsync("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", tarball], {
     cwd: consumer,
@@ -53,6 +57,15 @@ export async function runPackedAutomationJourney({
     join(root, "scripts/lib/packed-automation-cleanup.mjs"),
     join(consumer, "packed-automation-cleanup.mjs"),
   );
+  Object.assign(evidence, {
+    phase: "sdk-installed",
+    installedSdkSha256: sha256(join(consumer, "node_modules/@tmux-ide/sdk/dist/index.js")),
+    cleanupSourceSha256: sha256(join(consumer, "packed-automation-cleanup.mjs")),
+    consumerSourceSha256: sha256(join(consumer, "consumer.mjs")),
+    sdkVersion: JSON.parse(
+      readFileSync(join(consumer, "node_modules/@tmux-ide/sdk/package.json"), "utf8"),
+    ).version,
+  });
   const env = { ...environment };
   for (const key of Object.keys(env))
     if (key === "NODE_OPTIONS" || key.startsWith("TMUX_IDE_PACK_")) delete env[key];
@@ -115,6 +128,8 @@ export async function runPackedAutomationJourney({
       }),
       { mode: 0o600 },
     );
+    evidence.canonicalInstanceId = info.instanceId;
+    evidence.phase = "consumer-running";
     const result = await runAsync(process.execPath, [join(consumer, "consumer.mjs"), configPath], {
       cwd: consumer,
       stdio: "inherit",
@@ -125,17 +140,8 @@ export async function runPackedAutomationJourney({
     const observations = JSON.parse(result.stdout);
     assert.equal(readFileSync(targetFile, "utf8"), "PACK_PRIVATE_cli\nPACK_PRIVATE_sdk\n");
     assert.equal(readFileSync(sourceFile, "utf8"), "");
-    return {
-      ...observations,
-      sdkTarballSha256: sha256(tarball),
-      installedSdkSha256: sha256(join(consumer, "node_modules/@tmux-ide/sdk/dist/index.js")),
-      cleanupSourceSha256: sha256(join(consumer, "packed-automation-cleanup.mjs")),
-      consumerSourceSha256: sha256(join(consumer, "consumer.mjs")),
-      canonicalInstanceId: info.instanceId,
-      sdkVersion: JSON.parse(
-        readFileSync(join(consumer, "node_modules/@tmux-ide/sdk/package.json"), "utf8"),
-      ).version,
-    };
+    Object.assign(evidence, observations, { phase: "consumer-passed" });
+    return evidence;
   } finally {
     rmSync(configPath, { force: true });
     if (created)
