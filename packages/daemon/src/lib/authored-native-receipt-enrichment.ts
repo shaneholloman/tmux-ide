@@ -14,10 +14,10 @@ import type {
 } from "./interaction-receipt-journal.ts";
 import { nativeInteractionReference } from "./native-interaction-projector.ts";
 const same = isDeepStrictEqual;
-function correlatedEvidence(
+function matchingProof(
   receipt: InteractionReceipt,
   decision: OwnedNativeInteractionDecision,
-): InteractionEvidence | null {
+): NonNullable<OwnedNativeInteractionDecision["proof"]> | null {
   if (
     !InteractionReceiptSchemaZ.safeParse(receipt).success ||
     !InteractionEvidenceSchemaZ.safeParse(decision.evidence).success
@@ -67,7 +67,17 @@ function correlatedEvidence(
     native.observation.parentCommandId !== reference("command", ack.data.wrapperCommandId)
   )
     return null;
-  const before = receipt.evidence;
+  return proof;
+}
+function correlatedEvidence(
+  receipt: InteractionReceipt,
+  decision: OwnedNativeInteractionDecision,
+): InteractionEvidence | null {
+  const proof = matchingProof(receipt, decision);
+  if (!proof) return null;
+  const native = decision.evidence;
+  if (native.observation.kind !== "native-journal") return null;
+  const before = receipt.evidence!;
   const next = InteractionEvidenceSchemaZ.safeParse({
     ...native,
     interactionId: receipt.operationId,
@@ -129,4 +139,26 @@ export function canStageAuthoredNativeEvidence(
   decision: OwnedNativeInteractionDecision,
 ): boolean {
   return receipt.phase === "accepted" && correlatedEvidence(receipt, decision) !== null;
+}
+
+/** A receipt keeps one immutable command observation; sibling facts remain separate evidence. */
+export function isAdditionalAuthoredNativeEvidence(
+  receipt: InteractionReceipt,
+  decision: OwnedNativeInteractionDecision,
+): boolean {
+  if (!matchingProof(receipt, decision)) return false;
+  const before = receipt.evidence!,
+    next = decision.evidence;
+  return (
+    receipt.phase !== "accepted" &&
+    before.observation.kind === "native-journal" &&
+    next.observation.kind === "native-journal" &&
+    before.observation.correlatedOperationId === receipt.operationId &&
+    before.observation.parentCommandId === next.observation.parentCommandId &&
+    before.observation.serverEpoch === next.observation.serverEpoch &&
+    before.actor.kind === "native" &&
+    next.actor.kind === "native" &&
+    before.actor.issuerId === next.actor.issuerId &&
+    before.actor.sourceBindingId === next.actor.sourceBindingId
+  );
 }

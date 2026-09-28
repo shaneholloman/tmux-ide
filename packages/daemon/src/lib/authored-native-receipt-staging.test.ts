@@ -250,3 +250,23 @@ it("flushes staged proof as raw when its admission is evicted", async () => {
   expect(r.enricher.pendingCount).toBe(0);
   r.enricher.dispose();
 });
+it("retains a sibling command as raw evidence without a false coverage gap", async () => {
+  const r = rig();
+  const enter = structuredClone(r.decision);
+  enter.evidence.interactionId = id(88);
+  if (enter.evidence.observation.kind !== "native-journal") throw Error();
+  enter.evidence.observation.commandId = id(89);
+  enter.evidence.observation.command = "send-keys";
+  enter.evidence.observation.cursor.sequence = "2";
+  expect(r.enricher.consume(r.decision)).toBe(true);
+  expect(r.enricher.consume(enter)).toBe(true);
+  r.journal.publish(r.receipt);
+  await Promise.resolve();
+  expect(
+    r.journal.latestOperationReceipt(r.receipt.operationId)?.evidence?.observation,
+  ).toMatchObject({ kind: "native-journal", command: "paste-buffer" });
+  expect(r.publishRaw).toHaveBeenCalledExactlyOnceWith(enter.evidence);
+  expect(r.noteGap).not.toHaveBeenCalled();
+  expect(r.enricher.pendingCount).toBe(0);
+  r.enricher.dispose();
+});

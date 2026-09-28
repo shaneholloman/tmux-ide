@@ -3,6 +3,7 @@ import type { InteractionReceiptJournal } from "./interaction-receipt-journal.ts
 import type { OwnedNativeInteractionDecision } from "./owned-native-interaction-bindings.ts";
 import {
   canStageAuthoredNativeEvidence,
+  isAdditionalAuthoredNativeEvidence,
   consumeAuthoredNativeEvidence,
 } from "./authored-native-receipt-enrichment.ts";
 interface Pending {
@@ -109,7 +110,8 @@ export class AuthoredNativeReceiptEnricher {
         consumeAuthoredNativeEvidence(this.#options.journal, pending.decision)
       )
         continue;
-      this.#options.noteGap();
+      if (!receipt || !isAdditionalAuthoredNativeEvidence(receipt, pending.decision))
+        this.#options.noteGap();
       this.#options.publishRaw(pending.decision.evidence);
     }
     this.#schedule();
