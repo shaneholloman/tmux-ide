@@ -20,6 +20,7 @@ export const NativeJournalCapabilitySchemaZ = z
   .object({
     schemaVersion: z.literal(2),
     type: z.literal("capability"),
+    readerTransport: z.literal("sessionless-control-v1").optional(),
     serverEpoch: z.uuid(),
     journalEpoch: z.uuid(),
     enabled: z.boolean(),
@@ -98,3 +99,12 @@ export type NativeJournalCapability = z.infer<typeof NativeJournalCapabilitySche
 export type NativeJournalRecord = z.infer<typeof NativeJournalRecordSchemaZ>;
 export type NativeJournalBatch = z.infer<typeof NativeJournalBatchSchemaZ>;
 export type NativeJournalCursor = z.infer<typeof NativeJournalCursorSchemaZ>;
+
+export const NativeJournalIdentitySchemaZ = z
+  .object({
+    schemaVersion: z.literal(2),
+    type: z.literal("identity"),
+    serverEpoch: z.uuid(),
+    connectionId: positive,
+  })
+  .strict();
