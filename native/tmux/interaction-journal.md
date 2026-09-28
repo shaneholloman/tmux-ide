@@ -59,3 +59,11 @@ buffer text, environment, or error strings. Producer append uses fixed storage
 and schedules a coalesced wake. Allocation failure, overflow and disconnect do
 not reject terminal input. As with any in-process C extension, memory corruption
 could affect the server; sanitizer qualification is mandatory.
+
+Capability and batch responses contain a monotonic `degraded` bitmask:0 healthy,
+1 command identity exhausted,2 connection identity exhausted,4 request identity
+exhausted. Exhausted IDs remain0 (unknown), never reused; command outcomes keep
+recording. A newly degraded condition wakes waiting readers. A degraded `-w`
+returns immediately: consumers must surface degradation and stop their normal
+healthy wait loop (or use a bounded backoff), rather than spin. Server restart is
+required to restore full identity coverage. The terminal path remains usable.

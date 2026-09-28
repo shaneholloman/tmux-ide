@@ -40,7 +40,7 @@ index f0c3637..585e6b7 100644
  	} else {
  		new_item = cmdq_get_command(cmdlist, cmdq_get_state(item));
 diff --git a/cmd-queue.c b/cmd-queue.c
-index 2a22151..d66d149 100644
+index 2a22151..fe19ce8 100644
 --- a/cmd-queue.c
 +++ b/cmd-queue.c
 @@ -39,6 +39,10 @@ enum cmdq_type {
@@ -197,7 +197,7 @@ index 2a22151..d66d149 100644
  	}
  
  out:
-+	if (item->interaction_command_id != 0) {
++	if (tmux_ide_interaction_enabled()) {
 +		unsigned kind = 0, variant = 0, target_id = 0;
 +		if (strcmp(entry->name, "send-keys") == 0)
 +			kind = 1;
@@ -390,10 +390,10 @@ index 49cac8b..3517036 100644
  	status_prompt_save_history();
 diff --git a/tmux-ide-journal.c b/tmux-ide-journal.c
 new file mode 100644
-index 0000000..96450f3
+index 0000000..c11f524
 --- /dev/null
 +++ b/tmux-ide-journal.c
-@@ -0,0 +1,405 @@
+@@ -0,0 +1,438 @@
 +/*
 + * Copyright (c) 2026 wavyrai
 + *
@@ -422,6 +422,7 @@ index 0000000..96450f3
 +static struct ti_ring *ti_journal;
 +static char ti_server_epoch[37], ti_journal_epoch[37];
 +static uint64_t ti_connection_counter, ti_request_counter, ti_command_counter;
++static unsigned ti_degraded;
 +static struct event ti_wakeup;
 +static int ti_wakeup_initialized, ti_wakeup_pending;
 +struct ti_waiter {
@@ -440,7 +441,7 @@ index 0000000..96450f3
 +    .name = "tmux-ide-events",
 +    .alias = NULL,
 +#ifdef TMUX_IDE_JOURNAL_TEST
-+    .args = {"VeirwE:a:n:TFXW", 0, 0, NULL},
++    .args = {"VeirwE:a:n:TFXWD", 0, 0, NULL},
 +#else
 +    .args = {"VeirwE:a:n:", 0, 0, NULL},
 +#endif
@@ -471,28 +472,52 @@ index 0000000..96450f3
 +	evtimer_set(&ti_wakeup, ti_wake, NULL);
 +	ti_wakeup_initialized = 1;
 +}
++static void
++ti_degrade(unsigned reason)
++{
++	if (ti_degraded & reason)
++		return;
++	ti_degraded |= reason;
++	if (ti_journal && !ti_wakeup_pending) {
++		ti_wakeup_pending = 1;
++		event_active(&ti_wakeup, EV_TIMEOUT, 1);
++	}
++}
++int
++tmux_ide_interaction_enabled(void)
++{
++	return ti_journal != NULL;
++}
 +uint64_t
 +tmux_ide_interaction_connection(void)
 +{
 +	ti_initialize();
 +	/* Exhaustion cannot recycle a connection identity within the server
 +	 * epoch. */
-+	if (ti_connection_counter == UINT64_MAX)
++	if (ti_connection_counter == UINT64_MAX) {
++		ti_degrade(2);
 +		return 0;
++	}
 +	return ++ti_connection_counter;
 +}
 +uint64_t
 +tmux_ide_interaction_request(void)
 +{
-+	if (ti_request_counter == UINT64_MAX)
++	if (ti_request_counter == UINT64_MAX) {
++		ti_degrade(4);
 +		return 0;
++	}
 +	return ++ti_request_counter;
 +}
 +uint64_t
 +tmux_ide_interaction_command(void)
 +{
-+	if (!ti_journal || ti_command_counter == UINT64_MAX)
++	if (!ti_journal)
 +		return 0;
++	if (ti_command_counter == UINT64_MAX) {
++		ti_degrade(1);
++		return 0;
++	}
 +	return ++ti_command_counter;
 +}
 +void
@@ -592,9 +617,10 @@ index 0000000..96450f3
 +	    "{\"schemaVersion\":1,\"type\":\"capability\","
 +	    "\"serverEpoch\":\"%s\",\"journalEpoch\":\"%s\",\"enabled\":%s,"
 +	    "\"coverage\":[\"command-outcome-v1\"],\"capacity\":%u,"
-+	    "\"maxBatch\":%u,\"maxWaiters\":%u,\"waitingReaders\":%u}",
++	    "\"maxBatch\":%u,\"maxWaiters\":%u,\"waitingReaders\":%u,"
++	    "\"degraded\":%u}",
 +	    ti_server_epoch, ti_journal_epoch, ti_journal ? "true" : "false",
-+	    TI_CAPACITY, TI_MAX_BATCH, TI_MAX_WAITERS, waiting);
++	    TI_CAPACITY, TI_MAX_BATCH, TI_MAX_WAITERS, waiting, ti_degraded);
 +}
 +/* All fields are numbers/enums or internally minted UUIDs. No arbitrary text.
 + */
@@ -674,7 +700,8 @@ index 0000000..96450f3
 +		if (seq == UINT64_MAX)
 +			break;
 +	}
-+	TI_OUT("],\"next\":\"%" PRIu64 "\"}", last);
++	TI_OUT("],\"next\":\"%" PRIu64 "\",\"degraded\":%u}", last,
++	       ti_degraded);
 +	cmdq_print(item, "%s", out);
 +	return;
 +too_large:
@@ -710,6 +737,12 @@ index 0000000..96450f3
 +		    args_has(args, 'i') + args_has(args, 'r');
 +	ti_initialize();
 +#ifdef TMUX_IDE_JOURNAL_TEST
++	if (args_has(args, 'D')) {
++		ti_connection_counter = ti_request_counter =
++		    ti_command_counter = UINT64_MAX;
++		ti_degrade(1 | 2 | 4);
++		return CMD_RETURN_NORMAL;
++	}
 +	if (args_has(args, 'X')) {
 +		struct ti_record record = {0};
 +		if (!ti_journal) {
@@ -779,7 +812,7 @@ index 0000000..96450f3
 +		return CMD_RETURN_ERROR;
 +	}
 +	if (strcmp(epoch, ti_journal_epoch) || !args_has(args, 'w') ||
-+	    after != ti_journal->newest) {
++	    after != ti_journal->newest || ti_degraded) {
 +		ti_read(item, epoch, after, (unsigned)limit);
 +		return CMD_RETURN_NORMAL;
 +	}
@@ -877,7 +910,7 @@ index 0000000..bd395b1
 +}
 +#endif
 diff --git a/tmux.h b/tmux.h
-index c9f8a32..781b113 100644
+index c9f8a32..6b94e9f 100644
 --- a/tmux.h
 +++ b/tmux.h
 @@ -2032,6 +2032,7 @@ typedef int (*overlay_key_cb)(struct client *, void *, struct key_event *);
@@ -888,7 +921,7 @@ index c9f8a32..781b113 100644
  	const char		*name;
  	struct tmuxpeer		*peer;
  	const char		*user;
-@@ -2935,6 +2936,24 @@ struct cmd_parse_result *cmd_parse_from_buffer(const void *, size_t,
+@@ -2935,6 +2936,25 @@ struct cmd_parse_result *cmd_parse_from_buffer(const void *, size_t,
  struct cmd_parse_result *cmd_parse_from_arguments(struct args_value *, u_int,
  		     struct cmd_parse_input *);
  
@@ -896,6 +929,7 @@ index c9f8a32..781b113 100644
 +#include "tmux-ide-journal.h"
 +uint64_t tmux_ide_interaction_request(void);
 +uint64_t tmux_ide_interaction_command(void);
++int tmux_ide_interaction_enabled(void);
 +void tmux_ide_interaction_done(uint64_t, const struct ti_origin *, unsigned,
 +			       unsigned, unsigned, unsigned);
 +void cmdq_set_origin(struct cmdq_item *, const struct ti_origin *);
