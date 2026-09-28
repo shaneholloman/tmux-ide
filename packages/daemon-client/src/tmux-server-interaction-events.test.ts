@@ -51,6 +51,29 @@ function subscribe(frames: unknown[], onBatch = () => {}) {
   });
 }
 describe("interaction subscriber fences", () => {
+  it("closes while a consumer is stalled without acknowledging its batch", async () => {
+    let started!: () => void;
+    const called = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let consumerSignal: AbortSignal | undefined;
+    const stream = subscribeTmuxServerInteractions({
+      baseUrl: "http://localhost",
+      ownerToken: "token",
+      server,
+      fetch: fake([ready, batch]),
+      onBatch: (_batch, signal) => {
+        consumerSignal = signal;
+        started();
+        return new Promise<void>(() => {});
+      },
+    });
+    await called;
+    stream.close();
+    await stream.done;
+    expect(consumerSignal?.aborted).toBe(true);
+    expect(stream.getCursor().cursor).toBe(0);
+  });
   it("rejects scoped resume reuse before making a request", () => {
     expect(() =>
       subscribeTmuxServerInteractions({

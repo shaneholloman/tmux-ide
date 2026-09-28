@@ -14,7 +14,7 @@ export interface TmuxInteractionSubscriptionOptions {
   readonly resume?: TmuxInteractionCursor;
   readonly fetch?: typeof fetch;
   readonly readinessTimeoutMs?: number;
-  readonly onBatch: (batch: TmuxInteractionBatch) => void | Promise<void>;
+  readonly onBatch: (batch: TmuxInteractionBatch, signal: AbortSignal) => void | Promise<void>;
 }
 export interface TmuxInteractionSubscription {
   readonly ready: Promise<void>;
@@ -104,7 +104,25 @@ export function subscribeTmuxServerInteractions(
           } else {
             if (frame.type !== "batch" || frame.after !== cursor)
               throw new Error("Repeated or regressed receipt frame");
-            await options.onBatch(frame);
+            // A consumer may stall indefinitely. Closing the subscription must
+            // still release its transport without acknowledging unfinished work.
+            let onAbort: (() => void) | undefined;
+            try {
+              await Promise.race([
+                Promise.resolve().then(() => {
+                  lifetime.signal.throwIfAborted();
+                  return options.onBatch(frame, lifetime.signal);
+                }),
+                new Promise<never>((_, reject) => {
+                  onAbort = () => reject(lifetime.signal.reason);
+                  if (lifetime.signal.aborted) onAbort();
+                  else lifetime.signal.addEventListener("abort", onAbort, { once: true });
+                }),
+              ]);
+            } finally {
+              if (onAbort) lifetime.signal.removeEventListener("abort", onAbort);
+            }
+            lifetime.signal.throwIfAborted();
             cursor = frame.cursor;
             if (closed) break;
           }
