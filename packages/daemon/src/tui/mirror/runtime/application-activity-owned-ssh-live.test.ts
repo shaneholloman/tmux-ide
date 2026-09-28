@@ -75,18 +75,79 @@ it.skipIf(!enabled)(
     });
     const executable = realpathSync(execFileSync("which", ["tmux"], { encoding: "utf8" }).trim());
     const sockets: string[] = [];
+    const tmuxWitnesses = new Map<
+      string,
+      {
+        observation: NonNullable<Awaited<ReturnType<ReturnType<typeof createTmuxServerProbe>>>>;
+        pid: number;
+        kernel: string;
+      }
+    >();
     const servers: ReturnType<typeof serve>[] = [];
     const registries: TmuxServerOwners<NativeTmuxServerOwner>[] = [];
     const transports: Awaited<ReturnType<typeof openSshDaemonTransport>>[] = [];
     const subscriptions: ReturnType<typeof subscribeTmuxServerInteractions>[] = [];
     const managers: ReturnType<typeof createApplicationMachineAuthorityManager>[] = [];
     let disposeHome = () => {};
+    let primaryFailure: unknown;
+    let teardownFailure: unknown;
     const run = (socket: string, args: string[]) =>
       execFileSync(executable, ["-S", socket, "-f", "/dev/null", ...args], {
         encoding: "utf8",
         timeout: 5000,
         env: { ...process.env, TMUX: "", TMUX_IDE_NATIVE_INTERACTIONS: "0" },
       }).trim();
+    async function retainTmux(socket: string) {
+      const observation = await createTmuxServerProbe(executable)({ kind: "path", path: socket });
+      if (!observation?.nativeServerIdentity) throw Error("Private tmux identity unavailable");
+      const pid = Number(observation.nativeServerIdentity.pid);
+      let witness: string | null = null;
+      const deadline = Date.now() + 1500;
+      while (!witness && Date.now() < deadline) {
+        try {
+          witness = await kernel.identify(pid);
+        } catch {
+          /* Startup probe remains unadmitted. */
+        }
+        if (!witness) await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      const confirmed = await createTmuxServerProbe(executable)({ kind: "path", path: socket });
+      if (confirmed?.fingerprint !== observation.fingerprint)
+        throw Error("Private tmux changed during kernel admission");
+      if (!witness || !observation.valid()) throw Error("Private tmux kernel witness unavailable");
+      tmuxWitnesses.set(socket, { observation, pid, kernel: witness });
+    }
+    async function stopTmux(socket: string) {
+      const owned = tmuxWitnesses.get(socket);
+      if (!owned) throw Error("Private tmux has no retained ownership proof");
+      const currentKernel = await kernel.identify(owned.pid);
+      if (currentKernel === null) {
+        tmuxWitnesses.delete(socket);
+        return;
+      }
+      if (currentKernel !== owned.kernel || !owned.observation.valid())
+        throw Error("Private tmux identity changed; cleanup refused");
+      const current = await createTmuxServerProbe(executable)({ kind: "path", path: socket });
+      if (!current || current.fingerprint !== owned.observation.fingerprint)
+        throw Error("Private tmux PID/start changed; cleanup refused");
+      const identity = owned.observation.nativeServerIdentity!;
+      // Evaluated in the selected server: replacement between probe and dispatch cannot be killed.
+      const guard = `#{&&:#{==:#{pid},${identity.pid}},#{==:#{start_time},${identity.startTime}}}`;
+      const result = run(socket, [
+        "if-shell",
+        "-F",
+        guard,
+        "kill-server",
+        "display-message -p identity-mismatch",
+      ]);
+      if (result) throw Error("Private tmux kill guard refused");
+      const end = Date.now() + 3000;
+      while ((await kernel.identify(owned.pid)) !== null) {
+        if (Date.now() >= end) throw Error("Private tmux exit not confirmed");
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      tmuxWitnesses.delete(socket);
+    }
     async function backend(name: string, count: number) {
       const environmentId = randomUUID(),
         instanceId = randomUUID(),
@@ -111,6 +172,7 @@ it.skipIf(!enabled)(
         sockets.push(socket);
         ownSockets.push(socket);
         run(socket, ["new-session", "-d", "-s", "attribution-collision", "cat"]);
+        await retainTmux(socket);
         run(socket, [
           "set-option",
           "-p",
@@ -464,8 +526,9 @@ it.skipIf(!enabled)(
       report.gap = gap;
       const old = remoteEndpoints[1]!;
       const socket = remote.ownSockets[1]!;
-      run(socket, ["kill-server"]);
+      await stopTmux(socket);
       run(socket, ["new-session", "-d", "-s", "attribution-collision", "cat"]);
+      await retainTmux(socket);
       run(socket, [
         "set-option",
         "-p",
@@ -499,39 +562,101 @@ it.skipIf(!enabled)(
     } catch (error) {
       report.outcome = "failed";
       report.error = error instanceof Error ? error.message : String(error);
-      throw error;
+      primaryFailure = error;
     } finally {
-      disposeHome();
-      managers.forEach((manager) => manager.dispose());
-      subscriptions.forEach((stream) => stream.close());
-      await Promise.allSettled(subscriptions.map((stream) => stream.done));
-      transports.forEach((transport) => transport.dispose());
-      await Promise.allSettled(transports.map((transport) => transport.closed));
-      await Promise.all(registries.map((owners) => owners.dispose()));
-      for (const socket of sockets) {
+      const cleanupErrors: Array<{ stage: string; message: string }> = [];
+      async function cleanup(
+        stage: string,
+        work: () => unknown | Promise<unknown>,
+        timeoutMs = 5000,
+      ) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
         try {
-          run(socket, ["kill-server"]);
-        } catch {
-          /* Already retired private server. */
+          await Promise.race([
+            Promise.resolve().then(work),
+            new Promise((_, reject) => {
+              timer = setTimeout(() => reject(Error("cleanup deadline")), timeoutMs);
+            }),
+          ]);
+        } catch (error) {
+          cleanupErrors.push({
+            stage,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        } finally {
+          if (timer) clearTimeout(timer);
         }
       }
-      await Promise.all(
-        servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))),
-      );
-      report.fixtureDiagnostics = allocations.map((allocation) => allocation.diagnostics?.());
-      report.processCleanup = await tracker.dispose();
-      for (const allocation of allocations.reverse()) await allocation.disposeFiles();
-      for (const transport of transports)
-        await waitForPort(Number(new URL(transport.baseUrl).port), false);
-      if (process.env.TMUX_IDE_OWNED_ACTIVITY_REPORT)
-        writeFileSync(
-          process.env.TMUX_IDE_OWNED_ACTIVITY_REPORT,
-          JSON.stringify(report, null, 2) + "\n",
-          { mode: 0o600 },
+      try {
+        await cleanup("Home", disposeHome);
+        for (const [index, manager] of managers.entries())
+          await cleanup(`manager-${index}`, () => manager.dispose());
+        for (const [index, stream] of subscriptions.entries())
+          await cleanup(`SSE-${index}`, async () => {
+            stream.close();
+            await stream.done.catch(() => {});
+          });
+        for (const [index, transport] of transports.entries())
+          await cleanup(`transport-${index}`, async () => {
+            transport.dispose();
+            await transport.closed;
+          });
+        for (const [index, owners] of registries.entries())
+          await cleanup(`owners-${index}`, () => owners.dispose());
+        for (const socket of sockets)
+          await cleanup(`tmux-${sockets.indexOf(socket)}`, () => stopTmux(socket));
+        for (const [index, server] of servers.entries())
+          await cleanup(
+            `HTTP-${index}`,
+            () =>
+              new Promise<void>((resolve, reject) => {
+                server.close((error) => (error ? reject(error) : resolve()));
+                if ("closeAllConnections" in server) server.closeAllConnections();
+              }),
+          );
+        report.fixtureDiagnostics = allocations.map((allocation) => allocation.diagnostics?.());
+        await cleanup("SSH-processes", async () => {
+          report.processCleanup = await tracker.dispose();
+        });
+        for (const [index, transport] of transports.entries())
+          await cleanup(`forward-port-${index}`, () =>
+            waitForPort(Number(new URL(transport.baseUrl).port), false),
+          );
+        // Outstanding or uncertain work retains all private evidence. Never remove its inputs.
+        if (cleanupErrors.length === 0) {
+          for (const [index, allocation] of allocations.reverse().entries())
+            await cleanup(`private-files-${index}`, () => allocation.disposeFiles());
+        }
+        if (cleanupErrors.length === 0)
+          await cleanup("root", () => rmSync(root, { recursive: true }));
+      } finally {
+        report.cleanupErrors = cleanupErrors;
+        if (cleanupErrors.length) {
+          report.outcome = "failed-cleanup";
+          report.retainedPrivateRoot = root;
+        }
+        try {
+          if (process.env.TMUX_IDE_OWNED_ACTIVITY_REPORT)
+            writeFileSync(
+              process.env.TMUX_IDE_OWNED_ACTIVITY_REPORT,
+              JSON.stringify(report, null, 2) + "\n",
+              { mode: 0o600 },
+            );
+        } finally {
+          process.umask(previousUmask);
+        }
+      }
+      if (cleanupErrors.length)
+        teardownFailure = new AggregateError(
+          cleanupErrors.map((error) => Error(`${error.stage}: ${error.message}`)),
+          "Owned fixture cleanup incomplete; evidence retained",
         );
-      rmSync(root, { recursive: true });
-      process.umask(previousUmask);
     }
+    if (primaryFailure || teardownFailure)
+      throw new AggregateError(
+        [primaryFailure, teardownFailure].filter(Boolean),
+        "Owned SSH qualification failed",
+      );
   },
   120_000,
 );
