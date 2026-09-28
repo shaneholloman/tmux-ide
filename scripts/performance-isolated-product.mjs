@@ -3,7 +3,7 @@
 // running: startDaemon's mandatory rebuild must be byte-identical to that commit.
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createScratchFleet } from "../apps/desktop-renderer/e2e/fixtures/scratch-fleet.ts";
@@ -23,25 +23,35 @@ for (const key of Object.keys(base))
     delete process.env[key];
   }
 const sha = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
-const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8", timeout: 5000 }).trim();
+const git = (...args) =>
+  execFileSync("git", args, { cwd: root, encoding: "utf8", timeout: 5000 }).trim();
 const clean = () => {
   if (git("status", "--porcelain", "--untracked-files=all"))
-    throw new Error("Qualification requires a clean tree, including the deterministic CLI artifact");
+    throw new Error(
+      "Qualification requires a clean tree, including the deterministic CLI artifact",
+    );
 };
 let provenance = null;
 const snapshot = () => ({
   commit: git("rev-parse", "HEAD"),
   tree: git("rev-parse", "HEAD^{tree}"),
   dirty: Boolean(git("status", "--porcelain", "--untracked-files=all")),
-  cliSha256: sha(join(root, "bin/cli.js")),
-  tuiSha256: sha(join(root, "packages/daemon/dist/tui/tmux-ide-tui")),
+  cliSha256: existsSync(join(root, "bin/cli.js")) ? sha(join(root, "bin/cli.js")) : null,
+  tuiSha256: existsSync(join(root, "packages/daemon/dist/tui/tmux-ide-tui"))
+    ? sha(join(root, "packages/daemon/dist/tui/tmux-ide-tui"))
+    : null,
   driverSha256: sha(fileURLToPath(import.meta.url)),
 });
 async function run(name, args, env, timeout = 180000) {
   const result = await cancellation.command(process.execPath, args, {
-    cwd: root, env, timeout, maxBuffer: 4 * 1024 * 1024,
+    cwd: root,
+    env,
+    timeout,
+    maxBuffer: 4 * 1024 * 1024,
   });
-  writeFileSync(join(output, `${name}.log`), `${result.stdout ?? ""}\n${result.stderr ?? ""}`, { mode: 0o600 });
+  writeFileSync(join(output, `${name}.log`), `${result.stdout ?? ""}\n${result.stderr ?? ""}`, {
+    mode: 0o600,
+  });
   if (result.status !== 0) throw new Error(`${name} failed; see retained private log`);
 }
 let fleet;
@@ -56,6 +66,8 @@ try {
   provenance = snapshot();
   writeFileSync(join(output, "source.json"), JSON.stringify(provenance, null, 2), { mode: 0o600 });
   clean();
+  if (!provenance.cliSha256 || !provenance.tuiSha256)
+    throw new Error("Build both CLI and TUI before qualification");
   // Single-client paint lane: no ProductTestRig browser/TUI competes here.
   fleet = await createScratchFleet({ sessions: 1, slug: `paint-${process.pid}` });
   cleanup.fleet = "pending";
@@ -66,27 +78,48 @@ try {
     throw new Error("startDaemon rebuilt a different CLI artifact");
   deterministicRebuildVerified = true;
   const referenceEnv = {
-    ...base, ...fleet.environment,
+    ...base,
+    ...fleet.environment,
     TMUX_IDE_TMUX_SOCKET_PATH: fleet.socketPath,
     TMUX_IDE_TESTDRIVE_CANONICAL_HOME: fleet.daemonInfoDir,
     TMUX_IDE_TESTDRIVE_RUNTIME_DIR: join(output, "reference-tui"),
     TMUX_IDE_TESTDRIVE_HOST_SOCKET_PATH: fleet.socketPath,
     TMUX_IDE_TESTDRIVE_HOST_SESSION: `_paint-${process.pid}`,
   };
-  await run("reference", ["scripts/performance-reference.mjs", "--no-build", "--input-samples", "36", "--report", join(output, "reference.json"), "--require-complete"], referenceEnv);
-  await daemon.stop(); daemon = null; cleanup.daemon = "confirmed";
-  await fleet.dispose(); fleet = null; cleanup.fleet = "confirmed";
+  await run(
+    "reference",
+    [
+      "scripts/performance-reference.mjs",
+      "--no-build",
+      "--input-samples",
+      "36",
+      "--report",
+      join(output, "reference.json"),
+      "--require-complete",
+    ],
+    referenceEnv,
+  );
+  await daemon.stop();
+  daemon = null;
+  cleanup.daemon = "confirmed";
+  await fleet.dispose();
+  fleet = null;
+  cleanup.fleet = "confirmed";
 
   // Separate multi-client coherence lane: actual rig Web+TUI are intentional.
   rigAttempted = true;
   cleanup.rig = "pending";
   await run("rig-start", ["scripts/product-test-rig.mjs", "start", "--json"], rigEnv);
   clean();
-  if (sha(join(root, "bin/cli.js")) !== provenance.cliSha256 || sha(join(root, "packages/daemon/dist/tui/tmux-ide-tui")) !== provenance.tuiSha256)
+  if (
+    sha(join(root, "bin/cli.js")) !== provenance.cliSha256 ||
+    sha(join(root, "packages/daemon/dist/tui/tmux-ide-tui")) !== provenance.tuiSha256
+  )
     throw new Error("ProductTestRig changed frozen artifacts");
   rigArtifactsVerified = true;
   await run("portable", ["scripts/performance-portable-evidence.mjs"], {
-    ...rigEnv, TMUX_IDE_PRODUCT_RIG_STATE: join(output, "rig/state.json"),
+    ...rigEnv,
+    TMUX_IDE_PRODUCT_RIG_STATE: join(output, "rig/state.json"),
     TMUX_IDE_PORTABLE_EVIDENCE_REPORT: join(output, "portable.json"),
   });
 } catch (error) {
@@ -103,7 +136,9 @@ try {
     }
   };
   if (rigAttempted)
-    await settle("rig", () => run("rig-stop", ["scripts/product-test-rig.mjs", "stop", "--json"], rigEnv, 60000));
+    await settle("rig", () =>
+      run("rig-stop", ["scripts/product-test-rig.mjs", "stop", "--json"], rigEnv, 60000),
+    );
   if (daemon) await settle("daemon", () => daemon.stop());
   if (fleet) await settle("fleet", () => fleet.dispose());
   const cancellationFacts = cancellation.facts();
@@ -117,23 +152,31 @@ try {
   }
   cancellation.dispose();
   try {
-    writeFileSync(join(output, "terminal-proof.json"), JSON.stringify({
-      schemaVersion: 1,
-      completed: failures.length === 0,
-      source: provenance,
-      finalSource,
-      deterministicRebuildVerified,
-      rigArtifactsVerified,
-      cancellation: cancellationFacts,
-      cleanup,
-      // Preserve the initial failure first; cleanup must not replace it.
-      failures: failures.map((error) => ({
-        name: error instanceof Error ? error.name : "UnknownError",
-        message: error instanceof Error ? error.message : String(error),
-      })),
-    }, null, 2), { mode: 0o600, flag: "wx" });
+    writeFileSync(
+      join(output, "terminal-proof.json"),
+      JSON.stringify(
+        {
+          schemaVersion: 1,
+          completed: failures.length === 0,
+          source: provenance,
+          finalSource,
+          deterministicRebuildVerified,
+          rigArtifactsVerified,
+          cancellation: cancellationFacts,
+          cleanup,
+          // Preserve the initial failure first; cleanup must not replace it.
+          failures: failures.map((error) => ({
+            name: error instanceof Error ? error.name : "UnknownError",
+            message: error instanceof Error ? error.message : String(error),
+          })),
+        },
+        null,
+        2,
+      ),
+      { mode: 0o600, flag: "wx" },
+    );
   } catch (error) {
     failures.push(error);
   }
-  if (failures.length) throw new AggregateError(failures, "Owned product qualification failed");
 }
+if (failures.length) throw new AggregateError(failures, "Owned product qualification failed");
