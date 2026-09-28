@@ -1084,9 +1084,17 @@ export class MirrorControlChannel implements MirrorChannelIo {
   private viewerReadyUnsubscribe: (() => void) | null = null;
   private viewerHandshakeStarted = false;
   private viewerConfig: NativeViewerControlOptions | undefined;
-  private retireNativeViewer(): void {
-    this.viewerReadyUnsubscribe?.();
+  private unsubscribeNativeViewerReady(): void {
+    const unsubscribe = this.viewerReadyUnsubscribe;
     this.viewerReadyUnsubscribe = null;
+    try {
+      unsubscribe?.();
+    } catch {
+      /* optional metadata only */
+    }
+  }
+  private retireNativeViewer(): void {
+    this.unsubscribeNativeViewerReady();
     this.viewerIdentity = null;
     if (this.viewerRetired) return;
     this.viewerRetired = true;
@@ -1098,19 +1106,32 @@ export class MirrorControlChannel implements MirrorChannelIo {
   }
   private initializeNativeViewer(): Promise<void> {
     if (this.exited || this.viewerRetired || this.viewerHandshakeStarted) return Promise.resolve();
-    const config = this.opts.nativeViewer ?? this.opts.nativeViewerReady?.get();
+    let config: NativeViewerControlOptions | undefined;
+    try {
+      config = this.opts.nativeViewer ?? this.opts.nativeViewerReady?.get();
+    } catch {
+      this.retireNativeViewer();
+      return Promise.resolve();
+    }
     if (!config) {
       if (!this.viewerReadyUnsubscribe && this.opts.nativeViewerReady) {
-        this.viewerReadyUnsubscribe = this.opts.nativeViewerReady.subscribe(() => {
-          void this.initializeNativeViewer();
-        });
+        try {
+          const unsubscribe = this.opts.nativeViewerReady.subscribe(() => {
+            void this.initializeNativeViewer();
+          });
+          this.viewerReadyUnsubscribe = unsubscribe;
+          // A provider may synchronously notify or retire during subscription.
+          if (this.viewerHandshakeStarted || this.viewerRetired || this.exited)
+            this.unsubscribeNativeViewerReady();
+        } catch {
+          this.retireNativeViewer();
+        }
       }
       return Promise.resolve();
     }
     this.viewerHandshakeStarted = true;
     this.viewerConfig = config;
-    this.viewerReadyUnsubscribe?.();
-    this.viewerReadyUnsubscribe = null;
+    this.unsubscribeNativeViewerReady();
     return new Promise((resolve) => {
       let settled = false;
       const finish = (identity: NativeJournalIdentity | null) => {

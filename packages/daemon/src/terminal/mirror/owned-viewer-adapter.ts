@@ -55,7 +55,13 @@ export class OwnedViewerAdapter {
     return this.authority.subscribeReady?.(listener) ?? (() => {});
   }
   controlOptions(): NativeViewerControlOptions | undefined {
-    const capability = this.authority.capability();
+    let capability: { serverEpoch: string } | null;
+    try {
+      capability = this.authority.capability();
+    } catch {
+      this.#uncertain();
+      return undefined;
+    }
     if (this.#disposed || !capability) return undefined;
     return {
       serverEpoch: capability.serverEpoch,
@@ -88,7 +94,15 @@ export class OwnedViewerAdapter {
   ): boolean {
     const identity = this.#identity,
       connection = this.#connection;
-    const actual = io.nativeViewerIdentity;
+    let actual: NativeJournalIdentity | null | undefined;
+    let capability: { serverEpoch: string } | null;
+    try {
+      actual = io.nativeViewerIdentity;
+      capability = this.authority.capability();
+    } catch {
+      this.#uncertain();
+      return false;
+    }
     if (
       this.#disposed ||
       io !== this.#io ||
@@ -97,7 +111,7 @@ export class OwnedViewerAdapter {
       !actual ||
       actual.serverEpoch !== identity.serverEpoch ||
       actual.connectionId !== identity.connectionId ||
-      this.authority.capability()?.serverEpoch !== identity.serverEpoch ||
+      capability?.serverEpoch !== identity.serverEpoch ||
       !io.commandNativeViewerInline ||
       !/^%(0|[1-9][0-9]*)$/.test(request.paneId) ||
       !/^[1-9][0-9]*$/.test(request.paneBirthId) ||

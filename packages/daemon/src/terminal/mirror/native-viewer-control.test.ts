@@ -40,7 +40,12 @@ function core() {
 function fixture(options?: {
   onIdentity?: (i: typeof identity) => boolean;
   configured?: boolean;
-  late?: { ready: boolean; wake?: () => void; unsubscribe: ReturnType<typeof vi.fn> };
+  late?: {
+    ready: boolean;
+    wake?: () => void;
+    unsubscribe: ReturnType<typeof vi.fn>;
+    fail?: "get" | "subscribe";
+  };
 }) {
   const proc = Object.assign(new EventEmitter(), {
     stdin: new PassThrough(),
@@ -69,8 +74,12 @@ function fixture(options?: {
     ...(options?.late
       ? {
           nativeViewerReady: {
-            get: () => (options.late!.ready ? { serverEpoch, onIdentity, onRetired } : undefined),
+            get: () => {
+              if (options.late!.fail === "get") throw new Error("retired owner");
+              return options.late!.ready ? { serverEpoch, onIdentity, onRetired } : undefined;
+            },
             subscribe: (wake: () => void) => {
+              if (options.late!.fail === "subscribe") throw new Error("subscriber cap");
               options.late!.wake = wake;
               return options.late!.unsubscribe;
             },
@@ -369,4 +378,32 @@ it("unsubscribes readiness on exit and ignores a queued late wake", async () => 
   late.wake!();
   expect(late.unsubscribe).toHaveBeenCalledOnce();
   expect(f.writes).not.toContain("tmux-ide-events -i\n");
+});
+
+it.each(["get", "subscribe"] as const)(
+  "degrades readiness %s failure without failing startup or input",
+  async (fail) => {
+    const late = { ready: false, unsubscribe: vi.fn(), fail };
+    const f = fixture({ late });
+    await start(f);
+    f.channel.send("send-keys -t %1 Enter");
+    f.proc.stdout.write(block(2));
+    expect(f.writes).toContain("send-keys -t %1 Enter\n");
+    expect(f.writes).not.toContain("tmux-ide-events -i\n");
+    await f.channel.dispose();
+    await f.channel.dispose();
+  },
+);
+it("isolates failing readiness disposal", async () => {
+  const late = {
+    ready: false,
+    unsubscribe: vi.fn(() => {
+      throw new Error("retired status");
+    }),
+  };
+  const f = fixture({ late });
+  await start(f);
+  await f.channel.dispose();
+  await f.channel.dispose();
+  expect(late.unsubscribe).toHaveBeenCalledOnce();
 });

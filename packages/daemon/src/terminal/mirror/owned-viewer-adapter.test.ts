@@ -23,10 +23,14 @@ function setup() {
   const bindings = new OwnedNativeInteractionBindings({ environmentId, serverScope, serverEpoch });
   const uncertain = vi.fn();
   let ready = true;
+  let capabilityFailure = false;
   const adapter = new OwnedViewerAdapter({
     environmentId,
     serverScope,
-    capability: () => (ready ? { serverEpoch } : null),
+    capability: () => {
+      if (capabilityFailure) throw new Error("retired owner");
+      return ready ? { serverEpoch } : null;
+    },
     register: (value) => bindings.registerConnection(value, "viewer"),
     admit: (value) => bindings.admit(value),
     acknowledge: (permit, connection, ack) => {
@@ -52,6 +56,9 @@ function setup() {
     io,
     send,
     uncertain,
+    failCapability: () => {
+      capabilityFailure = true;
+    },
     disable: () => {
       ready = false;
     },
@@ -172,4 +179,16 @@ it("acknowledges only this handshake grant and retires it on control exit", () =
   s.options.onRetired();
   expect(s.bindings.size).toMatchObject({ permits: 0, connections: 0 });
   expect(s.adapter.tryDispatch(s.io, request, vi.fn())).toBe(false);
+});
+
+it("treats a throwing owner capability as optional metadata failure", () => {
+  const s = setup();
+  s.options.onIdentity(identity);
+  s.failCapability();
+  expect(s.adapter.controlOptions()).toBeUndefined();
+  expect(s.adapter.tryDispatch(s.io, request, vi.fn())).toBe(false);
+  expect(s.send).not.toHaveBeenCalled();
+  s.adapter.dispose();
+  s.adapter.dispose();
+  expect(s.bindings.size.connections).toBe(0);
 });
