@@ -8,6 +8,27 @@ const uuid = z.uuid();
 const time = z.iso.datetime({ offset: true });
 const authority = { environmentId: EnvironmentIdSchema, serverScope: TmuxServerScopeSchemaZ };
 
+/** Decimal uint64 avoids JavaScript's unsafe integer range. Epoch is native, not daemon identity. */
+export const NativeInteractionSequenceSchemaZ = z
+  .string()
+  .regex(/^(0|[1-9][0-9]{0,19})$/u)
+  .refine(
+    (value) =>
+      /^(0|[1-9][0-9]{0,19})$/u.test(value) && BigInt(value) <= 18_446_744_073_709_551_615n,
+    "sequence exceeds uint64",
+  );
+/** Immutable physical pane identity; zero is reserved for unproven birth. */
+export const NativePaneIdentitySchemaZ = z
+  .object({
+    serverEpoch: uuid,
+    paneBirthId: NativeInteractionSequenceSchemaZ.refine(
+      (value) => value !== "0",
+      "pane birth must be positive",
+    ),
+  })
+  .strict();
+export type NativePaneIdentity = z.infer<typeof NativePaneIdentitySchemaZ>;
+
 /** Public endpoints never expose socket paths or recyclable native pane numbers. */
 export const InteractionPaneEndpointSchemaZ = z.discriminatedUnion("kind", [
   z
@@ -18,6 +39,9 @@ export const InteractionPaneEndpointSchemaZ = z.discriminatedUnion("kind", [
       workspaceName: DesktopWorkspaceNameSchemaZ,
       semanticPaneId: TerminalAttachmentSemanticPaneIdSchemaZ,
     })
+    .strict(),
+  z
+    .object({ kind: z.literal("native-pane"), ...authority, ...NativePaneIdentitySchemaZ.shape })
     .strict(),
   z.object({ kind: z.literal("unresolved-pane"), ...authority, observationRef: uuid }).strict(),
 ]);
@@ -50,15 +74,6 @@ export const InteractionActorEvidenceSchemaZ = z.discriminatedUnion("kind", [
 ]);
 export type InteractionActorEvidence = z.infer<typeof InteractionActorEvidenceSchemaZ>;
 
-/** Decimal uint64 avoids JavaScript's unsafe integer range. Epoch is native, not daemon identity. */
-export const NativeInteractionSequenceSchemaZ = z
-  .string()
-  .regex(/^(0|[1-9][0-9]{0,19})$/u)
-  .refine(
-    (value) =>
-      /^(0|[1-9][0-9]{0,19})$/u.test(value) && BigInt(value) <= 18_446_744_073_709_551_615n,
-    "sequence exceeds uint64",
-  );
 export const NativeInteractionCursorSchemaZ = z
   .object({
     epoch: uuid,
@@ -130,6 +145,13 @@ export const InteractionEvidenceSchemaZ = z
     const issue = (path: string[], message: string) =>
       context.addIssue({ code: "custom", path, message });
     const { observation, actor, effect, endpoints } = value;
+    for (const endpoint of [endpoints.destination, endpoints.source]) {
+      if (
+        endpoint?.kind === "native-pane" &&
+        (observation.kind !== "native-journal" || endpoint.serverEpoch !== observation.cursor.epoch)
+      )
+        issue(["endpoints"], "physical pane identity requires matching native server epoch");
+    }
     if ((value.occurredAt === null) !== (value.timeBasis === "unknown"))
       issue(["timeBasis"], "unknown time requires a null occurrence timestamp");
     if (actor.kind === "unknown" && endpoints.source !== null)

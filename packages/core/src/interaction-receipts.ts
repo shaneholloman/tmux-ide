@@ -12,6 +12,19 @@ import {
 import { canEnrichInteractionEvidence } from "./interaction-evidence.ts";
 
 type ResolvedInteractionEndpoint = Extract<InteractionPaneEndpoint, { kind: "pane" }>;
+/** Physical evidence keys never include a mutable session/semantic alias. */
+export function interactionNativePaneEndpointKey(
+  endpoint: Extract<InteractionPaneEndpoint, { kind: "native-pane" }>,
+): string {
+  return JSON.stringify([
+    "native-pane",
+    endpoint.environmentId,
+    endpoint.serverScope.serverId,
+    endpoint.serverScope.generation,
+    endpoint.serverEpoch,
+    endpoint.paneBirthId,
+  ]);
+}
 export function interactionPaneEndpointKey(endpoint: ResolvedInteractionEndpoint): string {
   return JSON.stringify([
     endpoint.environmentId,

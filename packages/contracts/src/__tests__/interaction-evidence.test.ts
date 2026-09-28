@@ -212,3 +212,51 @@ describe("native orphan effects", () => {
     ).toBe(true);
   });
 });
+
+describe("immutable native pane identity", () => {
+  const physical = {
+    kind: "native-pane",
+    environmentId: id,
+    serverScope: endpoint.serverScope,
+    serverEpoch: id,
+    paneBirthId: "9007199254740993",
+  };
+  it("retains physical birth without a semantic placement claim", () => {
+    const value = { ...native, endpoints: { source: null, destination: physical } };
+    expect(InteractionEvidenceSchemaZ.parse(value)).toEqual(value);
+    expect(
+      InteractionEvidenceSchemaZ.safeParse({
+        ...value,
+        endpoints: { source: null, destination: { ...physical, workspaceName: "invented" } },
+      }).success,
+    ).toBe(false);
+  });
+  it.each(["0", "-1", "01", "18446744073709551616", "1.5"])(
+    "rejects invalid birth %s",
+    (paneBirthId) => {
+      expect(
+        InteractionEvidenceSchemaZ.safeParse({
+          ...native,
+          endpoints: { source: null, destination: { ...physical, paneBirthId } },
+        }).success,
+      ).toBe(false);
+    },
+  );
+  it("requires native observation with exactly matching server epoch", () => {
+    expect(
+      InteractionEvidenceSchemaZ.safeParse({
+        ...stock,
+        endpoints: { source: null, destination: physical },
+      }).success,
+    ).toBe(false);
+    expect(
+      InteractionEvidenceSchemaZ.safeParse({
+        ...native,
+        endpoints: {
+          source: null,
+          destination: { ...physical, serverEpoch: "22222222-2222-4222-8222-222222222222" },
+        },
+      }).success,
+    ).toBe(false);
+  });
+});
