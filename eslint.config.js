@@ -237,8 +237,9 @@ export default [
         {
           patterns: [
             {
-              group: ["@tmux-ide/*", "!@tmux-ide/contracts"],
-              message: "sdk is host-neutral and may only import @tmux-ide/contracts",
+              regex: "^@tmux-ide/(?!contracts(?:/|$)|daemon-client/owner-action-client$)",
+              message:
+                "sdk may import contracts and the host-neutral owner-action-client subpath only",
             },
             {
               group: ["**/packages/*/src/**", "!**/packages/sdk/src/**"],

@@ -109,6 +109,13 @@ colors, duplicate input listeners, and direct renderer-side tmux mutation.
 - `apps/electron-shell` and `app/` — future desktop work, outside the 2.9 product cut
 - `docs/` — marketing site and user documentation
 
+The SDK shares owner-action HTTP/retry behavior through the single exported
+`@tmux-ide/daemon-client/owner-action-client` subpath. It may not import the
+client package root or other client implementations. This Web-platform-only
+transport is a build-time SDK dependency; publishing a standalone SDK requires
+bundling private workspace code and declarations plus an external consumer
+check. The current source package is not that qualified distribution.
+
 ## Public daemon boundary
 
 The command center exposes a reusable protocol:

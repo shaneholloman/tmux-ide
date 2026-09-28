@@ -517,6 +517,9 @@ importers:
         specifier: workspace:*
         version: link:../contracts
     devDependencies:
+      '@tmux-ide/daemon-client':
+        specifier: workspace:*
+        version: link:../daemon-client
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
