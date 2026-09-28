@@ -378,30 +378,29 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
     sourceCredentials.dispose();
     const observationDisposal = observationSelector.dispose();
     disposePromise = (async () => {
-      await observationDisposal;
-      await sessionOpener.dispose();
-      await sessionCreator.dispose();
-      await paneCreation.dispose();
-      try {
-        await paneStreamRuntime.dispose();
-      } finally {
+      const failures: unknown[] = [];
+      for (const close of [
+        () => observationDisposal,
+        () => sessionOpener.dispose(),
+        () => sessionCreator.dispose(),
+        () => paneCreation.dispose(),
+        () => paneStreamRuntime.dispose(),
+        () => observer.dispose(),
+        () => terminalInventoryRuntime.dispose(),
+        () => multiplexer.dispose(),
+        () => sessionRuntimeRegistry.dispose(),
+        () => interactionReceipts.dispose(),
+        () => interactionEvidence.dispose(),
+        () => interactionObservation.dispose(),
+      ]) {
         try {
-          await observer.dispose();
-        } finally {
-          terminalInventoryRuntime.dispose();
-          try {
-            await multiplexer.dispose();
-          } finally {
-            try {
-              await sessionRuntimeRegistry.dispose();
-            } finally {
-              interactionReceipts.dispose();
-              interactionEvidence.dispose();
-              interactionObservation.dispose();
-            }
-          }
+          await close();
+        } catch (error) {
+          failures.push(error);
         }
       }
+      if (failures.length)
+        throw new AggregateError(failures, "Tmux server owner retirement failed");
     })();
     return disposePromise;
   };

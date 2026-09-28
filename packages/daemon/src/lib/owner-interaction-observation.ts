@@ -146,7 +146,12 @@ export class OwnerInteractionObservation {
       if (this.#selection !== "native" || !this.#projector) return;
       if (event.type === "reset") {
         this.#publish(this.#projector.reset(event.cursor.journalEpoch));
-        this.#options.status.noteGap("epoch-reset");
+        this.#options.status.setNativeStatus({
+          ...this.#options.status.getSnapshot(),
+          cursor: { epoch: event.cursor.journalEpoch, sequence: event.cursor.sequence },
+          lastGap: { reason: "epoch-reset", at: new Date().toISOString(), range: null },
+          droppedCount: null,
+        });
         return;
       }
       if (event.type === "gap") {
@@ -194,10 +199,13 @@ export class OwnerInteractionObservation {
     if (this.#disposal) return this.#disposal;
     this.#disposed = true;
     return (this.#disposal = (async () => {
-      await this.#reader?.dispose();
-      // Retired pending assembly is not new live evidence.
-      this.#projector?.dispose();
-      this.#projector = null;
+      try {
+        await this.#reader?.dispose();
+      } finally {
+        // Retired pending assembly is not new live evidence.
+        this.#projector?.dispose();
+        this.#projector = null;
+      }
     })());
   }
 }

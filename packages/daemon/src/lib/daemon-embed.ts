@@ -1332,8 +1332,19 @@ async function startEmbeddedDaemonGeneration(
       }),
     });
     const disposeInteractionObservation = async () => {
-      await observationSelector?.dispose();
-      await externalInteractionObserver.dispose();
+      const failures: unknown[] = [];
+      try {
+        await observationSelector?.dispose();
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        await externalInteractionObserver.dispose();
+      } catch (error) {
+        failures.push(error);
+      }
+      if (failures.length)
+        throw new AggregateError(failures, "Interaction observer retirement failed");
     };
     let terminalAttachmentRuntime: NativeTerminalAttachmentRuntime | null = null;
     let paneStreamRuntime: PaneStreamRuntime | null = null;

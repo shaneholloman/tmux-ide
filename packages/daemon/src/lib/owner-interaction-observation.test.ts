@@ -223,3 +223,38 @@ it("keeps authored hook completion independent from passive native selection", a
   expect(invalidate).toHaveBeenCalledTimes(2);
   await r.selector.dispose();
 });
+
+it("updates the reset cursor and gap together even when the new journal stays idle", async () => {
+  const r = rig();
+  const start = r.selector.start();
+  r.event({ type: "state", status: "ready", capability: cap });
+  r.finish("ready");
+  await start;
+  const nextEpoch = "00000000-0000-4000-8000-000000000003";
+  r.event({
+    type: "reset",
+    previous: { serverEpoch: id, journalEpoch: epoch, sequence: "7" },
+    cursor: { serverEpoch: id, journalEpoch: nextEpoch, sequence: "0" },
+  });
+  expect(r.status.getSnapshot()).toMatchObject({
+    method: "native-journal",
+    cursor: { epoch: nextEpoch, sequence: "0" },
+    lastGap: { reason: "epoch-reset" },
+    droppedCount: null,
+  });
+  await r.selector.dispose();
+});
+it("retires permanently even if reader disposal rejects", async () => {
+  const r = rig();
+  const start = r.selector.start();
+  r.event({ type: "state", status: "ready", capability: cap });
+  r.finish("ready");
+  await start;
+  r.dispose.mockRejectedValueOnce(new Error("reader cleanup failed"));
+  const first = r.selector.dispose();
+  await expect(first).rejects.toThrow("reader cleanup failed");
+  expect(r.selector.dispose()).toBe(first);
+  expect(r.selector.allowStockPublication()).toBe(false);
+  r.event({ type: "state", status: "ready", capability: cap });
+  expect(r.journal.read(0).receipts).toHaveLength(0);
+});
