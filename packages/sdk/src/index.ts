@@ -1,4 +1,10 @@
 import { dispatchOwnerAction } from "@tmux-ide/daemon-client/owner-action-client";
+export {
+  createAutomationClient as createTmuxIdeAutomationSdk,
+  AutomationInvocationError,
+  type AutomationClient as TmuxIdeAutomationSdk,
+  type AutomationClientOptions as TmuxIdeAutomationSdkOptions,
+} from "@tmux-ide/daemon-client/automation-client";
 import {
   DAEMON_RESOURCE_KINDS,
   DAEMON_RESOURCE_RESULT_SCHEMAS,

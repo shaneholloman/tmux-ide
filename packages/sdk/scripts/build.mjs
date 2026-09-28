@@ -52,6 +52,9 @@ try {
       "@tmux-ide/daemon-client/owner-action-client": [
         "packages/daemon-client/src/owner-action-client.ts",
       ],
+      "@tmux-ide/daemon-client/automation-client": [
+        "packages/daemon-client/src/automation-client.ts",
+      ],
     },
   };
   const program = ts.createProgram([entry], options);
@@ -85,6 +88,8 @@ try {
           if (id === "@tmux-ide/contracts") return join(stage, "packages/contracts/src/index.d.ts");
           if (id === "@tmux-ide/daemon-client/owner-action-client")
             return join(stage, "packages/daemon-client/src/owner-action-client.d.ts");
+          if (id === "@tmux-ide/daemon-client/automation-client")
+            return join(stage, "packages/daemon-client/src/automation-client.d.ts");
         },
       },
       dts({ respectExternal: true }),

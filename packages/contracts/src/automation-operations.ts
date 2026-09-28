@@ -130,12 +130,13 @@ export const AutomationExecuteResponseSchemaZ = z
     )
       ctx.addIssue({ code: "custom", message: "Snapshot byte count mismatch" });
   });
-export const AutomationStatusResponseSchemaZ = z.discriminatedUnion(
-  "status",
-  AutomationOperationStatusSchemaZ.options.map((schema) =>
-    schema.extend({ version: z.literal(1), handle: AutomationOperationHandleSchemaZ }),
-  ),
-);
+const statusEnvelope = { version: z.literal(1), handle: AutomationOperationHandleSchemaZ };
+export const AutomationStatusResponseSchemaZ = z.discriminatedUnion("status", [
+  AutomationOperationStatusSchemaZ.options[0].extend(statusEnvelope),
+  AutomationOperationStatusSchemaZ.options[1].extend(statusEnvelope),
+  AutomationOperationStatusSchemaZ.options[2].extend(statusEnvelope),
+  AutomationOperationStatusSchemaZ.options[3].extend(statusEnvelope),
+]);
 export const AutomationErrorResponseSchemaZ = z
   .object({
     error: z

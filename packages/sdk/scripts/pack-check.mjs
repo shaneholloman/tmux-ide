@@ -53,22 +53,26 @@ try {
   writeFileSync(
     join(directory, "consumer.mjs"),
     `
-import { createTmuxIdeOwnerSdk, createTmuxIdeDaemonSdk, createTmuxIdeSdk } from '@tmux-ide/sdk';
+import { createTmuxIdeOwnerSdk, createTmuxIdeDaemonSdk, createTmuxIdeSdk, createTmuxIdeAutomationSdk } from '@tmux-ide/sdk';
 if (typeof createTmuxIdeDaemonSdk !== 'function' || typeof createTmuxIdeSdk !== 'function') throw Error('Missing factory');
 let calls = 0;
 const sdk = createTmuxIdeOwnerSdk({ baseUrl: 'http://localhost:4000/', ownerToken: 'test', fetch: async () => { calls++; return Response.json({ok:false,error:{code:'forbidden',message:'refused'}}); } });
 try { await sdk.sendPane({workspaceName:'project',semanticPaneId:'pane.test',text:'hello',submit:true}); throw Error('Unexpected success'); }
 catch (error) { if (error.code !== 'forbidden' || calls !== 1) throw error; }
+const automation = createTmuxIdeAutomationSdk({baseUrl:'http://localhost:4000',ownerToken:'test',fetch:async () => Response.json({version:1,panes:[]})});
+if ((await automation.discover()).panes.length !== 0) throw Error('Invalid automation discovery');
 `,
   );
   run(process.execPath, ["consumer.mjs"]);
   writeFileSync(
     join(directory, "consumer.ts"),
     `
-import { createTmuxIdeOwnerSdk, type WorkspacePaneSendResult } from '@tmux-ide/sdk';
+import { createTmuxIdeOwnerSdk, createTmuxIdeAutomationSdk, type WorkspacePaneSendResult, type AutomationPanesResponse } from '@tmux-ide/sdk';
 const sdk = createTmuxIdeOwnerSdk({baseUrl:'http://localhost:4000',ownerToken:'test'});
 const result: Promise<WorkspacePaneSendResult> = sdk.sendPane({workspaceName:'project',semanticPaneId:'pane.test',text:'hello',submit:true});
 void result;
+const discovered: Promise<AutomationPanesResponse> = createTmuxIdeAutomationSdk({baseUrl:'http://localhost:4000',ownerToken:'test'}).discover();
+void discovered;
 `,
   );
   run(process.execPath, [
