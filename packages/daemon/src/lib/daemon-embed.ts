@@ -96,6 +96,7 @@ import { FleetLifecycleAuthority } from "./fleet-lifecycle-authority.ts";
 import { AppWindowMutationAuthority } from "./app-window-mutation.ts";
 import { WorkspaceMultiplexerAuthority } from "./workspace-multiplexer-verbs.ts";
 import { TmuxExternalInteractionObserver } from "./tmux-external-interaction-observer.ts";
+import { createTmuxInteractionObservationHandler } from "./tmux-interaction-observation-handler.ts";
 import {
   createNativeTerminalAttachmentRuntime,
   type NativeTerminalAttachmentRuntime,
@@ -1255,19 +1256,14 @@ async function startEmbeddedDaemonGeneration(
       // A gap cannot reconstruct historical interactions. Refresh inventory
       // facts while authored operations retain their observation deadlines.
       onGap: () => terminalInventoryRuntime?.invalidate(),
-      onObserved: ({ workspaceName, semanticPaneId, operationKind, operationId }) => {
-        if (operationKind !== "workspace.pane.read") terminalInventoryRuntime?.invalidate();
-        if (operationId) {
-          const consumed =
-            sessionRuntimeRegistry?.observeTmuxInteraction({
-              operationId,
-              workspaceName,
-              semanticPaneId,
-              operationKind,
-            }) ?? false;
-          if (consumed) return true;
-        }
-        try {
+      onObserved: createTmuxInteractionObservationHandler({
+        invalidateInventory: () => terminalInventoryRuntime?.invalidate(),
+        consumeAuthored: (observation) =>
+          sessionRuntimeRegistry?.observeTmuxInteraction({
+            ...observation,
+            operationId: observation.operationId!,
+          }) ?? false,
+        publishExternal: ({ workspaceName, semanticPaneId, operationKind }) => {
           broadcastInteractionReceipt(
             {
               operationId: randomUUID(),
@@ -1284,11 +1280,11 @@ async function startEmbeddedDaemonGeneration(
             },
             instanceId,
           );
-        } catch (error) {
+        },
+        reportPublicationFailure: (error) => {
           if (!opts.silent) console.error("[daemon] External interaction receipt failed:", error);
-        }
-        return false;
-      },
+        },
+      }),
     });
     let terminalAttachmentRuntime: NativeTerminalAttachmentRuntime | null = null;
     let paneStreamRuntime: PaneStreamRuntime | null = null;
