@@ -11,6 +11,17 @@ index ba9142f..a99d83e 100644
  	cmd-refresh-client.c \
  	cmd-rename-session.c \
  	cmd-rename-window.c \
+diff --git a/cmd-capture-pane.c b/cmd-capture-pane.c
+index ee91f05..6eaff08 100644
+--- a/cmd-capture-pane.c
++++ b/cmd-capture-pane.c
+@@ -404,5 +404,6 @@ cmd_capture_pane_exec(struct cmd *self, struct cmdq_item *item)
+ 		}
+ 	}
+ 
++	tmux_ide_interaction_effect(wp->id, 6, len);
+ 	return (CMD_RETURN_NORMAL);
+ }
 diff --git a/cmd-if-shell.c b/cmd-if-shell.c
 index f0c3637..585e6b7 100644
 --- a/cmd-if-shell.c
@@ -39,8 +50,41 @@ index f0c3637..585e6b7 100644
  		cmdq_append(c, new_item);
  	} else {
  		new_item = cmdq_get_command(cmdlist, cmdq_get_state(item));
+diff --git a/cmd-paste-buffer.c b/cmd-paste-buffer.c
+index 7233b7d..a07a0c8 100644
+--- a/cmd-paste-buffer.c
++++ b/cmd-paste-buffer.c
+@@ -64,12 +64,16 @@ cmd_paste_buffer_exec(struct cmd *self, struct cmdq_item *item)
+ 	const char		*sepstr, *bufname, *bufdata, *bufend, *line;
+ 	size_t			 seplen, bufsize, len;
+ 	int			 bracket = args_has(args, 'p');
++	size_t before = 0, after;
++	int measure = tmux_ide_interaction_measuring();
+ 
+ 	if (window_pane_exited(wp)) {
+ 		cmdq_error(item, "target pane has exited");
+ 		return (CMD_RETURN_ERROR);
+ 	}
+ 
++	if (measure)
++		before = EVBUFFER_LENGTH(wp->event->output);
+ 	bufname = NULL;
+ 	if (args_has(args, 'b'))
+ 		bufname = args_get(args, 'b');
+@@ -125,6 +129,11 @@ cmd_paste_buffer_exec(struct cmd *self, struct cmdq_item *item)
+ 			bufferevent_write(wp->event, "\033[201~", 6);
+ 	}
+ 
++	if (measure) {
++		after = EVBUFFER_LENGTH(wp->event->output);
++		if (after > before)
++			tmux_ide_interaction_effect(wp->id, 5, after - before);
++	}
+ 	if (pb != NULL && args_has(args, 'd'))
+ 		paste_free(pb);
+ 
 diff --git a/cmd-queue.c b/cmd-queue.c
-index 2a22151..fe19ce8 100644
+index 2a22151..7d8f084 100644
 --- a/cmd-queue.c
 +++ b/cmd-queue.c
 @@ -39,6 +39,10 @@ enum cmdq_type {
@@ -193,7 +237,25 @@ index 2a22151..fe19ce8 100644
  	if (cfg_finished)
  		cmdq_add_message(item);
  	if (log_get_level() > 1) {
-@@ -663,6 +725,41 @@ cmdq_fire_command(struct cmdq_item *item)
+@@ -646,7 +708,16 @@ cmdq_fire_command(struct cmdq_item *item)
+ 	if (retval == CMD_RETURN_ERROR)
+ 		goto out;
+ 
+-	retval = entry->exec(cmd, item);
++	if (strcmp(entry->name, "send-keys") == 0 ||
++	    strcmp(entry->name, "capture-pane") == 0 ||
++	    strcmp(entry->name, "paste-buffer") == 0 ||
++	    strcmp(entry->name, "send-prefix") == 0) {
++		tmux_ide_interaction_begin(item->interaction_command_id,
++					   &item->origin);
++		retval = entry->exec(cmd, item);
++		tmux_ide_interaction_end();
++	} else
++		retval = entry->exec(cmd, item);
+ 	if (retval == CMD_RETURN_ERROR)
+ 		goto out;
+ 
+@@ -663,6 +734,41 @@ cmdq_fire_command(struct cmdq_item *item)
  	}
  
  out:
@@ -295,6 +357,36 @@ index b88072d..2974180 100644
  		status = cmd_parse_and_append(line, NULL, c, state, &error);
  		if (status == CMD_PARSE_ERROR)
  			cmdq_append(c, cmdq_get_callback(control_error, error));
+diff --git a/input-keys.c b/input-keys.c
+index fdce540..70d9b0a 100644
+--- a/input-keys.c
++++ b/input-keys.c
+@@ -397,6 +397,8 @@ input_key_build(void)
+ int
+ input_key_pane(struct window_pane *wp, key_code key, struct mouse_event *m)
+ {
++	int retval = 0, measure = tmux_ide_interaction_measuring();
++	size_t before = measure ? EVBUFFER_LENGTH(wp->event->output) : 0, after;
+ 	if (log_get_level() != 0) {
+ 		log_debug("writing key 0x%llx (%s) to %%%u", key,
+ 		    key_string_lookup_key(key, 1), wp->id);
+@@ -405,9 +407,14 @@ input_key_pane(struct window_pane *wp, key_code key, struct mouse_event *m)
+ 	if (KEYC_IS_MOUSE(key)) {
+ 		if (m != NULL && m->wp != -1 && (u_int)m->wp == wp->id)
+ 			input_key_mouse(wp, m);
+-		return (0);
++	} else
++		retval = input_key(wp->screen, wp->event, key);
++	if (measure) {
++		after = EVBUFFER_LENGTH(wp->event->output);
++		if (after > before)
++			tmux_ide_interaction_effect(wp->id, 5, after - before);
+ 	}
+-	return (input_key(wp->screen, wp->event, key));
++	return retval;
+ }
+ 
+ static void
 diff --git a/notify.c b/notify.c
 index 8605601..b1edb72 100644
 --- a/notify.c
@@ -390,10 +482,10 @@ index 49cac8b..3517036 100644
  	status_prompt_save_history();
 diff --git a/tmux-ide-journal.c b/tmux-ide-journal.c
 new file mode 100644
-index 0000000..c11f524
+index 0000000..efb885f
 --- /dev/null
 +++ b/tmux-ide-journal.c
-@@ -0,0 +1,438 @@
+@@ -0,0 +1,521 @@
 +/*
 + * Copyright (c) 2026 wavyrai
 + *
@@ -542,6 +634,88 @@ index 0000000..c11f524
 +		    (uint64_t)now.tv_sec * 1000000 + now.tv_nsec / 1000;
 +	tmux_ide_interaction_append(&record);
 +}
++/* Fixed synchronous aggregation: never retained across an event-loop yield. */
++#define TI_EFFECT_TARGETS 64
++static struct {
++	unsigned depth, used;
++	uint64_t command;
++	struct ti_origin origin;
++	struct {
++		unsigned pane, kind;
++		uint64_t count;
++	} targets[TI_EFFECT_TARGETS];
++} ti_effects;
++void
++tmux_ide_interaction_begin(uint64_t command, const struct ti_origin *origin)
++{
++	if (!ti_journal)
++		return;
++	if (ti_effects.depth++) {
++		ti_degrade(8);
++		return;
++	}
++	ti_effects.used = 0;
++	ti_effects.command = command;
++	ti_effects.origin = *origin;
++}
++int
++tmux_ide_interaction_measuring(void)
++{
++	return ti_effects.depth == 1;
++}
++void
++tmux_ide_interaction_effect(unsigned pane, unsigned kind, uint64_t count)
++{
++	unsigned i;
++	if (ti_effects.depth != 1)
++		return;
++	for (i = 0; i < ti_effects.used; i++)
++		if (ti_effects.targets[i].pane == pane &&
++		    ti_effects.targets[i].kind == kind)
++			break;
++	if (i == TI_EFFECT_TARGETS) {
++		ti_degrade(8);
++		return;
++	}
++	if (i == ti_effects.used) {
++		ti_effects.used++;
++		ti_effects.targets[i].pane = pane;
++		ti_effects.targets[i].kind = kind;
++		ti_effects.targets[i].count = 0;
++	}
++	if (UINT64_MAX - ti_effects.targets[i].count < count) {
++		ti_degrade(8);
++		return;
++	}
++	ti_effects.targets[i].count += count;
++}
++void
++tmux_ide_interaction_end(void)
++{
++	unsigned i;
++	struct ti_record record = {0};
++	struct timespec now;
++	if (!ti_effects.depth || --ti_effects.depth)
++		return;
++	record.command_id = ti_effects.command;
++	record.issuer_id = ti_effects.origin.issuer_id;
++	record.request_id = ti_effects.origin.request_id;
++	record.parent_id = ti_effects.origin.parent_id;
++	record.transport = ti_effects.origin.transport;
++	record.derivation = ti_effects.origin.derivation;
++	record.flags = 1;
++	record.outcome = 1;
++	if (clock_gettime(CLOCK_MONOTONIC, &now) == 0)
++		record.monotonic_us =
++		    (uint64_t)now.tv_sec * 1000000 + now.tv_nsec / 1000;
++	for (i = 0; i < ti_effects.used; i++) {
++		record.kind = ti_effects.targets[i].kind;
++		record.target_id = ti_effects.targets[i].pane;
++		record.count = ti_effects.targets[i].count;
++		tmux_ide_interaction_append(&record);
++	}
++	ti_effects.used = 0;
++}
 +void
 +tmux_ide_interaction_forget(struct cmdq_item *item)
 +{
@@ -616,7 +790,8 @@ index 0000000..c11f524
 +	    item,
 +	    "{\"schemaVersion\":1,\"type\":\"capability\","
 +	    "\"serverEpoch\":\"%s\",\"journalEpoch\":\"%s\",\"enabled\":%s,"
-+	    "\"coverage\":[\"command-outcome-v1\"],\"capacity\":%u,"
++	    "\"coverage\":[\"command-outcome-v1\",\"pty-enqueue-v1\",\"capture-"
++	    "produced-v1\"],\"capacity\":%u,"
 +	    "\"maxBatch\":%u,\"maxWaiters\":%u,\"waitingReaders\":%u,"
 +	    "\"degraded\":%u}",
 +	    ti_server_epoch, ti_journal_epoch, ti_journal ? "true" : "false",
@@ -910,7 +1085,7 @@ index 0000000..bd395b1
 +}
 +#endif
 diff --git a/tmux.h b/tmux.h
-index c9f8a32..6b94e9f 100644
+index c9f8a32..03810ba 100644
 --- a/tmux.h
 +++ b/tmux.h
 @@ -2032,6 +2032,7 @@ typedef int (*overlay_key_cb)(struct client *, void *, struct key_event *);
@@ -921,7 +1096,7 @@ index c9f8a32..6b94e9f 100644
  	const char		*name;
  	struct tmuxpeer		*peer;
  	const char		*user;
-@@ -2935,6 +2936,25 @@ struct cmd_parse_result *cmd_parse_from_buffer(const void *, size_t,
+@@ -2935,6 +2936,29 @@ struct cmd_parse_result *cmd_parse_from_buffer(const void *, size_t,
  struct cmd_parse_result *cmd_parse_from_arguments(struct args_value *, u_int,
  		     struct cmd_parse_input *);
  
@@ -930,6 +1105,10 @@ index c9f8a32..6b94e9f 100644
 +uint64_t tmux_ide_interaction_request(void);
 +uint64_t tmux_ide_interaction_command(void);
 +int tmux_ide_interaction_enabled(void);
++void tmux_ide_interaction_begin(uint64_t, const struct ti_origin *);
++void tmux_ide_interaction_end(void);
++int tmux_ide_interaction_measuring(void);
++void tmux_ide_interaction_effect(unsigned, unsigned, uint64_t);
 +void tmux_ide_interaction_done(uint64_t, const struct ti_origin *, unsigned,
 +			       unsigned, unsigned, unsigned);
 +void cmdq_set_origin(struct cmdq_item *, const struct ti_origin *);

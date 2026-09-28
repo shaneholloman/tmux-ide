@@ -79,6 +79,11 @@ try {
     [join(root, "native/tmux/tests/journal-exhaustion.py"), join(scratch, "tmux")],
     scratch,
   );
+  run(
+    "python3",
+    [join(root, "native/tmux/tests/journal-effects.py"), join(scratch, "tmux")],
+    scratch,
+  );
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }

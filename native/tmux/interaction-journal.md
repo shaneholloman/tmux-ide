@@ -67,3 +67,22 @@ recording. A newly degraded condition wakes waiting readers. A degraded `-w`
 returns immediately: consumers must surface degradation and stop their normal
 healthy wait loop (or use a bounded backoff), rather than spin. Server restart is
 required to restore full identity coverage. The terminal path remains usable.
+
+## Command effects
+
+`pty-enqueue-v1` measures bytes appended synchronously to the target PTY output
+buffer during send-keys/send-prefix/paste-buffer execution. Kind5 records carry
+that byte count. This is not kernel delivery or application consumption. It does
+not claim coverage of ordinary keyboard ingress outside these command contexts.
+
+`capture-produced-v1` records kind6 with produced payload bytes after successful
+capture output/store; it does not prove anybody read those bytes. Kind5/6 share
+their commandId and origin with the separate command outcome. Effect records
+flush before the outcome; consumers must not depend on adjacency. Count0 on a
+command record still means no inferred effect count.
+
+Aggregation is fixed at64 unique (pane,kind) slots per command. More fanout,
+nested synchronous observation or count overflow sets degraded bit8. Recorded
+counts then represent only observed portions, not completeness. Input continues
+for all targets; no per-key allocations, content logging, or serialization occur
+in the observer. Unknown key-binding ingress stays unknown.

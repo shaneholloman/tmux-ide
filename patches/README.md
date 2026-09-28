@@ -63,7 +63,8 @@ patch identity. The second patch,
 experimental bounded metadata journal foundation. It ships disabled and currently
 advertises `command-outcome-v1` for send-keys, capture-pane, paste-buffer and
 send-prefix. Command completion is not evidence of delivered input or application
-consumption; actual input effects are not instrumented yet. Origin metadata is
+consumption. Separate `pty-enqueue-v1` and `capture-produced-v1` coverage
+measures command effects without claiming application consumption. Origin metadata is
 immutable across hooks and native delayed commands. Unknown issuers remain zero.
 It must not be treated as evidence of agent attribution. Its ISC notice is included
 in native bundles. Run `node scripts/test-tmux-interaction-native.mjs --source

@@ -23,7 +23,7 @@ def reader(after):
  return p
 try:
  call('-f','/dev/null','new-session','-d','-s','probe','cat')
- caps=event('-V'); assert caps['enabled'] is False and caps['coverage']==['command-outcome-v1']
+ caps=event('-V'); assert caps['enabled'] is False and caps['coverage']==['command-outcome-v1','pty-enqueue-v1','capture-produced-v1']
  uuid.UUID(caps['serverEpoch']); uuid.UUID(caps['journalEpoch'])
  call('tmux-ide-events','-r','-E',caps['journalEpoch'],'-a','0',ok=False)
  call('send-keys','-t','probe','-l','input-still-works')

@@ -11,7 +11,7 @@ def call(*args,ok=True):
  assert (p.returncode==0)==ok,(args,p.returncode,p.stdout,p.stderr)
  return p.stdout.strip()
 def event(*args): return json.loads(call('tmux-ide-events',*args))
-def records(): return event('-r','-E',epoch,'-a','0')['records']
+def records(): return [r for r in event('-r','-E',epoch,'-a','0')['records'] if r['kind']<=4]
 def until(predicate):
  end=time.monotonic()+3
  while not predicate():
