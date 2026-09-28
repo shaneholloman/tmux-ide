@@ -296,3 +296,34 @@ it.each(["", "0"])(
     expect(capture).not.toHaveBeenCalled();
   },
 );
+
+it.each(["birth", "epoch"] as const)(
+  "discards a native preview when its %s changes after capture without recapturing",
+  async (changed) => {
+    const epoch = "11111111-1111-4111-8111-111111111111";
+    let currentEpoch = epoch;
+    let birth = "7";
+    const run = vi.fn(async (args: string[]) =>
+      args.includes("-a")
+        ? "1\t$1\t123\tsession"
+        : args[0] === "list-windows"
+          ? "@1\tmain"
+          : args[0] === "capture-pane"
+            ? "stock"
+            : `%1\t1\t1\t@1\t0\t${birth}`,
+    );
+    const capture = vi.fn(async () => {
+      if (changed === "birth") birth = "8";
+      else currentEpoch = "22222222-2222-4222-8222-222222222222";
+      return { output: "old physical pane" };
+    });
+    const id = discoverLiveSessionSummaries(() => "1\t$1\t123\tsession")[0]!.liveSessionId;
+    const preview = createFleetPreviewCapture(run, {
+      serverEpoch: () => currentEpoch,
+      capture,
+    });
+    expect(await preview(id)).toBeNull();
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(run.mock.calls.some(([args]) => args[0] === "capture-pane")).toBe(false);
+  },
+);

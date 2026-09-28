@@ -173,6 +173,19 @@ export function createFleetPreviewCapture(
     if (!currentSessions.some((s) => s.liveSessionId === liveSessionId)) return null;
     if (selectedWindowId && !currentPanes.some((r) => r[3] === selectedWindowId && r[0] === pane))
       return null;
+    // A runtime pane ID can outlive its physical pane. Never publish a capture
+    // after the native pane birth or server epoch has changed.
+    if (
+      identity &&
+      (native?.serverEpoch() !== identity.serverEpoch ||
+        !currentPanes.some(
+          (row) =>
+            row[0] === pane &&
+            (!selectedWindowId || row[3] === selectedWindowId) &&
+            row[5] === identity.paneBirthId,
+        ))
+    )
+      return null;
     return {
       windows,
       selectedPaneId: pane,
