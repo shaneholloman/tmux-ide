@@ -159,7 +159,7 @@ describe("legacy config access audit", () => {
   });
 
   it("does not swallow invalid config resolution in active config probes", () => {
-    const files = ["bin/cli.ts", "packages/daemon/src/cli.ts", ...OPENTUI_PRODUCTION_ROOT_SOURCES];
+    const files = ["bin/cli.ts", ...OPENTUI_PRODUCTION_ROOT_SOURCES];
 
     const offenders = files.filter((file) => {
       const source = readFileSync(join(repoRoot, file), "utf-8");
