@@ -176,6 +176,44 @@ describe("native viewer identity lifetime", () => {
     await f.channel.dispose();
   });
 });
+it.each(["-I", "-pI", "-Ip"])(
+  "rejects potentially waiting display-message %s before writing",
+  async (flag) => {
+    const f = fixture();
+    const starting = f.channel.start();
+    f.proc.stdout.write(block(1));
+    await Promise.resolve();
+    f.proc.stdout.write(block(2, [JSON.stringify(identity)]));
+    await starting;
+    const count = f.writes.length;
+    expect(
+      f.channel.commandNativeViewerInline(
+        { ...request, commands: [["display-message", flag]] },
+        vi.fn(),
+      ),
+    ).toBe(false);
+    expect(f.writes).toHaveLength(count);
+    await f.channel.dispose();
+  },
+);
+it("does not restore identity when registration synchronously disposes the channel", async () => {
+  let closing: Promise<void> | undefined;
+  const f = fixture({
+    onIdentity: () => {
+      closing = f.channel.dispose();
+      return true;
+    },
+  });
+  const starting = f.channel.start();
+  f.proc.stdout.write(block(1));
+  await Promise.resolve();
+  f.proc.stdout.write(block(2, [JSON.stringify(identity)]));
+  await starting;
+  await closing;
+  expect(f.channel.nativeViewerIdentity).toBeNull();
+  expect(f.onRetired).toHaveBeenCalledTimes(1);
+  expect(f.channel.commandNativeViewerInline(request, vi.fn())).toBe(false);
+});
 describe("native wrapper FIFO boundaries", () => {
   it("consumes bounded acknowledgement separately, preserves exact selected rows, and fires inline", () => {
     const c = core(),

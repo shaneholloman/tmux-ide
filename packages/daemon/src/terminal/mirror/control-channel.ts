@@ -1097,7 +1097,14 @@ export class MirrorControlChannel implements MirrorChannelIo {
         settled = true;
         clearTimeout(timer);
         try {
-          if (!identity || this.exited || this.viewerRetired || !config.onIdentity({ ...identity }))
+          if (
+            !identity ||
+            this.exited ||
+            this.viewerRetired ||
+            !config.onIdentity({ ...identity }) ||
+            this.exited ||
+            this.viewerRetired
+          )
             this.retireNativeViewer();
           else this.viewerIdentity = identity;
         } catch {
@@ -1135,7 +1142,14 @@ export class MirrorControlChannel implements MirrorChannelIo {
       return false;
     let command: string;
     try {
-      if (request.commands.some((argv) => !NATIVE_VIEWER_PRIMITIVES.has(argv[0]!))) return false;
+      if (
+        request.commands.some(
+          (argv) =>
+            !NATIVE_VIEWER_PRIMITIVES.has(argv[0]!) ||
+            (argv[0] === "display-message" && argv.slice(1).some((arg) => /^-[^-]*I/.test(arg))),
+        )
+      )
+        return false;
       command = nativeOperationWrapperArgs(
         request.operationId,
         request.commands,
