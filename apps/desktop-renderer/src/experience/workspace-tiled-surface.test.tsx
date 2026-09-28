@@ -15,6 +15,22 @@ import { createRecordingMirrorRendererFactory } from "../terminal/mirror-pane-fi
 import type { AppWindowCanvasMirrorProps } from "./app-window-canvas.tsx";
 import { createDefaultDomPaneFrames } from "./dom-shell.ts";
 
+import { interactionPaneEndpointKey, type PaneInteractionProjection } from "@tmux-ide/core";
+import type { InteractionPaneEndpoint } from "@tmux-ide/contracts";
+type Endpoint = Extract<InteractionPaneEndpoint, { kind: "pane" }>;
+const endpoint = (semanticPaneId: string): Endpoint => ({
+  kind: "pane",
+  environmentId: "11111111-1111-4111-8111-111111111111",
+  serverScope: {
+    serverId: "tmux-server.11111111111111111111111111111111",
+    generation: "22222222-2222-4222-8222-222222222222",
+  },
+  workspaceName: "workspace.product",
+  semanticPaneId,
+  paneLifetimeId: "33333333-3333-4333-8333-333333333333",
+});
+const ENDPOINTS = new Map(["pane.a", "pane.b"].map((id) => [id, endpoint(id)]));
+
 const disposers: (() => void)[] = [];
 
 afterEach(() => {
@@ -68,6 +84,7 @@ function renderSurface(
     render(
       () => (
         <WorkspaceTiledSurface
+          paneEndpoints={ENDPOINTS}
           layouts={layouts}
           workspaceName="workspace.product"
           transport={null}
@@ -219,6 +236,7 @@ describe("the layout-faithful workspace view", () => {
       render(
         () => (
           <WorkspaceTiledSurface
+            paneEndpoints={ENDPOINTS}
             layouts={[SPLIT]}
             workspaceName="workspace.product"
             transport={null}
@@ -336,6 +354,7 @@ describe("the layout-faithful workspace view", () => {
       render(
         () => (
           <WorkspaceTiledSurface
+            paneEndpoints={ENDPOINTS}
             layouts={[SPLIT]}
             workspaceName="workspace.product"
             transport={null}
@@ -358,7 +377,12 @@ describe("the layout-faithful workspace view", () => {
     setFeed({
       sequence: 41,
       panes: {
-        "pane.b": {
+        [interactionPaneEndpointKey(endpoint("pane.b"))]: {
+          endpoint: endpoint("pane.b"),
+          sourceEndpoint: null,
+          destinationEndpoint: endpoint("pane.b"),
+          effect: { kind: "unknown" as const },
+          operationKey: "fixture-operation",
           paneId: "pane.b",
           direction: "incoming",
           sourcePaneId: null,
@@ -381,7 +405,12 @@ describe("the layout-faithful workspace view", () => {
     setFeed({
       sequence: 42,
       panes: {
-        "pane.a": {
+        [interactionPaneEndpointKey(endpoint("pane.a"))]: {
+          endpoint: endpoint("pane.a"),
+          sourceEndpoint: endpoint("pane.a"),
+          destinationEndpoint: endpoint("pane.b"),
+          effect: { kind: "input-enqueued" as const },
+          operationKey: "fixture-operation",
           paneId: "pane.a",
           direction: "outgoing",
           sourcePaneId: "pane.a",
@@ -394,7 +423,12 @@ describe("the layout-faithful workspace view", () => {
           sequence: 42,
           at: new Date().toISOString(),
         },
-        "pane.b": {
+        [interactionPaneEndpointKey(endpoint("pane.b"))]: {
+          endpoint: endpoint("pane.b"),
+          sourceEndpoint: endpoint("pane.a"),
+          destinationEndpoint: endpoint("pane.b"),
+          effect: { kind: "input-enqueued" as const },
+          operationKey: "fixture-operation",
           paneId: "pane.b",
           direction: "incoming",
           sourcePaneId: "pane.a",
@@ -437,6 +471,11 @@ describe("the layout-faithful workspace view", () => {
   it("does not clear a pane receipt when an unrelated global receipt arrives", () => {
     vi.useFakeTimers();
     const receipt = {
+      endpoint: endpoint("pane.b"),
+      sourceEndpoint: endpoint("pane.a"),
+      destinationEndpoint: endpoint("pane.b"),
+      effect: { kind: "input-enqueued" as const },
+      operationKey: "fixture-operation",
       paneId: "pane.b",
       direction: "incoming" as const,
       sourcePaneId: "pane.a",
@@ -449,13 +488,17 @@ describe("the layout-faithful workspace view", () => {
       sequence: 42,
       at: new Date().toISOString(),
     };
-    const [feed, setFeed] = createSignal({ sequence: 42, panes: { "pane.b": receipt } });
+    const [feed, setFeed] = createSignal({
+      sequence: 42,
+      panes: { [interactionPaneEndpointKey(endpoint("pane.b"))]: receipt },
+    });
     const root = document.createElement("div");
     document.body.append(root);
     disposers.push(
       render(
         () => (
           <WorkspaceTiledSurface
+            paneEndpoints={ENDPOINTS}
             layouts={[SPLIT]}
             workspaceName="workspace.product"
             transport={null}
@@ -470,7 +513,7 @@ describe("the layout-faithful workspace view", () => {
     );
     const target = root.querySelector<HTMLElement>('[data-pane="pane.b"]')!;
     expect(target.dataset.communicationActive).toBe("true");
-    setFeed({ sequence: 99, panes: { "pane.b": receipt } });
+    setFeed({ sequence: 99, panes: { [interactionPaneEndpointKey(endpoint("pane.b"))]: receipt } });
     expect(target.dataset.communicationActive).toBe("true");
     vi.advanceTimersByTime(PANE_COMMUNICATION_HIGHLIGHT_MS - 1);
     expect(target.dataset.communicationActive).toBe("true");
@@ -479,8 +522,100 @@ describe("the layout-faithful workspace view", () => {
     vi.useRealTimers();
   });
 
+  const foreignEndpoints: [string, Endpoint][] = [
+    [
+      "environment",
+      { ...endpoint("pane.b"), environmentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+    ],
+    [
+      "server",
+      {
+        ...endpoint("pane.b"),
+        serverScope: {
+          ...endpoint("pane.b").serverScope,
+          serverId: "tmux-server.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        },
+      },
+    ],
+    [
+      "generation",
+      {
+        ...endpoint("pane.b"),
+        serverScope: {
+          ...endpoint("pane.b").serverScope,
+          generation: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        },
+      },
+    ],
+    ["workspace", { ...endpoint("pane.b"), workspaceName: "workspace.other" }],
+    ["lifetime", { ...endpoint("pane.b"), paneLifetimeId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }],
+  ];
+  const projection = (target: Endpoint): PaneInteractionProjection => ({
+    endpoint: target,
+    sourceEndpoint: null,
+    destinationEndpoint: target,
+    paneId: target.semanticPaneId,
+    sourcePaneId: null,
+    destinationPaneId: target.semanticPaneId,
+    direction: "incoming",
+    operationKind: "workspace.pane.send",
+    phase: "observed",
+    origin: "external",
+    operationId: "10000000-0000-4000-8000-000000000042",
+    operationKey: "fixture-operation",
+    effect: { kind: "input-enqueued" },
+    label: "Input",
+    sequence: 42,
+    at: new Date().toISOString(),
+  });
+
+  it.each(foreignEndpoints)(
+    "does not display a same-ID interaction from another %s",
+    (_dimension, foreign) => {
+      const receipt = projection(foreign);
+      const { root } = renderSurface([SPLIT], {
+        paneInteractions: { [interactionPaneEndpointKey(foreign)]: receipt },
+      });
+      expect(root.querySelector(".pane-tile__communication")).toBeNull();
+    },
+  );
+
+  it("rejects a foreign projection even when filed under the current endpoint key", () => {
+    const { root } = renderSurface([SPLIT], {
+      paneInteractions: {
+        [interactionPaneEndpointKey(endpoint("pane.b"))]: projection(foreignEndpoints[0]![1]),
+      },
+    });
+    expect(root.querySelector(".pane-tile__communication")).toBeNull();
+  });
+
+  it("does not borrow the current pane title for a foreign source with the same semantic ID", () => {
+    const source = { ...foreignEndpoints[0]![1], semanticPaneId: "pane.a" };
+    const receipt: PaneInteractionProjection = {
+      ...projection(endpoint("pane.b")),
+      sourceEndpoint: source,
+      sourcePaneId: "pane.a",
+    };
+    const { root } = renderSurface([SPLIT], {
+      paneTitles: new Map([
+        ["pane.a", "Editor"],
+        ["pane.b", "Tests"],
+      ]),
+      paneInteractions: { [interactionPaneEndpointKey(endpoint("pane.b"))]: receipt },
+    });
+    const copy = root.querySelector(".pane-tile__communication")!;
+    expect(copy.textContent).toContain("pane.a");
+    expect(copy.textContent).toContain("Tests");
+    expect(copy.textContent).not.toContain("Editor");
+  });
+
   it("uses honest privacy-safe copy for observed and authored pane sends", () => {
     const common = {
+      endpoint: endpoint("pane.b"),
+      sourceEndpoint: null,
+      destinationEndpoint: endpoint("pane.b"),
+      effect: { kind: "unknown" as const },
+      operationKey: "fixture-operation",
       paneId: "pane.b",
       direction: "incoming" as const,
       sourcePaneId: null,
@@ -497,12 +632,13 @@ describe("the layout-faithful workspace view", () => {
         origin: "external",
         label: "external observed · input observed",
       }),
-    ).toEqual({ headline: "RECEIVED", detail: "External input → pane.b" });
+    ).toEqual({ headline: "INPUT OBSERVED", detail: "External input → pane.b" });
     expect(
       paneCommunicationCopy({
         ...common,
         phase: "observed",
         origin: "sdk",
+        effect: { kind: "input-enqueued" },
         label: "sdk observed · delivered 12 characters + Enter",
       }),
     ).toEqual({
@@ -517,7 +653,7 @@ describe("the layout-faithful workspace view", () => {
         origin: "external",
         label: "external observed · pane read observed",
       }),
-    ).toEqual({ headline: "READ", detail: "External reader reads pane.b" });
+    ).toEqual({ headline: "READ OBSERVED", detail: "External reader reads pane.b" });
   });
 
   it("renders agent identity and live state in both the process tab and pane card", () => {
@@ -826,6 +962,7 @@ describe("the layout-faithful workspace view", () => {
       render(
         () => (
           <WorkspaceTiledSurface
+            paneEndpoints={ENDPOINTS}
             layouts={frames()}
             workspaceName="workspace.product"
             transport={null}
@@ -894,6 +1031,7 @@ describe("the layout-faithful workspace view", () => {
       render(
         () => (
           <WorkspaceTiledSurface
+            paneEndpoints={ENDPOINTS}
             layouts={windows}
             workspaceName="workspace.product"
             transport={null}
@@ -908,6 +1046,7 @@ describe("the layout-faithful workspace view", () => {
       render(
         () => (
           <WorkspaceTiledSurface
+            paneEndpoints={ENDPOINTS}
             layouts={windows}
             workspaceName="workspace.product"
             transport={null}
@@ -952,6 +1091,7 @@ describe("the layout-faithful workspace view", () => {
       render(
         () => (
           <WorkspaceTiledSurface
+            paneEndpoints={ENDPOINTS}
             layouts={frames()}
             workspaceName="workspace.product"
             transport={null}
@@ -1053,6 +1193,7 @@ describe("the layout-faithful workspace view", () => {
       render(
         () => (
           <WorkspaceTiledSurface
+            paneEndpoints={ENDPOINTS}
             layouts={frames()}
             workspaceName="workspace.product"
             transport={null}

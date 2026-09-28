@@ -69,6 +69,7 @@ describe("DesktopConnectionSurface recovery command", () => {
 
   it("projects one WorkspaceClient receipt phase exactly once", () => {
     const receipt = {
+      evidence: null,
       type: "interaction.receipt" as const,
       sequence: 1,
       operationId: "10000000-0000-4000-8000-000000000001",

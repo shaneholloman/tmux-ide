@@ -175,6 +175,7 @@ describe("HostCapabilities-backed daemon transport", () => {
       causeOperationId: "10000000-0000-4000-8000-000000000001",
     });
     const interaction = {
+      evidence: null,
       type: "interaction.receipt" as const,
       sequence: 10,
       operationId: "10000000-0000-4000-8000-000000000002",

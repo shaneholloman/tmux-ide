@@ -156,6 +156,8 @@ export function agentGraphCanvasInventory(): ApplicationShellTerminalInventory {
   return {
     activeResourceId: "terminal.lead",
     resources: TERMINAL_WINDOWS.map((window, index) => ({
+      interactionEndpoint: null,
+      nativeIdentity: null,
       id: window.terminalSourceId,
       title: window.title,
       kind: "agent" as const,

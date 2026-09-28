@@ -46,6 +46,8 @@ function largeFleet(sessionCount: number): FleetCatalogResourceV1 {
       paneCount: 1,
       agents: [
         {
+          interactionEndpoint: null,
+          nativeIdentity: null,
           agentId: `agent.a${token}`,
           name: `Agent ${index}`,
           harness: "custom" as const,
