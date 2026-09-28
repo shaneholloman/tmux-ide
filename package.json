@@ -123,6 +123,7 @@
   "dependencies": {
     "@hono/node-server": "^2.1.0",
     "@hono/zod-validator": "^0.7.6",
+    "@modelcontextprotocol/server": "2.1.0",
     "@parcel/watcher": "^2.5.6",
     "hono": "^4.12.34",
     "ignore": "^7.0.5",

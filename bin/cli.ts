@@ -207,7 +207,7 @@ const bold = (s: string) => (noColor ? s : `\x1b[1m${s}\x1b[22m`);
 const cyan = (s: string) => (noColor ? s : `\x1b[36m${s}\x1b[39m`);
 const dim = (s: string) => (noColor ? s : `\x1b[2m${s}\x1b[22m`);
 
-if (values.help) {
+if (values.help && command !== "automation") {
   printHelp();
   process.exit(0);
 }
