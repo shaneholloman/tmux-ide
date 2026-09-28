@@ -34,6 +34,7 @@ const draft: InteractionReceiptDraft = {
     "pane.same",
   ),
 };
+draft.evidence!.endpoints.destination.serverScope = a;
 function fixture(capacity = 256) {
   const journals = new Map([
     [a.serverId, new InteractionReceiptJournal(capacity)],

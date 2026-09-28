@@ -107,6 +107,14 @@ describe("interaction subscriber fences", () => {
       await expect(stream.done).rejects.toThrow();
     }
   });
+  it("rejects evidence destination scope different from its enclosing stream", async () => {
+    const foreign = structuredClone(batch);
+    foreign.receipts[0]!.evidence.endpoints.destination.serverScope.generation =
+      "22222222-2222-4222-8222-222222222222";
+    const stream = subscribe([ready, foreign]);
+    await stream.ready;
+    await expect(stream.done).rejects.toThrow();
+  });
   it("delivers status-only frames without advancing receipt cursor", async () => {
     const seen: string[] = [];
     const stream = subscribeTmuxServerInteractions({

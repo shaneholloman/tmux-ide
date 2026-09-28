@@ -54,6 +54,12 @@ export const TmuxServerInteractionEventSchemaZ = z
       expected = event.gap.through + 1;
     }
     for (const receipt of event.receipts) {
+      const scope = receipt.evidence?.endpoints.destination.serverScope;
+      if (
+        scope &&
+        (scope.serverId !== event.server.serverId || scope.generation !== event.server.generation)
+      )
+        ctx.addIssue({ code: "custom", message: "Interaction entry owner mismatch" });
       if (receipt.sequence !== expected++)
         ctx.addIssue({ code: "custom", message: "Noncontiguous receipt batch" });
     }
