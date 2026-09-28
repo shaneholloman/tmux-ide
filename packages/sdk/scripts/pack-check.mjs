@@ -65,14 +65,26 @@ if ((await automation.discover()).panes.length !== 0) throw Error('Invalid autom
   );
   run(process.execPath, ["consumer.mjs"]);
   writeFileSync(
+    join(directory, "automation-consumer.mjs"),
+    readFileSync(resolve(root, "scripts/pack-automation-consumer.mjs"), "utf8"),
+  );
+  run(process.execPath, ["automation-consumer.mjs"]);
+  writeFileSync(
     join(directory, "consumer.ts"),
     `
-import { createTmuxIdeOwnerSdk, createTmuxIdeAutomationSdk, type WorkspacePaneSendResult, type AutomationPanesResponse } from '@tmux-ide/sdk';
+import { createTmuxIdeOwnerSdk, createTmuxIdeAutomationSdk, type WorkspacePaneSendResult, type AutomationPanesResponse, type AutomationOperationIntent, type AutomationOperationHandle, type AutomationExecuteResponse, type AutomationStatusResponse } from '@tmux-ide/sdk';
 const sdk = createTmuxIdeOwnerSdk({baseUrl:'http://localhost:4000',ownerToken:'test'});
 const result: Promise<WorkspacePaneSendResult> = sdk.sendPane({workspaceName:'project',semanticPaneId:'pane.test',text:'hello',submit:true});
 void result;
 const discovered: Promise<AutomationPanesResponse> = createTmuxIdeAutomationSdk({baseUrl:'http://localhost:4000',ownerToken:'test'}).discover();
 void discovered;
+function typedAutomation(intent: AutomationOperationIntent, handle: AutomationOperationHandle) {
+  const automation = createTmuxIdeAutomationSdk({baseUrl:'http://localhost:4000',ownerToken:'test'});
+  const executed: Promise<AutomationExecuteResponse> = automation.execute(handle, intent);
+  const status: Promise<AutomationStatusResponse> = automation.status(handle);
+  return {executed, status, reserved: automation.reserve(intent)};
+}
+void typedAutomation;
 `,
   );
   run(process.execPath, [
