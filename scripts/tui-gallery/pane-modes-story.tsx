@@ -119,7 +119,6 @@ export function PaneModesStory(props: {
   const [menu, setMenu] = createSignal(false);
   const scrollback = () => mode() === 1 || mode() === 3;
   const expanded = () => mode() === 2 || mode() === 3;
-  const current = () => INTERACTIONS[event()]!;
   const narrow = () => props.width < 80;
   const r = () => props.theme.roles;
   const close = () => {

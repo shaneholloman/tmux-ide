@@ -50,7 +50,7 @@ export function streamTmuxInteractions(
       notify();
     });
     const unsubscribe = journal.subscribe(notify);
-    let unsubscribeStatus = () => {};
+    let unsubscribeStatus: () => void;
     try {
       unsubscribeStatus = observation.subscribe(notify);
     } catch (error) {
