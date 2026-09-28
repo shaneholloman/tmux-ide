@@ -50,10 +50,12 @@ it.skipIf(!binary)(
         .split("\t");
       const id = randomUUID();
       const scope = { serverId: `tmux-server.${"a".repeat(32)}`, generation: randomUUID() };
+      let selectedSession: { id: string; created: string; name: string } | null = null;
       const observer = {
         ownedOperationTransport: true,
         ownedOperationEpochGuard: capability.ownedOperationEpochGuard === "server-epoch-v1",
         ownedOperationPaneGuard: capability.ownedOperationPaneGuard === "direct-pane-v1",
+        ownedOperationSessionGuard: capability.ownedOperationSessionGuard === "direct-session-v1",
         nativeServerEpoch: capability.serverEpoch,
         admitOwnedOperation: vi.fn(() => ({ operationId: id })),
         registerOwnedConnection: vi.fn((_identity: NativeJournalIdentity) => ({ bindingId: id })),
@@ -73,6 +75,7 @@ it.skipIf(!binary)(
         environmentId: id,
         serverScope: scope,
         observation: () => observer as unknown as OwnerInteractionObservation,
+        sessionGuard: () => selectedSession,
         runPinnedTmux: runTmux,
       });
       const request: AuthoredNativeCommandRequest = {
@@ -144,6 +147,22 @@ it.skipIf(!binary)(
         expect(observer.acknowledgeOwnedOperation).not.toHaveBeenCalled();
         expect(() => native("save-buffer", "-b", "must-not-exist", "-")).toThrow();
       }
+      observer.nativeServerEpoch = capability.serverEpoch;
+      const [sessionId, created, name] = native(
+        "list-sessions",
+        "-F",
+        "#{session_id}\t#{session_created}\t#{session_name}",
+      )
+        .trimEnd()
+        .split("\t");
+      selectedSession = { id: sessionId!, created: created!, name: name! };
+      expect(runner(request)).toEqual({ output: expected });
+      runTmux.mockClear();
+      observer.acknowledgeOwnedOperation.mockClear();
+      selectedSession = { ...selectedSession, created: "0" };
+      expect(() => runner(request)).toThrow();
+      expect(runTmux).toHaveBeenCalledOnce();
+      expect(observer.acknowledgeOwnedOperation).not.toHaveBeenCalled();
     } finally {
       try {
         native("kill-server");

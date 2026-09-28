@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import {
   InteractionEvidenceSchemaZ,
   InteractionReceiptSchemaZ,
@@ -12,7 +13,7 @@ import type {
   InteractionReceiptJournal,
 } from "./interaction-receipt-journal.ts";
 import { nativeInteractionReference } from "./native-interaction-projector.ts";
-const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+const same = isDeepStrictEqual;
 function correlatedEvidence(
   receipt: InteractionReceipt,
   decision: OwnedNativeInteractionDecision,

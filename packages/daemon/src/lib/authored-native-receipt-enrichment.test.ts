@@ -1,3 +1,4 @@
+import { publishOwnerInteractionReceipt } from "./interaction-receipt-publication.ts";
 import { expect, it } from "vitest";
 import { InteractionReceiptSchemaZ } from "@tmux-ide/contracts";
 import { testStockInteractionEvidence } from "../../test-support/interaction-evidence.ts";
@@ -262,4 +263,31 @@ it("requires a retained exact admission and rejects newer UUID reuse", () => {
   journal.appendEvidence(decision.evidence);
   expect(journal.latestOperationReceiptForAttempt(receipt.operationId, newer.sequence)).toBeNull();
   expect(consumeAuthoredNativeEvidence(journal, fresh)).toBe(false);
+});
+it("matches the same pane identities regardless of property insertion order", () => {
+  const { receipt, decision } = fixture();
+  const reordered = {
+    ...decision,
+    proof: {
+      ...decision.proof!,
+      authoredDestination: Object.fromEntries(
+        Object.entries(decision.proof!.authoredDestination!).reverse(),
+      ) as NonNullable<typeof decision.proof>["authoredDestination"],
+    },
+  };
+  const enriched = enrichAuthoredNativeReceipt(receipt, reordered);
+  expect(enriched?.evidence?.observation.kind).toBe("native-journal");
+});
+it("returns the owner journal cursor when notification clocks are ahead", () => {
+  const { receipt } = fixture();
+  const journal = new InteractionReceiptJournal();
+  let notifications = 500;
+  const retained = publishOwnerInteractionReceipt(journal, receipt, () => ({
+    ...receipt,
+    sequence: ++notifications,
+  }));
+  expect(retained.sequence).toBe(1);
+  expect(notifications).toBe(501);
+  expect(journal.latestOperationReceipt(receipt.operationId)?.sequence).toBe(retained.sequence);
+  journal.dispose();
 });

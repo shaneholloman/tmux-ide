@@ -1,3 +1,4 @@
+import { publishOwnerInteractionReceipt } from "./interaction-receipt-publication.ts";
 import { createAuthoredNativeCommandRunner } from "./authored-native-command-runner.ts";
 import { AuthoredNativeReceiptEnricher } from "./authored-native-receipt-staging.ts";
 import {
@@ -1504,10 +1505,10 @@ async function startEmbeddedDaemonGeneration(
             workspaceRegistry.get(workspaceName)?.sessionName ?? null,
           execute: executeRuntimeIntent,
           traceAuthority: { generation: instanceId, incarnation: null },
-          publishReceipt: (receipt) => {
-            interactionReceipts.publish(receipt);
-            return broadcastInteractionReceipt(receipt, instanceId);
-          },
+          publishReceipt: (receipt) =>
+            publishOwnerInteractionReceipt(interactionReceipts, receipt, (draft) =>
+              broadcastInteractionReceipt(draft, instanceId),
+            ),
           publishResourceChange: (change) => broadcastResourceChanged(change, instanceId),
         },
         mirror: {

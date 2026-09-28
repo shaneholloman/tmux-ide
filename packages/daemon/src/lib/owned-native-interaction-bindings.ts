@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { randomUUID } from "node:crypto";
 import {
   EnvironmentIdSchema,
@@ -103,7 +104,7 @@ interface Pending {
   readonly permit: Permit;
   readonly expiresAt: number;
 }
-const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+const same = isDeepStrictEqual;
 function freeze<T>(value: T): T {
   if (value !== null && typeof value === "object") {
     for (const child of Object.values(value)) freeze(child);
