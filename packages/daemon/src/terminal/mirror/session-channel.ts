@@ -1,3 +1,8 @@
+import {
+  decodeNativeAtomicSnapshot,
+  nativeAtomicSnapshotPlan,
+  type NativeAtomicSnapshotTarget,
+} from "./native-atomic-snapshot.ts";
 import { boundedTmuxInteractionAppendCommand } from "../../lib/tmux-interaction-retention.ts";
 import {
   decodeNativeGridCapture,
@@ -230,7 +235,8 @@ export interface MirrorFlowRecoveryObservation {
 }
 
 export interface SessionChannelOptions {
-  ownedViewer?: Pick<OwnedViewerAdapter, "bindIo" | "tryDispatch" | "dispose">;
+  ownedViewer?: Pick<OwnedViewerAdapter, "bindIo" | "tryDispatch" | "dispose"> &
+    Partial<Pick<OwnedViewerAdapter, "atomicSnapshotEpoch">>;
   executeWindowLinkGuard?: (args: string[]) => Promise<{ status: number | null; stdout: string }>;
   session: string;
   createIo: (handlers: MirrorChannelHandlers) => MirrorChannelIo;
@@ -320,7 +326,15 @@ interface RecoveryRecord {
   retired: boolean;
   continueReply: boolean;
   continueNotify: boolean;
-  stage: "continue" | "provisional" | "final-continue" | "quiet" | "final" | "confirm";
+  stage:
+    | "native-pause"
+    | "native-capture"
+    | "continue"
+    | "provisional"
+    | "final-continue"
+    | "quiet"
+    | "final"
+    | "confirm";
   attempts: number;
   reseedOrdinal: number;
   outputOrdinal: number;
@@ -1733,6 +1747,12 @@ export class SessionChannel {
       if (!sub.frozen && !sub.closed) sub.feed.abortCurrent();
     }
     this.observeRecovery(pane, recovery, "pause");
+    const nativeTarget = this.nativeRecoveryTarget(pane);
+    if (nativeTarget) {
+      this.beginRecoveryConvergence(recovery);
+      this.recoverNativeAtomic(pane, recovery, nativeTarget);
+      return;
+    }
     this.observeRecovery(pane, recovery, "continue-request");
     recovery.cancelCommandDeadline = this.scheduleRecovery(() => {
       if (this.recoveryPane(recovery) && !recovery.continueReply)
@@ -1807,7 +1827,147 @@ export class SessionChannel {
     }
     this.observeRecovery(pane, recovery, "pause");
     this.beginRecoveryConvergence(recovery);
-    this.beginFinalRecovery(recovery);
+    const nativeTarget = this.nativeRecoveryTarget(pane);
+    if (nativeTarget) this.recoverNativeAtomic(pane, recovery, nativeTarget);
+    else this.beginFinalRecovery(recovery);
+  }
+
+  private nativeRecoveryTarget(pane: PaneRecord): NativeAtomicSnapshotTarget | null {
+    // Native seeds carry no ANSI fallback. Mixed/plain subscribers retain the
+    // existing collector until a separately reviewed representation exists.
+    const live = [...pane.subs].filter((sub) => !sub.closed && !sub.frozen);
+    const birth = pane.descriptor?.nativePaneBirthId;
+    let epoch: string | null | undefined;
+    try {
+      epoch = this.opts.ownedViewer?.atomicSnapshotEpoch?.(this.io);
+    } catch {
+      // Optional capability failure cannot strand ordinary recovery.
+      return null;
+    }
+    return live.length > 0 && live.every((sub) => sub.nativeBootstrap) && birth && epoch
+      ? { serverEpoch: epoch, paneId: pane.runtimeId, paneBirthId: birth }
+      : null;
+  }
+
+  private recoverNativeAtomic(
+    pane: PaneRecord,
+    recovery: RecoveryRecord,
+    target: NativeAtomicSnapshotTarget,
+  ): void {
+    if (this.recoveryPane(recovery) !== pane) return;
+    const currentTarget = this.nativeRecoveryTarget(pane);
+    if (
+      currentTarget?.serverEpoch !== target.serverEpoch ||
+      currentTarget.paneBirthId !== target.paneBirthId
+    ) {
+      this.failRecovery(recovery, "command-error");
+      return;
+    }
+    if (recovery.attempts >= RECOVERY_MAX_ATTEMPTS) {
+      this.failRecovery(recovery, "attempts-exhausted");
+      return;
+    }
+    recovery.attempts += 1;
+    const ordinal = ++recovery.reseedOrdinal;
+    const participants = [...pane.subs]
+      .filter((sub) => !sub.closed && !sub.frozen)
+      .map((sub) => ({ sub, epoch: sub.feed.beginReseed() }));
+    const exact = () => {
+      const current = this.nativeRecoveryTarget(pane);
+      const live = [...pane.subs].filter((sub) => !sub.closed && !sub.frozen);
+      return (
+        this.recoveryPane(recovery) === pane &&
+        recovery.reseedOrdinal === ordinal &&
+        current?.serverEpoch === target.serverEpoch &&
+        current.paneBirthId === target.paneBirthId &&
+        live.length === participants.length &&
+        participants.every(({ sub }) => live.includes(sub))
+      );
+    };
+    let settled = false;
+    const failed = () => {
+      if (settled || this.recoveryPane(recovery) !== pane || recovery.reseedOrdinal !== ordinal)
+        return;
+      settled = true;
+      recovery.cancelCommandDeadline?.();
+      recovery.cancelCommandDeadline = null;
+      for (const { sub } of participants) sub.feed.abortCurrent();
+      // A malformed/late reply may follow a committed resume. Every retry
+      // explicitly pauses first; never fall through to stock capture.
+      this.armRecoveryQuiet(recovery, () => this.recoverNativeAtomic(pane, recovery, target));
+    };
+    recovery.stage = "native-pause";
+    recovery.cancelCommandDeadline = this.scheduleRecovery(failed, RECOVERY_COMMAND_DEADLINE_MS);
+    this.input.flush();
+    this.io.commandInline(`refresh-client -A '${pane.runtimeId}:pause'`, (pauseReply) => {
+      if (settled || !exact()) {
+        failed();
+        return;
+      }
+      if (!pauseReply.ok) {
+        failed();
+        return;
+      }
+      recovery.stage = "native-capture";
+      recovery.cancelCommandDeadline?.();
+      recovery.cancelCommandDeadline = this.scheduleRecovery(failed, RECOVERY_COMMAND_DEADLINE_MS);
+      const accepted = this.opts.ownedViewer!.tryDispatch(
+        this.io,
+        nativeAtomicSnapshotPlan(target),
+        (reply) => {
+          if (settled || !exact()) {
+            failed();
+            return;
+          }
+          const result = decodeNativeAtomicSnapshot(reply, target);
+          if (result.status !== "ok") {
+            failed();
+            return;
+          }
+          this.nativeBootstrapConfirmed = true;
+          this.observeScrollOnClear(pane, result.cursorLine);
+          // The selected child reply owns its inline %continue. It adds no
+          // asynchronous notification debt to the legacy continue queue.
+          recovery.continueReply = true;
+          recovery.continueNotify = true;
+          const deliveries = participants.map(({ sub, epoch }) => {
+            sub.feed.captureNativeReply(epoch, result.capture);
+            return {
+              sub,
+              events: sub.feed.cursorReply(
+                epoch,
+                result.cursorLine,
+                this.layoutSizeFor(pane.runtimeId),
+              ),
+            };
+          });
+          if (!exact() || deliveries.some(({ events }) => events.length === 0)) {
+            failed();
+            return;
+          }
+          for (const { sub, events } of deliveries)
+            for (const event of events) {
+              if (!exact()) {
+                failed();
+                return;
+              }
+              try {
+                sub.onEvent(event);
+              } catch {
+                failed();
+                return;
+              }
+            }
+          if (!exact()) {
+            failed();
+            return;
+          }
+          settled = true;
+          this.convergeRecovery(pane, recovery);
+        },
+      );
+      if (!accepted) failed();
+    });
   }
 
   private beginRecoveryConvergence(recovery: RecoveryRecord): void {
@@ -2624,6 +2784,10 @@ export class SessionChannel {
     if (name === "pause") {
       const runtime = rest.trim().split(/\s+/)[0] ?? "";
       if (!runtime.startsWith("%")) return;
+      if (this.recoveries.get(runtime)?.stage === "native-pause") {
+        this.ledger.notePause(runtime);
+        return;
+      }
       this.cancelRecovery(runtime);
       this.ledger.notePause(runtime);
       const pane = this.panesByRuntime.get(runtime);

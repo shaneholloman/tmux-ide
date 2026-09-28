@@ -3835,3 +3835,233 @@ it("bounds stalled post-mutation reconciliation and never revives revoked link h
     await rig.channel.dispose();
   }
 });
+
+describe("native capture-resume recovery", () => {
+  const epoch = "00000000-0000-4000-8000-000000000001";
+  function snapshot() {
+    return {
+      ok: true,
+      lines: [
+        JSON.stringify({
+          snapshotVersion: 1,
+          serverEpoch: epoch,
+          paneId: "%1",
+          paneBirthId: "11",
+          resumed: true,
+          cursor: "1 0 2 1 0 1 0 0 0 0 0 0 0 1 0 2000 0 0 0 0 0 0 1",
+        }),
+        JSON.stringify({
+          version: 2,
+          cols: 2,
+          rows: 1,
+          history: 0,
+          hscrolled: 0,
+          limit: 2000,
+          cursor: [1, 0],
+          currentAttributes: [0, 8, 8, 8],
+        }),
+        JSON.stringify({ row: 0, flags: 0, used: 1, cells: [[0, 1, "41", 0, 8, 8, 8, 0, 0]] }),
+        "%continue %1",
+      ],
+    };
+  }
+  async function setup(plain = false, manualPause = false) {
+    const callbacks: Array<(reply: { ok: boolean; lines: string[] }) => void> = [];
+    const adapter = {
+      bindIo: vi.fn(),
+      dispose: vi.fn(),
+      atomicSnapshotEpoch: vi.fn(() => epoch as string | null),
+      tryDispatch: vi.fn<NonNullable<SessionChannelOptions["ownedViewer"]>["tryDispatch"]>(
+        (_io, request, reply) => {
+          if (!request.commands[0]?.includes("-Q")) return false;
+          callbacks.push(reply);
+          return true;
+        },
+      ),
+    };
+    const rig = await startedRig({
+      ownedViewer: adapter,
+      nativeBirth: "11",
+      continueReply: manualPause ? "manual" : "auto-success",
+    });
+    const events = collect();
+    const handle = rig.channel.subscribePane("pane.alpha", events.onEvent, undefined, !plain);
+    rig.sim.reply(plain ? ["plain"] : nativeBootstrapLines());
+    rig.sim.reply(["0 0 100 50"]);
+    events.events.length = 0;
+    return { rig, adapter, callbacks, events, handle };
+  }
+  it("publishes one atomic grid synchronously and admits following output without continue debt", async () => {
+    const s = await setup();
+    try {
+      s.rig.sim.feedLines("%pause %1");
+      expect(s.callbacks).toHaveLength(1);
+      expect(s.rig.sim.written.at(-1)).toBe("refresh-client -A '%1:pause'");
+      s.callbacks[0]!(snapshot());
+      s.rig.sim.feedLines("%output %1 after");
+      expect(s.events.events.filter((e) => e.type === "seed")).toHaveLength(1);
+      expect(bytesOf(s.events.events)).toEqual(["", "after"]);
+      expect(s.events.events).toContainEqual({
+        type: "flow",
+        state: "resumed",
+        reason: "backpressure",
+      });
+      expect(continueNotificationQueueSize(s.rig.channel)).toBe(0);
+      expect(s.rig.pendingRecoveries.filter((t) => !t.cancelled)).toEqual([]);
+    } finally {
+      await s.rig.channel.dispose();
+    }
+  });
+  it("repauses after unknown committed output and never retries it as unsupported", async () => {
+    const s = await setup();
+    try {
+      s.rig.sim.feedLines("%pause %1");
+      s.callbacks[0]!({ ok: true, lines: ["malformed", "%continue %1"] });
+      s.rig.sim.feedLines("%output %1 discarded");
+      expect(s.events.events.some((e) => e.type === "seed")).toBe(false);
+      runRecoveryTimer(s.rig);
+      expect(s.rig.sim.written.filter((c) => c === "refresh-client -A '%1:pause'")).toHaveLength(2);
+      s.callbacks[0]!(snapshot()); // late callback cannot publish another attempt
+      expect(s.events.events.some((e) => e.type === "seed")).toBe(false);
+      s.callbacks[1]!(snapshot());
+      expect(s.events.events.filter((e) => e.type === "seed")).toHaveLength(1);
+    } finally {
+      await s.rig.channel.dispose();
+    }
+  });
+  it.each(["epoch", "dispose", "membership"])("does not publish stale %s replies", async (kind) => {
+    const s = await setup();
+    try {
+      s.rig.sim.feedLines("%pause %1");
+      if (kind === "epoch")
+        s.adapter.atomicSnapshotEpoch.mockReturnValue("00000000-0000-4000-8000-000000000002");
+      if (kind === "dispose") await s.rig.channel.dispose();
+      if (kind === "membership") s.handle.close();
+      s.callbacks[0]!(snapshot());
+      expect(s.events.events.some((e) => e.type === "seed")).toBe(false);
+    } finally {
+      await s.rig.channel.dispose();
+    }
+  });
+  it("keeps plain subscribers on their existing ANSI path", async () => {
+    const s = await setup(true);
+    try {
+      s.rig.sim.feedLines("%pause %1");
+      expect(s.callbacks).toHaveLength(0);
+    } finally {
+      await s.rig.channel.dispose();
+    }
+  });
+  it("keeps mixed native/plain participants on the existing shared collector", async () => {
+    const s = await setup();
+    try {
+      s.rig.channel.subscribePane("pane.alpha", () => {});
+      s.rig.sim.reply(["plain"]);
+      s.rig.sim.reply(["0 0 100 50"]);
+      s.rig.sim.feedLines("%pause %1");
+      expect(s.callbacks).toHaveLength(0);
+    } finally {
+      await s.rig.channel.dispose();
+    }
+  });
+  it("does not send another pause or capture after owner epoch changes", async () => {
+    const s = await setup();
+    try {
+      s.rig.sim.feedLines("%pause %1");
+      s.adapter.atomicSnapshotEpoch.mockReturnValue("00000000-0000-4000-8000-000000000002");
+      s.callbacks[0]!(snapshot());
+      runRecoveryTimer(s.rig);
+      expect(s.callbacks).toHaveLength(1);
+      expect(s.rig.sim.written.filter((c) => c === "refresh-client -A '%1:pause'")).toHaveLength(1);
+      expect(s.events.events).toContainEqual({ type: "fault", reason: "native-recovery-failed" });
+    } finally {
+      await s.rig.channel.dispose();
+    }
+  });
+  it("ignores a timed-out child's late reply before retrying behind another pause", async () => {
+    const s = await setup();
+    try {
+      s.rig.sim.feedLines("%pause %1");
+      advanceRecoveryClock(s.rig, 500);
+      s.callbacks[0]!(snapshot());
+      expect(s.events.events.some((e) => e.type === "seed")).toBe(false);
+      advanceRecoveryClock(s.rig, 40);
+      s.callbacks[1]!(snapshot());
+      expect(s.events.events.filter((e) => e.type === "seed")).toHaveLength(1);
+    } finally {
+      await s.rig.channel.dispose();
+    }
+  });
+  it("fences repeated pause notifications before and after pause acknowledgement", async () => {
+    const s = await setup(false, true);
+    try {
+      s.rig.sim.feedLines("%pause %1", "%pause %1", "%pause %1");
+      expect(s.callbacks).toHaveLength(0);
+      s.rig.sim.reply([]);
+      expect(s.callbacks).toHaveLength(1);
+      // A later actual backpressure pause invalidates the capture instead of
+      // letting its inline continue discharge the new recovery's ownership.
+      s.rig.sim.feedLines("%pause %1", "%pause %1");
+      s.callbacks[0]!(snapshot());
+      expect(s.events.events.some((e) => e.type === "seed")).toBe(false);
+      s.rig.sim.reply([]);
+      expect(s.callbacks).toHaveLength(2);
+      s.callbacks[1]!(snapshot());
+      expect(s.events.events.filter((e) => e.type === "seed")).toHaveLength(1);
+    } finally {
+      await s.rig.channel.dispose();
+    }
+  });
+  it("retires a synchronous delivery when its subscriber freezes and thaws", async () => {
+    const s = await setup();
+    const append = s.events.events.push.bind(s.events.events);
+    let changed = false;
+    const spy = vi.spyOn(s.events.events, "push").mockImplementation((...events) => {
+      const result = append(...events);
+      if (!changed && events.some((event) => event.type === "reset")) {
+        changed = true;
+        s.handle.freeze();
+        s.handle.thaw();
+      }
+      return result;
+    });
+    try {
+      s.rig.sim.feedLines("%pause %1");
+      s.callbacks[0]!(snapshot());
+      expect(s.events.events.some((e) => e.type === "seed")).toBe(false);
+      expect(s.callbacks).toHaveLength(2);
+      spy.mockRestore();
+      s.callbacks[1]!(snapshot());
+      expect(s.events.events.filter((e) => e.type === "seed")).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+      await s.rig.channel.dispose();
+    }
+  });
+  it("degrades throwing optional capability lookup to ordinary recovery before dispatch", async () => {
+    const s = await setup();
+    try {
+      s.adapter.atomicSnapshotEpoch.mockImplementation(() => {
+        throw new Error("retired capability");
+      });
+      expect(() => s.rig.sim.feedLines("%pause %1")).not.toThrow();
+      expect(s.callbacks).toHaveLength(0);
+      expect(s.rig.sim.written).toContain("refresh-client -A '%1:continue'");
+    } finally {
+      await s.rig.channel.dispose();
+    }
+  });
+  it("bounds missing replies with existing attempt and absolute deadlines", async () => {
+    const s = await setup();
+    try {
+      s.rig.sim.feedLines("%pause %1");
+      advanceRecoveryClock(s.rig, 5000);
+      expect(s.callbacks).toHaveLength(4);
+      expect(s.events.events).toContainEqual({ type: "fault", reason: "native-recovery-failed" });
+      for (const reply of s.callbacks) reply(snapshot());
+      expect(s.events.events.some((e) => e.type === "seed")).toBe(false);
+    } finally {
+      await s.rig.channel.dispose();
+    }
+  });
+});

@@ -19,7 +19,7 @@ const request = {
   resultIndex: 0,
   limits: { maxBytes: 1024, maxLines: 2 },
 };
-function setup() {
+function setup(atomic = false) {
   const bindings = new OwnedNativeInteractionBindings({ environmentId, serverScope, serverEpoch });
   const uncertain = vi.fn();
   let ready = true;
@@ -29,7 +29,7 @@ function setup() {
     serverScope,
     capability: () => {
       if (capabilityFailure) throw new Error("retired owner");
-      return ready ? { serverEpoch } : null;
+      return ready ? { serverEpoch, atomicPaneSnapshot: atomic } : null;
     },
     register: (value) => bindings.registerConnection(value, "viewer"),
     admit: (value) => bindings.admit(value),
@@ -202,4 +202,20 @@ it("declines stale pinned server epoch before admitting or writing", () => {
   expect(s.bindings.size.permits).toBe(0);
   expect(s.send).not.toHaveBeenCalled();
   s.adapter.dispose();
+});
+
+it("atomic snapshot capability requires the current actual attached identity", () => {
+  const s = setup(true);
+  expect(s.adapter.atomicSnapshotEpoch(s.io)).toBeNull();
+  s.options.onIdentity(identity);
+  expect(s.adapter.atomicSnapshotEpoch(s.io)).toBe(serverEpoch);
+  expect(s.adapter.atomicSnapshotEpoch({ ...s.io })).toBeNull();
+  s.disable();
+  expect(s.adapter.atomicSnapshotEpoch(s.io)).toBeNull();
+  s.adapter.dispose();
+  expect(s.adapter.atomicSnapshotEpoch(s.io)).toBeNull();
+  const legacy = setup();
+  legacy.options.onIdentity(identity);
+  expect(legacy.adapter.atomicSnapshotEpoch(legacy.io)).toBeNull();
+  legacy.adapter.dispose();
 });
