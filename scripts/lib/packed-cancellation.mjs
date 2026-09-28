@@ -83,7 +83,9 @@ export function createPackedCancellation({ signals = process, commandKillGraceMs
       check();
       let child;
       let escalation;
+      let deadline;
       let escalated = false;
+      let exceededDeadline = false;
       const result = await new Promise((resolve) => {
         child = execFile(
           file,
@@ -91,11 +93,15 @@ export function createPackedCancellation({ signals = process, commandKillGraceMs
           {
             ...options,
             encoding: "utf8",
-            timeout: options.timeout ?? 180000,
+            timeout: 0, // The retained-handle deadline below owns TERM/KILL ordering.
             maxBuffer: options.maxBuffer ?? 8 * 1024 * 1024,
           },
           (error, stdout, stderr) => {
             clearTimeout(escalation);
+            clearTimeout(deadline);
+            error ??= exceededDeadline
+              ? new Error("Packed command did not close before deadline")
+              : undefined;
             resolve({
               status: error ? (typeof error.code === "number" ? error.code : null) : 0,
               signal: error?.signal ?? null,
@@ -105,19 +111,25 @@ export function createPackedCancellation({ signals = process, commandKillGraceMs
             });
           },
         );
-        // execFile sends TERM at its deadline, but npm may defer TERM while
-        // network requests drain. Escalate only this retained child handle.
-        // Forced root exit never proves descendants retired: evidence stays
-        // uncertain and the outer gate must retain the private fixture roots.
-        escalation = setTimeout(
-          () => {
-            if (child.exitCode !== null || child.signalCode !== null) return;
-            uncertainCommand = true;
+        // Own the deadline: execFile can report exit 0 after destroying pipes
+        // held by a descendant at its timeout. That is not a completed command.
+        deadline = setTimeout(() => {
+          exceededDeadline = true;
+          uncertainCommand = true;
+          if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+          else {
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+          }
+          escalation = setTimeout(() => {
             escalated = true;
-            child.kill("SIGKILL");
-          },
-          (options.timeout ?? 180000) + commandKillGraceMs,
-        );
+            if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+            else {
+              child.stdout?.destroy();
+              child.stderr?.destroy();
+            }
+          }, commandKillGraceMs);
+        }, options.timeout ?? 180000);
         child.once("exit", () => {
           if (!escalated) return;
           // An inherited pipe must not keep execFile waiting after root exit.
