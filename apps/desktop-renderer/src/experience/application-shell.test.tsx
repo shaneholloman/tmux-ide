@@ -130,6 +130,8 @@ function withMissionWorkspace(): ApplicationShellProjectionInputV3 {
         title: frame.title,
         kind: "agent" as const,
         active: frame.pane.id === input.focus.appFocusedPaneId,
+        interactionEndpoint: null,
+        nativeIdentity: null,
         attachability: { status: "available" as const, semanticPaneId: frame.pane.id },
       })),
     },
@@ -160,6 +162,8 @@ function withTerminalInventory(activeResourceId: string): ApplicationShellProjec
         title: frame.title,
         kind: "agent" as const,
         active: frame.pane.id === activeResourceId,
+        interactionEndpoint: null,
+        nativeIdentity: null,
         attachability: { status: "available" as const, semanticPaneId: frame.pane.id },
       })),
     },
@@ -266,6 +270,8 @@ describe("visible DOM application shell", () => {
       title: frame.title,
       kind: "agent" as const,
       active: frame.pane.id === input.focus.appFocusedPaneId,
+      interactionEndpoint: null,
+      nativeIdentity: null,
       attachability: { status: "available" as const, semanticPaneId: frame.pane.id },
     }));
     const v3 = ApplicationShellProjectionInputV3SchemaZ.parse({
@@ -373,6 +379,8 @@ describe("visible DOM application shell", () => {
       title: frame.title,
       kind: "agent" as const,
       active: frame.pane.id === "pane.implementer",
+      interactionEndpoint: null,
+      nativeIdentity: null,
       attachability: { status: "available" as const, semanticPaneId: frame.pane.id },
     }));
     const v3 = ApplicationShellProjectionInputV3SchemaZ.parse({
@@ -1014,6 +1022,8 @@ describe("visible DOM application shell", () => {
             title: "Implementer terminal",
             kind: "agent",
             active: true,
+            interactionEndpoint: null,
+            nativeIdentity: null,
             attachability: {
               status: "available",
               semanticPaneId: "pane.implementer",
@@ -1021,6 +1031,8 @@ describe("visible DOM application shell", () => {
           },
           ...reasons.map((reason, index) => ({
             ...unavailableResources[index]!,
+            interactionEndpoint: null,
+            nativeIdentity: null,
             active: false,
             attachability: { status: "unavailable" as const, reason },
           })),
