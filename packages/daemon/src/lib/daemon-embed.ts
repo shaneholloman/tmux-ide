@@ -1381,9 +1381,10 @@ async function startEmbeddedDaemonGeneration(
         operationId: string,
         intent: SessionRuntimeSemanticIntent,
         timing?: Parameters<typeof workspaceMultiplexer.mutate>[1],
+        execution?: Parameters<typeof workspaceMultiplexer.mutate>[2],
       ) => {
         if (intent.verb === "workspace.pane.read") {
-          return workspaceMultiplexer.readPane(operationId, intent);
+          return workspaceMultiplexer.readPane(operationId, intent, execution);
         }
         if (
           intent.verb === "workspace.window.link.select" ||
@@ -1410,6 +1411,7 @@ async function startEmbeddedDaemonGeneration(
         return workspaceMultiplexer.mutate(
           { operationId, expectedDaemonInstanceId: instanceId, intent },
           timing,
+          execution,
         );
       };
       const runtimeTracePath = process.env.TMUX_IDE_SESSION_RUNTIME_TRACE_LOG;

@@ -70,6 +70,12 @@ export interface SessionRuntimeSubmissionAuthority {
 
 export type SessionRuntimeReceiptInput = Omit<InteractionReceipt, "type" | "sequence">;
 
+/** Internal execution authority; never accepted from intent JSON. */
+export interface AuthoredExecutionContext {
+  readonly interactionContext: CapturedInteractionContext;
+  readonly origin: AuthoredInteractionOrigin;
+}
+
 export interface SessionSemanticMutationExecutorOptions {
   readonly captureInteractionContext?: (
     intent: SessionRuntimeSemanticIntent,
@@ -83,6 +89,7 @@ export interface SessionSemanticMutationExecutorOptions {
       nowMicros(): number;
       record(operation: string, startedAtMicros: number, endedAtMicros: number): void;
     }>,
+    execution?: AuthoredExecutionContext,
   ) => SessionRuntimeIntentResult | Promise<SessionRuntimeIntentResult>;
   /** Publishes through the daemon's existing replayable interaction journal. */
   readonly publishReceipt: (receipt: SessionRuntimeReceiptInput) => InteractionReceipt;
@@ -479,7 +486,12 @@ export class SessionSemanticMutationExecutor {
       // at the last synchronous boundary before tmux receives any effect.
       if (interactionContext) this.#options.validateInteractionContext?.(interactionContext);
       authorizeBeforeEffect?.();
-      result = await this.#options.execute(operationId, intent, timing);
+      result = await this.#options.execute(
+        operationId,
+        intent,
+        timing,
+        interactionContext ? { interactionContext, origin } : undefined,
+      );
     } catch (cause) {
       if (needsTmuxObservation) this.#deletePending(session, operationId);
       const error = new SessionRuntimeIntentError(
@@ -592,7 +604,7 @@ export class SessionSemanticMutationExecutor {
     operationId: string,
     intent: ExecutableSessionRuntimeIntent,
     phase: "accepted" | "observed" | "rejected" | "timed-out",
-    authenticatedSourceSemanticPaneId: string | null = null,
+    _authenticatedSourceSemanticPaneId: string | null = null,
     result?: SessionRuntimeIntentResult,
     authenticatedOrigin?: AuthoredInteractionOrigin,
     interactionContext: CapturedInteractionContext | null = null,

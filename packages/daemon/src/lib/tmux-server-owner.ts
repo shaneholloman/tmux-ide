@@ -222,9 +222,10 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
           throw new Error("Interaction target lifetime is no longer current");
       },
       resolveSession: (name) => workspaceRegistry.get(name)?.sessionName ?? null,
-      execute: (operationId, intent, timing) => {
+      execute: (operationId, intent, timing, execution) => {
         assertOpen();
-        if (intent.verb === "workspace.pane.read") return multiplexer.readPane(operationId, intent);
+        if (intent.verb === "workspace.pane.read")
+          return multiplexer.readPane(operationId, intent, execution);
         if (
           intent.verb === "workspace.window.link.select" ||
           intent.verb === "workspace.window.link.unlink" ||
@@ -247,6 +248,7 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
         return multiplexer.mutate(
           { operationId, expectedDaemonInstanceId: generation, intent },
           timing,
+          execution,
         );
       },
       publishReceipt: (receipt) => interactionReceipts.publish(receipt),

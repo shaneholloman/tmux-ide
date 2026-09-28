@@ -1136,3 +1136,75 @@ describe("SessionSemanticMutationExecutor", () => {
     ]);
   });
 });
+
+it("forwards captured trusted context only after validation and authorization, with no replay execution", async () => {
+  const order: string[] = [];
+  const intent = {
+    verb: "workspace.pane.read" as const,
+    workspaceName: "alpha",
+    semanticPaneId: "pane.alpha",
+    origin: "sdk" as const,
+  };
+  const captured = testInteractionContext(intent);
+  const source = {
+    endpoint: { ...captured.destination, semanticPaneId: "pane.trusted" },
+    bindingId: OP_B,
+  };
+  const execute = vi.fn((..._args: unknown[]) => {
+    order.push("execute");
+    return {
+      verb: "workspace.pane.read" as const,
+      operationId: OP_A,
+      daemonInstanceId: OP_B,
+      workspaceName: "alpha",
+      semanticPaneId: "pane.alpha",
+      format: "ansi" as const,
+      availability: "available" as const,
+      text: "",
+      byteCount: 0,
+      capturedByteCount: 0,
+      truncated: false,
+    };
+  });
+  let sequence = 0;
+  const executor = new SessionSemanticMutationExecutor({
+    captureInteractionContext: () => captured,
+    validateInteractionContext: () => {
+      order.push("validate");
+    },
+    resolveSession: () => "session-alpha",
+    execute,
+    publishReceipt: (receipt) => ({
+      ...receipt,
+      type: "interaction.receipt",
+      sequence: ++sequence,
+    }),
+  });
+  const authority = {
+    origin: "cli" as const,
+    authenticatedSourceBinding: source,
+    authorizeBeforeEffect: () => {
+      order.push("authorize");
+    },
+  };
+  const pending = executor.submit(OP_A, intent, authority);
+  await Promise.resolve();
+  executor.observe({
+    operationId: OP_A,
+    workspaceName: "alpha",
+    semanticPaneId: "pane.alpha",
+    operationKind: intent.verb,
+  });
+  await pending;
+  await executor.submit(OP_A, intent, authority);
+  expect(order).toEqual(["validate", "authorize", "execute"]);
+  expect(execute).toHaveBeenCalledTimes(1);
+  expect(execute.mock.calls[0]).toEqual([
+    OP_A,
+    { ...intent, origin: "cli" },
+    undefined,
+    { interactionContext: { ...captured, source }, origin: "cli" },
+  ]);
+  expect(execute.mock.calls[0]![3]).not.toBe(captured);
+  await executor.dispose();
+});

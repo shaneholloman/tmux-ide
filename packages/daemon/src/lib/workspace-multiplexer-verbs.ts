@@ -1,3 +1,4 @@
+import type { AuthoredExecutionContext } from "../terminal/session-runtime/semantic-mutation-executor.ts";
 import { discoverLiveSessionSummaries } from "../command-center/discovery.ts";
 /**
  * The multiplexer mutation authority: split, kill, rename, zoom, select, swap
@@ -151,6 +152,7 @@ export interface MultiplexerPaneRow {
   readonly windowZoomed: boolean;
   readonly paneActive: boolean;
   readonly creationId: string | null;
+  readonly nativePaneBirthId?: string | null;
   readonly width?: number;
   readonly height?: number;
 }
@@ -165,6 +167,7 @@ const PANE_FIELDS = [
   "#{?window_zoomed_flag,1,0}",
   "#{?pane_active,1,0}",
   `#{${CREATION_OPTION}}`,
+  "#{pane_birth_id}",
 ].join("\t");
 
 const RUNTIME_PANE = /^%(?:0|[1-9][0-9]*)$/u;
@@ -180,7 +183,7 @@ export function parseMultiplexerPaneRows(output: string): readonly MultiplexerPa
   const rows: MultiplexerPaneRow[] = [];
   for (const line of output.split("\n")) {
     const fields = line.split("\t");
-    if (fields.length !== 9 && fields.length !== 11) {
+    if (![9, 10, 11, 12].includes(fields.length)) {
       throw new WorkspaceMultiplexerError("workspace_unavailable", {
         reason: "pane_listing_shape",
       });
@@ -203,10 +206,23 @@ export function parseMultiplexerPaneRows(output: string): readonly MultiplexerPa
     }
     const count = Number(paneCount);
     const index = Number(paneIndex);
-    const geometry =
-      fields.length === 11 ? { width: Number(fields[9]), height: Number(fields[10]) } : {};
+    const hasBirth = fields.length === 10 || fields.length === 12;
+    const birth = hasBirth ? fields[9]! : "";
     if (
-      fields.length === 11 &&
+      birth !== "" &&
+      birth !== "0" &&
+      (!/^[1-9][0-9]{0,19}$/u.test(birth) || BigInt(birth) > 18446744073709551615n)
+    )
+      throw new WorkspaceMultiplexerError("workspace_unavailable", {
+        reason: "pane_listing_birth",
+      });
+    const hasGeometry = fields.length === 11 || fields.length === 12;
+    const geometryOffset = hasBirth ? 10 : 9;
+    const geometry = hasGeometry
+      ? { width: Number(fields[geometryOffset]), height: Number(fields[geometryOffset + 1]) }
+      : {};
+    if (
+      hasGeometry &&
       (!Number.isSafeInteger(geometry.width) ||
         geometry.width! < 1 ||
         !Number.isSafeInteger(geometry.height) ||
@@ -230,6 +246,7 @@ export function parseMultiplexerPaneRows(output: string): readonly MultiplexerPa
       windowZoomed: zoomed === "1",
       paneActive: active === "1",
       creationId: creationId === "" ? null : creationId,
+      ...(hasBirth ? { nativePaneBirthId: birth === "" || birth === "0" ? null : birth } : {}),
       ...geometry,
     });
   }
@@ -306,7 +323,26 @@ function tmuxFormatLiteral(value: string): string {
   return value.replaceAll("#", "##");
 }
 
+export interface AuthoredNativeCommandRequest {
+  readonly operationId: string;
+  readonly context: AuthoredExecutionContext;
+  readonly targetPaneId: string;
+  readonly targetBirthId: string;
+  readonly commands: readonly (readonly string[])[];
+  readonly expectedKinds: readonly (
+    | "send-keys"
+    | "paste-buffer"
+    | "capture-pane"
+    | "send-prefix"
+  )[];
+}
+
 export interface WorkspaceMultiplexerIo {
+  /** Null means unsupported before dispatch. Throwing must never trigger a retry. */
+  readonly runAuthoredNative?: (
+    request: AuthoredNativeCommandRequest,
+    options?: WorkspaceTmuxRunOptions,
+  ) => { readonly output: string } | null;
   readonly runTmux: (args: readonly string[], options?: WorkspaceTmuxRunOptions) => string;
   readonly canonicalProjectDir: (path: string) => string;
   readonly isMissingTmuxTarget: (error: unknown) => boolean;
@@ -380,8 +416,9 @@ export class WorkspaceMultiplexerAuthority {
   mutate(
     raw: WorkspaceMultiplexerMutationRequest,
     timing?: WorkspaceMultiplexerOperationTiming,
+    execution?: AuthoredExecutionContext,
   ): WorkspaceMultiplexerMutationResult {
-    return this.#mutate(raw, timing);
+    return this.#mutate(raw, timing, execution);
   }
 
   /** Retained control transport; owned by the same serialized semantic lane. */
@@ -509,6 +546,7 @@ export class WorkspaceMultiplexerAuthority {
   readPane(
     operationId: string,
     intent: SessionRuntimePaneReadIntent,
+    execution?: AuthoredExecutionContext,
   ): SessionRuntimePaneReadResult {
     if (this.#disposed) {
       throw new WorkspaceMultiplexerError("workspace_unavailable", {
@@ -525,23 +563,21 @@ export class WorkspaceMultiplexerAuthority {
     const pane = resolvePaneRow(this.#panes(workspace.sessionName), intent.semanticPaneId);
     let captured: string;
     try {
-      captured = this.#io.runTmux(
+      captured = this.#runAuthored(
+        operationId,
+        execution,
+        pane,
+        ["capture-pane"],
         [
-          "set-option",
-          "-p",
-          "-t",
-          pane.paneId,
-          INTERNAL_READ_OPERATION_OPTION,
-          internalInteractionOperationMarker(this.#daemonInstanceId, operationId),
-          ";",
-          "capture-pane",
-          "-p",
-          "-e",
-          "-J",
-          "-S",
-          "-2000",
-          "-t",
-          pane.paneId,
+          [
+            "set-option",
+            "-p",
+            "-t",
+            pane.paneId,
+            INTERNAL_READ_OPERATION_OPTION,
+            internalInteractionOperationMarker(this.#daemonInstanceId, operationId),
+          ],
+          ["capture-pane", "-p", "-e", "-J", "-S", "-2000", "-t", pane.paneId],
         ],
         { preserveTrailingNewlines: true },
       );
@@ -565,7 +601,10 @@ export class WorkspaceMultiplexerAuthority {
       });
     }
     const observed = resolvePaneRow(this.#panes(workspace.sessionName), intent.semanticPaneId);
-    if (observed.paneId !== pane.paneId) {
+    if (
+      observed.paneId !== pane.paneId ||
+      (pane.nativePaneBirthId != null && observed.nativePaneBirthId !== pane.nativePaneBirthId)
+    ) {
       throw new WorkspaceMultiplexerError("mutation_unverified", {
         operationId,
         reason: "pane_identity_changed_during_read",
@@ -694,6 +733,7 @@ export class WorkspaceMultiplexerAuthority {
   #mutate(
     raw: WorkspaceMultiplexerMutationRequest,
     timing?: WorkspaceMultiplexerOperationTiming,
+    execution?: AuthoredExecutionContext,
   ): WorkspaceMultiplexerMutationResult {
     if (this.#disposed) {
       throw new WorkspaceMultiplexerError("workspace_unavailable", {
@@ -752,7 +792,7 @@ export class WorkspaceMultiplexerAuthority {
 
     try {
       return WorkspaceMultiplexerMutationResultSchemaZ.parse(
-        this.#perform(request, workspace, timing),
+        this.#perform(request, workspace, timing, execution),
       );
     } catch (error) {
       const mapped =
@@ -804,6 +844,7 @@ export class WorkspaceMultiplexerAuthority {
     request: WorkspaceMultiplexerMutationRequest,
     workspace: Workspace,
     timing?: WorkspaceMultiplexerOperationTiming,
+    execution?: AuthoredExecutionContext,
   ): WorkspaceMultiplexerMutationResult {
     const intent = request.intent;
     const sessionName = workspace.sessionName;
@@ -834,7 +875,7 @@ export class WorkspaceMultiplexerAuthority {
       case "workspace.pane.select":
         return this.#select(intent, sessionName, envelope, timing);
       case "workspace.pane.send":
-        return this.#send(intent, sessionName, envelope);
+        return this.#send(intent, sessionName, envelope, execution);
       case "workspace.pane.swap":
         return this.#swap(intent, sessionName, envelope);
       case "workspace.pane.resize":
@@ -1352,6 +1393,35 @@ export class WorkspaceMultiplexerAuthority {
   // send
   // -------------------------------------------------------------------------
 
+  /** Optional metadata path; null alone permits pre-dispatch stock fallback. */
+  #runAuthored(
+    operationId: string,
+    execution: AuthoredExecutionContext | undefined,
+    pane: MultiplexerPaneRow,
+    expectedKinds: AuthoredNativeCommandRequest["expectedKinds"],
+    commands: readonly (readonly string[])[],
+    options?: WorkspaceTmuxRunOptions,
+  ): string {
+    if (execution && pane.nativePaneBirthId && this.#io.runAuthoredNative) {
+      const result = this.#io.runAuthoredNative(
+        {
+          operationId,
+          context: execution,
+          targetPaneId: pane.paneId,
+          targetBirthId: pane.nativePaneBirthId,
+          commands,
+          expectedKinds,
+        },
+        options,
+      );
+      if (result !== null) return result.output;
+    }
+    return this.#io.runTmux(
+      commands.flatMap((command, index) => (index === 0 ? [...command] : [";", ...command])),
+      options,
+    );
+  }
+
   /**
    * Deliver literal bytes to a semantically addressed pane. A successful tmux
    * command plus a post-send identity read-back proves that the resolved pane
@@ -1362,6 +1432,7 @@ export class WorkspaceMultiplexerAuthority {
     intent: Extract<WorkspaceMultiplexerIntent, { verb: "workspace.pane.send" }>,
     sessionName: string,
     envelope: { operationId: string; daemonInstanceId: string; workspaceName: string },
+    execution?: AuthoredExecutionContext,
   ): WorkspaceMultiplexerMutationResult {
     const before = this.#panes(sessionName);
     const pane = resolvePaneRow(before, intent.semanticPaneId);
@@ -1378,32 +1449,18 @@ export class WorkspaceMultiplexerAuthority {
     if (intent.submit) {
       const buffer = `tmux-ide-send-${envelope.operationId}`;
       try {
-        this.#io.runTmux([
-          "set-buffer",
-          "-b",
-          buffer,
-          "--",
-          intent.text,
-          ";",
-          "paste-buffer",
-          "-d",
-          "-b",
-          buffer,
-          "-t",
-          pane.paneId,
-          ";",
-          "set-option",
-          "-p",
-          "-t",
-          pane.paneId,
-          INTERNAL_SEND_OPERATION_OPTION,
-          marker,
-          ";",
-          "send-keys",
-          "-t",
-          pane.paneId,
-          "Enter",
-        ]);
+        this.#runAuthored(
+          envelope.operationId,
+          execution,
+          pane,
+          ["paste-buffer", "send-keys"],
+          [
+            ["set-buffer", "-b", buffer, "--", intent.text],
+            ["paste-buffer", "-d", "-b", buffer, "-t", pane.paneId],
+            ["set-option", "-p", "-t", pane.paneId, INTERNAL_SEND_OPERATION_OPTION, marker],
+            ["send-keys", "-t", pane.paneId, "Enter"],
+          ],
+        );
       } catch (error) {
         try {
           this.#io.runTmux(["delete-buffer", "-b", buffer]);
@@ -1425,21 +1482,16 @@ export class WorkspaceMultiplexerAuthority {
       }
     } else {
       try {
-        this.#io.runTmux([
-          "set-option",
-          "-p",
-          "-t",
-          pane.paneId,
-          INTERNAL_SEND_OPERATION_OPTION,
-          marker,
-          ";",
-          "send-keys",
-          "-t",
-          pane.paneId,
-          "-l",
-          "--",
-          intent.text,
-        ]);
+        this.#runAuthored(
+          envelope.operationId,
+          execution,
+          pane,
+          ["send-keys"],
+          [
+            ["set-option", "-p", "-t", pane.paneId, INTERNAL_SEND_OPERATION_OPTION, marker],
+            ["send-keys", "-t", pane.paneId, "-l", "--", intent.text],
+          ],
+        );
       } catch (error) {
         try {
           this.#io.runTmux([
@@ -1457,7 +1509,10 @@ export class WorkspaceMultiplexerAuthority {
     }
 
     const observed = resolvePaneRow(this.#panes(sessionName), intent.semanticPaneId);
-    if (observed.paneId !== pane.paneId) {
+    if (
+      observed.paneId !== pane.paneId ||
+      (pane.nativePaneBirthId != null && observed.nativePaneBirthId !== pane.nativePaneBirthId)
+    ) {
       throw new WorkspaceMultiplexerError("mutation_unverified", {
         operationId: envelope.operationId,
         reason: "pane_identity_changed_during_send",
