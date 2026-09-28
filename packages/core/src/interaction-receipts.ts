@@ -2,6 +2,7 @@ import {
   InteractionJournalEntrySchemaZ,
   type InteractionJournalEntry,
   type InteractionEvidenceRecord,
+  type NativePaneIdentity,
   type InteractionReceipt,
   type InteractionPaneEndpoint,
   type InteractionEffectEvidence,
@@ -11,6 +12,7 @@ import {
 
 import { canEnrichInteractionEvidence } from "./interaction-evidence.ts";
 
+type NativePaneEndpoint = Extract<InteractionPaneEndpoint, { kind: "native-pane" }>;
 type ResolvedInteractionEndpoint = Extract<InteractionPaneEndpoint, { kind: "pane" }>;
 /** Physical evidence keys never include a mutable session/semantic alias. */
 export function interactionNativePaneEndpointKey(
@@ -72,7 +74,9 @@ export function interactionPresenceIsFresh(
 export interface PaneInteractionProjection {
   readonly endpoint: ResolvedInteractionEndpoint;
   readonly sourceEndpoint: ResolvedInteractionEndpoint | null;
-  readonly destinationEndpoint: ResolvedInteractionEndpoint;
+  readonly destinationEndpoint: ResolvedInteractionEndpoint | NativePaneEndpoint;
+  /** Current alias used only for display, never a claim of historical placement. */
+  readonly displayDestinationEndpoint?: ResolvedInteractionEndpoint;
   readonly effect: InteractionEffectEvidence;
   readonly operationKey: string;
   /** The pane whose chrome owns this projection. */
@@ -331,7 +335,8 @@ export function interactionReceiptTargetLabel(
 export interface PaneInteractionRelationship {
   readonly origin: InteractionReceipt["origin"];
   readonly sourceEndpoint: ResolvedInteractionEndpoint | null;
-  readonly destinationEndpoint: ResolvedInteractionEndpoint;
+  readonly destinationEndpoint: ResolvedInteractionEndpoint | NativePaneEndpoint;
+  readonly displayDestinationEndpoint?: ResolvedInteractionEndpoint;
   readonly operationKind?: InteractionReceipt["operationKind"];
 }
 /** Names are resolved only from authoritative current endpoint metadata. */
@@ -348,7 +353,10 @@ export function paneInteractionRelationshipLabel(
         ? "External reader"
         : "External input"
       : `${interaction.origin.toUpperCase()} ${read ? "reader" : "input"}`;
-  return `${source}${read ? " reads " : " → "}${paneLabel(interaction.destinationEndpoint)}`;
+  const display =
+    interaction.displayDestinationEndpoint ??
+    (interaction.destinationEndpoint.kind === "pane" ? interaction.destinationEndpoint : null);
+  return `${source}${read ? " reads " : " → "}${display ? paneLabel(display) : "Native pane"}`;
 }
 
 /**
@@ -421,6 +429,7 @@ export function reduceInteractionReceipt(
     endpoint,
     sourceEndpoint: source,
     destinationEndpoint: destination,
+    displayDestinationEndpoint: destination,
     effect: evidence.effect,
     operationKey,
     paneId: endpoint.semanticPaneId,
@@ -445,6 +454,49 @@ export function reduceInteractionReceipt(
 export function interactionForPane(
   state: InteractionFeedState,
   endpoint: ResolvedInteractionEndpoint,
+  nativeIdentity?: NativePaneIdentity | null,
 ): PaneInteractionProjection | null {
-  return state.panes[interactionPaneEndpointKey(endpoint)] ?? null;
+  const semantic = state.panes[interactionPaneEndpointKey(endpoint)] ?? null;
+  if (!nativeIdentity) return semantic;
+  const physical: NativePaneEndpoint = {
+    kind: "native-pane",
+    environmentId: endpoint.environmentId,
+    serverScope: endpoint.serverScope,
+    ...nativeIdentity,
+  };
+  const key = interactionNativePaneEndpointKey(physical);
+  // At most INTERACTION_ACTIVITY_LIMIT entries. Current aliases are never written back
+  // into retained history; a linked physical pane can appear in several sessions.
+  for (const entry of state.activity) {
+    if (entry.type !== "interaction.evidence") continue;
+    const evidence = entry.evidence;
+    const destination = evidence.endpoints.destination;
+    if (destination.kind !== "native-pane" || interactionNativePaneEndpointKey(destination) !== key)
+      continue;
+    const operationKind = interactionActivityOperationKind(entry);
+    if (operationKind !== "workspace.pane.read" && operationKind !== "workspace.pane.send")
+      continue;
+    if (semantic && semantic.sequence > entry.sequence) return semantic;
+    const source = evidence.endpoints.source?.kind === "pane" ? evidence.endpoints.source : null;
+    return {
+      endpoint,
+      sourceEndpoint: source,
+      destinationEndpoint: destination,
+      displayDestinationEndpoint: endpoint,
+      effect: evidence.effect,
+      operationKey: receiptOperationKey(entry),
+      paneId: endpoint.semanticPaneId,
+      direction: "incoming",
+      sourcePaneId: source?.semanticPaneId ?? null,
+      destinationPaneId: endpoint.semanticPaneId,
+      operationKind,
+      operationId: evidence.interactionId,
+      phase: "observed",
+      origin: "external",
+      label: interactionReceiptLabel(entry),
+      sequence: entry.sequence,
+      at: interactionActivityAt(entry),
+    };
+  }
+  return semantic;
 }

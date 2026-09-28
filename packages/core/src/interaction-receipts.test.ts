@@ -567,3 +567,65 @@ describe("native evidence journal projection", () => {
     expect(state.panes).toEqual({});
   });
 });
+
+it("projects physical history through current linked aliases without rewriting provenance", () => {
+  const nativeIdentity = { serverEpoch: fixtureId, paneBirthId: "7" };
+  const physical = {
+    kind: "native-pane" as const,
+    environmentId: fixtureId,
+    serverScope: endpoint("a").serverScope,
+    ...nativeIdentity,
+  };
+  const entry = InteractionEvidenceRecordSchemaZ.parse({
+    type: "interaction.evidence",
+    sequence: 1,
+    evidence: {
+      schemaVersion: 1,
+      interactionId: fixtureId,
+      revision: 0,
+      endpoints: { destination: physical, source: null },
+      actor: { kind: "unknown", reason: "unavailable" },
+      observation: {
+        kind: "native-journal",
+        serverEpoch: fixtureId,
+        command: "send-keys",
+        cursor: { epoch: "22222222-2222-4222-8222-222222222222", sequence: "1" },
+        commandId: null,
+        parentCommandId: null,
+        correlatedOperationId: null,
+      },
+      effect: { kind: "input-enqueued" },
+      occurredAt: null,
+      timeBasis: "unknown",
+      receivedAt: "2026-09-28T00:00:00.000Z",
+    },
+  });
+  const state = reduceReceipt(initialInteractionFeedState(), entry);
+  const aliasA = endpoint("pane.a");
+  const aliasB = { ...endpoint("pane.b"), workspaceName: "linked" };
+  expect(interactionForPane(state, aliasA)).toBeNull();
+  for (const alias of [aliasA, aliasB]) {
+    const projection = interactionForPane(state, alias, nativeIdentity)!;
+    expect(projection.destinationEndpoint).toEqual(physical);
+    expect(projection.displayDestinationEndpoint).toEqual(alias);
+    expect(
+      paneInteractionRelationshipLabel(projection, (e) => e.workspaceName + ":" + e.semanticPaneId),
+    ).toBe("External input → " + alias.workspaceName + ":" + alias.semanticPaneId);
+  }
+  expect(interactionForPane(state, aliasA, { ...nativeIdentity, paneBirthId: "8" })).toBeNull();
+  expect(
+    interactionForPane(
+      state,
+      { ...aliasA, environmentId: "33333333-3333-4333-8333-333333333333" },
+      nativeIdentity,
+    ),
+  ).toBeNull();
+  expect(
+    interactionForPane(state, aliasA, {
+      ...nativeIdentity,
+      serverEpoch: "33333333-3333-4333-8333-333333333333",
+    }),
+  ).toBeNull();
+  expect(state.activity[0]).toEqual(entry);
+  expect(state.panes).toEqual({});
+});
