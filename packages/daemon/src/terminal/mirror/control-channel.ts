@@ -906,6 +906,10 @@ export class ControlChannelCore {
 
 export interface MirrorControlChannelOptions {
   nativeViewer?: NativeViewerControlOptions;
+  nativeViewerReady?: {
+    get(): NativeViewerControlOptions | undefined;
+    subscribe(listener: () => void): () => void;
+  };
   /** Resolve through the owning daemon's generation fence before each spawn. */
   resolveSocketPath?: () => string;
   nativeServerIdentity?: NativeTmuxServerIdentity;
@@ -1077,19 +1081,36 @@ export class MirrorControlChannel implements MirrorChannelIo {
   get nativeViewerIdentity(): NativeJournalIdentity | null {
     return this.viewerIdentity ? { ...this.viewerIdentity } : null;
   }
+  private viewerReadyUnsubscribe: (() => void) | null = null;
+  private viewerHandshakeStarted = false;
+  private viewerConfig: NativeViewerControlOptions | undefined;
   private retireNativeViewer(): void {
+    this.viewerReadyUnsubscribe?.();
+    this.viewerReadyUnsubscribe = null;
     this.viewerIdentity = null;
-    if (this.viewerRetired || !this.opts.nativeViewer) return;
+    if (this.viewerRetired) return;
     this.viewerRetired = true;
     try {
-      this.opts.nativeViewer.onRetired();
+      (this.viewerConfig ?? this.opts.nativeViewer)?.onRetired();
     } catch {
       /* optional metadata only */
     }
   }
   private initializeNativeViewer(): Promise<void> {
-    const config = this.opts.nativeViewer;
-    if (!config || this.exited || this.viewerRetired) return Promise.resolve();
+    if (this.exited || this.viewerRetired || this.viewerHandshakeStarted) return Promise.resolve();
+    const config = this.opts.nativeViewer ?? this.opts.nativeViewerReady?.get();
+    if (!config) {
+      if (!this.viewerReadyUnsubscribe && this.opts.nativeViewerReady) {
+        this.viewerReadyUnsubscribe = this.opts.nativeViewerReady.subscribe(() => {
+          void this.initializeNativeViewer();
+        });
+      }
+      return Promise.resolve();
+    }
+    this.viewerHandshakeStarted = true;
+    this.viewerConfig = config;
+    this.viewerReadyUnsubscribe?.();
+    this.viewerReadyUnsubscribe = null;
     return new Promise((resolve) => {
       let settled = false;
       const finish = (identity: NativeJournalIdentity | null) => {

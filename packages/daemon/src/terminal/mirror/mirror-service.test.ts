@@ -558,3 +558,33 @@ describe("MirrorService refcounting", () => {
     await expect(subscribed(service, "zz-one", "pane.alpha")).rejects.toThrow(/disposed/);
   });
 });
+
+it("does not create production viewer grants for injected fake IO", async () => {
+  const createOwnedViewerAdapter = vi.fn();
+  const service = new MirrorService({
+    createOwnedViewerAdapter,
+    createIo: () => {
+      throw new Error("fake construction");
+    },
+  });
+  await expect(service.describeSession("viewer-fake-construction")).rejects.toThrow(
+    "fake construction",
+  );
+  expect(createOwnedViewerAdapter).not.toHaveBeenCalled();
+  await service.dispose();
+});
+it("retires the adapter when channel construction fails", async () => {
+  const dispose = vi.fn();
+  const service = new MirrorService({
+    createOwnedViewerAdapter: () =>
+      ({ dispose }) as unknown as import("./owned-viewer-adapter.ts").OwnedViewerAdapter,
+    resolveSocketPath: () => {
+      throw new Error("retired socket");
+    },
+  });
+  await expect(service.describeSession("viewer-real-construction")).rejects.toThrow(
+    "retired socket",
+  );
+  expect(dispose).toHaveBeenCalledOnce();
+  await service.dispose();
+});

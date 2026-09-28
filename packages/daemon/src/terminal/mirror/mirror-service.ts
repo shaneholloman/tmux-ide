@@ -1,3 +1,4 @@
+import type { OwnedViewerAdapter } from "./owned-viewer-adapter.ts";
 import { accessSync, constants, realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { resolveTmuxExecutable, tmuxClientEnvironment } from "../../lib/tmux-client-execution.ts";
@@ -46,6 +47,7 @@ import {
 } from "./control-mode-ownership.ts";
 
 export interface MirrorServiceOptions {
+  createOwnedViewerAdapter?: (session: string) => OwnedViewerAdapter | undefined;
   nativeServerIdentity?: import("../../lib/tmux-server-generation-runner.ts").NativeTmuxServerIdentity;
   resolveSocketPath?: () => string;
   /** `tmux -L <name>` for every channel — isolated servers in tests. */
@@ -442,7 +444,11 @@ export class MirrorService {
         this.owner,
       );
       let channel: SessionChannel;
+      let ownedViewer: OwnedViewerAdapter | undefined;
       try {
+        ownedViewer = this.opts.createIo
+          ? undefined
+          : this.opts.createOwnedViewerAdapter?.(session);
         const initialSocket = this.opts.resolveSocketPath
           ? this.opts.resolveSocketPath()
           : this.opts.socketPath;
@@ -460,6 +466,7 @@ export class MirrorService {
         const environment = Object.freeze(tmuxClientEnvironment(process.env));
         const channelOptions: SessionChannelOptions = {
           session,
+          ownedViewer,
           createIo: (handlers) =>
             this.opts.createIo?.(session, handlers) ??
             new MirrorControlChannel({
@@ -473,6 +480,13 @@ export class MirrorService {
               configFile: this.opts.configFile,
               pauseAfterSeconds: this.opts.pauseAfterSeconds,
               nowMicros: this.opts.nowMicros,
+              nativeViewer: ownedViewer?.controlOptions(),
+              nativeViewerReady: ownedViewer
+                ? {
+                    get: () => ownedViewer!.controlOptions(),
+                    subscribe: (listener) => ownedViewer!.subscribeReady(listener),
+                  }
+                : undefined,
             }),
           executeWindowLinkGuard: (args) => {
             if (!mutationSocketIdentity || !executable)
@@ -527,6 +541,7 @@ export class MirrorService {
         };
         channel = new SessionChannel(channelOptions);
       } catch (cause) {
+        ownedViewer?.dispose();
         releaseAuthority();
         throw cause;
       }

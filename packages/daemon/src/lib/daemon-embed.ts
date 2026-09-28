@@ -1,3 +1,4 @@
+import { createOwnedViewerAdapterFactory } from "./owned-viewer-factory.ts";
 import { publishOwnerInteractionReceipt } from "./interaction-receipt-publication.ts";
 import { createAuthoredNativeCommandRunner } from "./authored-native-command-runner.ts";
 import { AuthoredNativeReceiptEnricher } from "./authored-native-receipt-staging.ts";
@@ -1264,6 +1265,7 @@ async function startEmbeddedDaemonGeneration(
     let interactionObservation: InteractionObservationStatusStore | null = null;
     const nativeObservationRequested = nativeInteractionObservationRequested();
     let observationSelector: OwnerInteractionObservation | null = null;
+    let ownedViewerFactory: ReturnType<typeof createOwnedViewerAdapterFactory> | null = null;
     const authoredReceiptEnricher = new AuthoredNativeReceiptEnricher({
       journal: interactionReceipts,
       publishRaw: (evidence) => interactionReceipts.appendEvidence(evidence),
@@ -1512,6 +1514,7 @@ async function startEmbeddedDaemonGeneration(
           publishResourceChange: (change) => broadcastResourceChanged(change, instanceId),
         },
         mirror: {
+          createOwnedViewerAdapter: () => ownedViewerFactory?.(),
           nativeServerIdentity: initialNativeServerIdentity,
           executable: tmuxAuthority.executablePath,
           resolveSocketPath: () =>
@@ -1680,6 +1683,12 @@ async function startEmbeddedDaemonGeneration(
             publishEvidence: (evidence) => {
               interactionReceipts.appendEvidence(evidence);
             },
+          });
+          ownedViewerFactory = createOwnedViewerAdapterFactory({
+            environmentId,
+            serverScope: scope,
+            observation: observationSelector,
+            status: interactionObservation,
           });
           authoredNativeRunner = createAuthoredNativeCommandRunner({
             environmentId,

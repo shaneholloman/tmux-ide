@@ -37,7 +37,11 @@ const block = (id: number, lines: string[] = [], ok = true, flags = 1) =>
 function core() {
   return new ControlChannelCore({ onOutput: vi.fn(), onNotify: vi.fn(), onExit: vi.fn() });
 }
-function fixture(options?: { onIdentity?: (i: typeof identity) => boolean; configured?: boolean }) {
+function fixture(options?: {
+  onIdentity?: (i: typeof identity) => boolean;
+  configured?: boolean;
+  late?: { ready: boolean; wake?: () => void; unsubscribe: ReturnType<typeof vi.fn> };
+}) {
   const proc = Object.assign(new EventEmitter(), {
     stdin: new PassThrough(),
     stdout: new PassThrough(),
@@ -62,7 +66,18 @@ function fixture(options?: { onIdentity?: (i: typeof identity) => boolean; confi
   const channel = new MirrorControlChannel({
     session: "test",
     handlers: { onOutput: vi.fn(), onNotify: vi.fn(), onExit: vi.fn() },
-    ...(options?.configured === false
+    ...(options?.late
+      ? {
+          nativeViewerReady: {
+            get: () => (options.late!.ready ? { serverEpoch, onIdentity, onRetired } : undefined),
+            subscribe: (wake: () => void) => {
+              options.late!.wake = wake;
+              return options.late!.unsubscribe;
+            },
+          },
+        }
+      : {}),
+    ...(options?.configured === false || options?.late
       ? {}
       : { nativeViewer: { serverEpoch, onIdentity, onRetired } }),
   });
@@ -326,4 +341,32 @@ describe("native wrapper FIFO boundaries", () => {
     c.fail("gone");
     expect(done).toHaveBeenCalledTimes(1);
   });
+});
+
+it("enables a live channel once on readiness without delaying ordinary input", async () => {
+  const late = { ready: false, unsubscribe: vi.fn(), wake: undefined as undefined | (() => void) };
+  const f = fixture({ late });
+  await start(f);
+  expect(f.writes).toEqual([]);
+  f.channel.send("send-keys -t %1 Enter");
+  f.proc.stdout.write(block(2));
+  late.ready = true;
+  late.wake!();
+  late.wake!();
+  expect(f.writes.filter((value) => value === "tmux-ide-events -i\n")).toHaveLength(1);
+  f.proc.stdout.write(block(3, [JSON.stringify(identity)]));
+  expect(f.channel.nativeViewerIdentity).toEqual(identity);
+  expect(late.unsubscribe).toHaveBeenCalledOnce();
+  await f.channel.dispose();
+  expect(f.onRetired).toHaveBeenCalledOnce();
+});
+it("unsubscribes readiness on exit and ignores a queued late wake", async () => {
+  const late = { ready: false, unsubscribe: vi.fn(), wake: undefined as undefined | (() => void) };
+  const f = fixture({ late });
+  await start(f);
+  await f.channel.dispose();
+  late.ready = true;
+  late.wake!();
+  expect(late.unsubscribe).toHaveBeenCalledOnce();
+  expect(f.writes).not.toContain("tmux-ide-events -i\n");
 });

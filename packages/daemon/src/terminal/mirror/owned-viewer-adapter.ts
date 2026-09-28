@@ -21,6 +21,7 @@ export interface OwnedViewerAuthority {
   readonly serverScope: TmuxServerScope;
   /** Null until all wrapper, epoch and physical pane guards are verified. */
   capability(): { serverEpoch: string } | null;
+  subscribeReady?: (listener: () => void) => () => void;
   register(identity: NativeJournalIdentity): OwnedNativeConnection | null;
   admit(request: OwnedNativeOperationRequest): OwnedNativeOperation | null;
   acknowledge(
@@ -49,6 +50,9 @@ export class OwnedViewerAdapter {
     if (this.#disposed || (this.#io !== null && this.#io !== io))
       throw new Error("Viewer adapter cannot change control connection");
     this.#io = io;
+  }
+  subscribeReady(listener: () => void): () => void {
+    return this.authority.subscribeReady?.(listener) ?? (() => {});
   }
   controlOptions(): NativeViewerControlOptions | undefined {
     const capability = this.authority.capability();

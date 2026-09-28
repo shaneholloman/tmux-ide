@@ -1,3 +1,4 @@
+import { createOwnedViewerAdapterFactory } from "./owned-viewer-factory.ts";
 import { createAuthoredNativeCommandRunner } from "./authored-native-command-runner.ts";
 import { AuthoredNativeReceiptEnricher } from "./authored-native-receipt-staging.ts";
 import {
@@ -277,6 +278,12 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
       traceAuthority: { generation, incarnation: null },
     },
     mirror: {
+      createOwnedViewerAdapter: createOwnedViewerAdapterFactory({
+        environmentId: options.environmentId,
+        serverScope: { serverId: options.serverId, generation },
+        observation: observationSelector,
+        status: interactionObservation,
+      }),
       executable: authority.executablePath,
       socketPath,
       resolveSocketPath: () => generationRun(["display-message", "-p", "#{socket_path}"]),
