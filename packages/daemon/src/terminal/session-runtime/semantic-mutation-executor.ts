@@ -3,6 +3,7 @@ import {
   SessionRuntimeSemanticIntentSchemaZ,
   type AuthoredInteractionOrigin,
   type InteractionReceipt,
+  type InteractionPaneEndpoint,
   type SessionRuntimeSemanticIntent,
   type SessionRuntimePaneReadResult,
   type WorkspaceMultiplexerMutationResult,
@@ -42,7 +43,20 @@ export interface SessionRuntimeTmuxObservation {
   readonly operationKind: "workspace.pane.send" | "workspace.pane.read";
 }
 
+export interface SessionRuntimeInteractionContext {
+  readonly destination: Extract<InteractionPaneEndpoint, { kind: "pane" }>;
+  readonly source: {
+    readonly endpoint: Extract<InteractionPaneEndpoint, { kind: "pane" }>;
+    readonly bindingId: string;
+  } | null;
+}
+export interface SessionRuntimeAutomationAuthority extends SessionRuntimeInteractionContext {
+  readonly origin: "cli" | "sdk";
+  readonly authorizeBeforeEffect: () => void;
+}
+
 export interface SessionRuntimeSubmissionAuthority {
+  readonly interactionContext?: SessionRuntimeInteractionContext;
   /** Trusted submitting surface, established outside caller-authored intent JSON. */
   readonly origin: AuthoredInteractionOrigin;
   readonly authenticatedSourceSemanticPaneId?: string | null;

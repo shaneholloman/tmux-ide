@@ -52,6 +52,7 @@ import type { PaneStreamMirror } from "../pane-stream/pane-stream-websocket.ts";
 import {
   SessionSemanticMutationExecutor,
   type SessionRuntimeIntentResult,
+  type SessionRuntimeAutomationAuthority,
   type SessionRuntimeTmuxObservation,
   type SessionSemanticMutationExecutorOptions,
   type SessionSemanticMutationMetrics,
@@ -610,6 +611,45 @@ export class SessionRuntimeRegistry implements PaneStreamMirror {
 
   assertExecutionHandle(handle: SessionRuntimeExecutionHandle, semanticPaneId?: string): void {
     this.#assertExecutionHandle(handle, semanticPaneId);
+  }
+
+  /** Internal automation seam: caller boundary has validated owner/lifetime and source grant. */
+  submitAutomationIntent(
+    operationId: string,
+    rawIntent: SessionRuntimeSemanticIntent,
+    authority: SessionRuntimeAutomationAuthority,
+  ): Promise<SessionRuntimeIntentResult> {
+    const intent = SessionRuntimeSemanticIntentSchemaZ.parse(rawIntent);
+    if (intent.verb !== "workspace.pane.send" && intent.verb !== "workspace.pane.read")
+      return Promise.reject(new Error("Automation authorizes pane reads and sends only"));
+    if (
+      authority.destination.workspaceName !== intent.workspaceName ||
+      authority.destination.semanticPaneId !== intent.semanticPaneId
+    )
+      return Promise.reject(new Error("Automation destination does not match intent"));
+    if (!this.#semanticMutations)
+      return Promise.reject(new Error("Session semantic mutations are unavailable"));
+    // Native sender hints are owner-local. Cross-owner source remains scoped evidence only.
+    const source = authority.source?.endpoint;
+    const sameOwner =
+      source &&
+      source.environmentId === authority.destination.environmentId &&
+      source.serverScope.serverId === authority.destination.serverScope.serverId &&
+      source.serverScope.generation === authority.destination.serverScope.generation &&
+      source.workspaceName === authority.destination.workspaceName;
+    const sourceSemanticPaneId = sameOwner ? source.semanticPaneId : null;
+    return this.#semanticMutations.submit(
+      operationId,
+      intent.verb === "workspace.pane.send"
+        ? { ...intent, sourceSemanticPaneId: sourceSemanticPaneId ?? undefined }
+        : intent,
+      {
+        origin: authority.origin,
+        authenticatedSourceSemanticPaneId: sourceSemanticPaneId,
+        interactionContext: { destination: authority.destination, source: authority.source },
+        authorizeBeforeEffect: authority.authorizeBeforeEffect,
+      },
+    );
   }
 
   /** Execute one send as a separately authenticated local tmux-pane principal. */

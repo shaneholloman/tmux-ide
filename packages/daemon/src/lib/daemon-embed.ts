@@ -1567,6 +1567,8 @@ async function startEmbeddedDaemonGeneration(
           get interactionEvidence() {
             return interactionEvidence;
           },
+          submitAutomationIntent: (operationId, intent, authority) =>
+            sessionRuntimeRegistry!.submitAutomationIntent(operationId, intent, authority),
           resolveInteractionSource: (credential, workspaceName, claimedSemanticPaneId) => {
             const session = workspaceRegistry.get(workspaceName)?.sessionName;
             if (!session || !interactionEvidence) return null;
