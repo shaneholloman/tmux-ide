@@ -275,6 +275,11 @@ export interface WorkspaceTmuxRunOptions {
   readonly preserveTrailingNewlines?: boolean;
 }
 
+/** Async capture may include two bounded private metadata lines before terminal output. */
+export interface WorkspaceTmuxAsyncRunOptions extends WorkspaceTmuxRunOptions {
+  readonly maxOutputBytes?: number;
+}
+
 export function createPinnedWorkspaceTmuxRunner(
   authority: WorkspacePaneTmuxAuthority,
   options: Readonly<{ timeoutMs?: number }> = {},
@@ -333,7 +338,11 @@ export function createPinnedWorkspaceTmuxRunner(
 export function createPinnedWorkspaceTmuxAsyncRunner(
   authority: WorkspacePaneTmuxAuthority,
   options: Readonly<{ timeoutMs?: number }> = {},
-): (args: readonly string[], signal?: AbortSignal) => Promise<string> {
+): (
+  args: readonly string[],
+  signal?: AbortSignal,
+  runOptions?: WorkspaceTmuxAsyncRunOptions,
+) => Promise<string> {
   const timeoutMs = options.timeoutMs ?? 5_000;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300_000)
     throw new TypeError("Pinned async tmux timeout is invalid.");
@@ -360,17 +369,22 @@ export function createPinnedWorkspaceTmuxAsyncRunner(
     authority.socketSelector.kind === "name"
       ? createNamedSocketFence(authority, executablePath, environment)
       : null;
-  return (args, signal) => {
+  return (args, signal, runOptions) => {
+    const maxBuffer = runOptions?.maxOutputBytes ?? TMUX_OUTPUT_BYTES;
+    if (!Number.isSafeInteger(maxBuffer) || maxBuffer < 1 || maxBuffer > TMUX_OUTPUT_BYTES + 2050)
+      throw new TypeError("Pinned async tmux output bound is invalid.");
     const selector = socketIdentity
       ? ["-S", revalidateUnixSocketIdentity(socketIdentity)]
       : socketArgv;
     const execute = (selector: string[]) =>
       boundedTmuxRead(executablePath, [...selector, "-u", ...args], {
         env: environment,
-        maxBuffer: TMUX_OUTPUT_BYTES,
+        maxBuffer,
         timeoutMs,
         signal,
-      }).then((stdout) => stdout.replace(/(?:\r?\n)+$/u, ""));
+      }).then((stdout) =>
+        runOptions?.preserveTrailingNewlines ? stdout : stdout.replace(/(?:\r?\n)+$/u, ""),
+      );
     if (!namedFence) return execute(selector);
     return namedFence
       .resolveAsync(signal)

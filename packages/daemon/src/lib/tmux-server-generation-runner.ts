@@ -4,6 +4,7 @@ import {
   createPinnedWorkspaceTmuxAsyncRunner,
   type WorkspacePaneTmuxAuthority,
   type WorkspaceTmuxRunOptions,
+  type WorkspaceTmuxAsyncRunOptions,
 } from "./workspace-pane-creation.ts";
 import { shellEscape } from "./shell.ts";
 
@@ -73,11 +74,15 @@ export function createServerGenerationFencedTmuxAsyncRunner(
   authority: WorkspacePaneTmuxAuthority,
   expected: NativeTmuxServerIdentity,
   options: Readonly<{ timeoutMs?: number }> = {},
-): (args: readonly string[], signal?: AbortSignal) => Promise<string> {
+): (
+  args: readonly string[],
+  signal?: AbortSignal,
+  runOptions?: WorkspaceTmuxAsyncRunOptions,
+) => Promise<string> {
   const run = createPinnedWorkspaceTmuxAsyncRunner(authority, options);
   fenceNativeTmuxCommand(["display-message", "-p", ""], expected);
-  return async (args, signal) => {
+  return async (args, signal, runOptions) => {
     const command = fenceNativeTmuxCommand(args, expected);
-    return command.verify(await run(command.argv, signal));
+    return command.verify(await run(command.argv, signal, runOptions));
   };
 }

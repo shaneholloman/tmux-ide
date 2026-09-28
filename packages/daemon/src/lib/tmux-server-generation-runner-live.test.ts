@@ -56,6 +56,22 @@ it.skipIf(spawnSync("tmux", ["-V"], { stdio: "ignore" }).status !== 0)(
         "async-flags-ok",
       );
 
+      expect(
+        await flaggedAsync(
+          ["display-message", "-p", "identity", ";", "display-message", "-p", "ack"],
+          undefined,
+          { preserveTrailingNewlines: true, maxOutputBytes: 2050 },
+        ),
+      ).toBe("identity\nack\n");
+      expect(
+        await flaggedAsync(["display-message", "-p", "snapshot\n"], undefined, {
+          preserveTrailingNewlines: true,
+        }),
+      ).toBe("snapshot\n\n");
+      await expect(
+        flaggedAsync(["display-message", "-p", "too big"], undefined, { maxOutputBytes: 3 }),
+      ).rejects.toThrow();
+
       const value = "dollar $HOME ; slash \\ quote ' double \" unicode é\nsecond line";
       run(["set-option", "-t", "shared", "@guard-test", value]);
       expect(native(["show-options", "-qv", "-t", "shared", "@guard-test"])).toBe(value);

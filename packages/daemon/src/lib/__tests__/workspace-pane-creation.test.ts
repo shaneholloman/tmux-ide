@@ -295,6 +295,49 @@ describe("WorkspacePaneCreationAuthority", () => {
     }
   });
 
+  it("preserves exact async capture bytes with bounded private prefix allowance and cancellation", async () => {
+    const root = mkdtempSync(join(tmpdir(), "tmux-ide-async-output-"));
+    roots.push(root);
+    const socketPath = join(root, "s"),
+      executablePath = join(root, "tmux");
+    writeFileSync(
+      executablePath,
+      `#!${process.execPath}\nconst arg=process.argv.at(-1);if(arg==='wait')setInterval(()=>{},1000);else if(arg==='large')process.stdout.write('x'.repeat(65536)+'\\nack\\n');else process.stdout.write(arg);\n`,
+      { mode: 0o755 },
+    );
+    const server = createServer();
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, resolve);
+    });
+    try {
+      const run = createPinnedWorkspaceTmuxAsyncRunner({
+        executablePath,
+        socketSelector: { kind: "path", path: socketPath },
+      });
+      const raw = { preserveTrailingNewlines: true, maxOutputBytes: 65536 + 2050 };
+      for (const text of ["", "identity\nack\n", "identity\nack\nrow\n\n", "identity\nack\n\n"]) {
+        await expect(run(["capture-pane", text], undefined, raw)).resolves.toBe(text);
+        await expect(run(["capture-pane", text])).resolves.toBe(text.replace(/(?:\r?\n)+$/u, ""));
+      }
+      await expect(run(["capture-pane", "large"], undefined, raw)).resolves.toHaveLength(65541);
+      await expect(run(["capture-pane", "large"])).rejects.toThrow();
+      await expect(
+        run(["capture-pane", "1234"], undefined, { ...raw, maxOutputBytes: 3 }),
+      ).rejects.toThrow();
+      for (const maxOutputBytes of [0, -1, 67587, 1.5, Infinity])
+        expect(() => run(["capture-pane", ""], undefined, { maxOutputBytes })).toThrow(
+          "output bound",
+        );
+      const abort = new AbortController();
+      const capture = run(["capture-pane", "wait"], abort.signal, raw);
+      abort.abort();
+      await expect(capture).rejects.toThrow();
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("creates a terminal from canonical daemon-owned facts and returns semantic identity only", async () => {
     const { authority, fake } = rig();
     const result = await authority.create(request());
