@@ -33,6 +33,8 @@ export interface OwnedNativeOperationRequest {
   readonly operationId: string;
   readonly role: Role;
   readonly target: NativeEndpoint;
+  /** Historical semantic target captured at admission; never resolved after execution. */
+  readonly authoredDestination?: SemanticEndpoint;
   /** Exact direct command plan, including repeated kinds (maximum 64). */
   readonly commands: readonly Command[];
   /** Only actual validated credential grants may be supplied by the owner. */
@@ -50,6 +52,7 @@ export interface OwnedNativeInteractionDecision {
   readonly proof: {
     readonly acknowledgement: NativeOperationIdentity;
     readonly target: NativeEndpoint;
+    readonly authoredDestination: SemanticEndpoint | null;
     readonly source: OwnedNativeOperationRequest["source"];
   } | null;
   readonly reason: "unmatched" | "pending-expired" | "overflow" | "retired" | "matched";
@@ -195,6 +198,11 @@ export class OwnedNativeInteractionBindings {
       )
     )
       throw new TypeError("Invalid owned operation commands");
+    if (raw.authoredDestination !== undefined) {
+      const destination = InteractionPaneEndpointSchemaZ.parse(raw.authoredDestination);
+      if (raw.role === "viewer" || destination.kind !== "pane" || !this.#scope(destination))
+        throw new TypeError("Invalid authored semantic destination");
+    }
     if (raw.role === "viewer" && raw.source !== null)
       throw new TypeError("Viewer is not an agent source");
     if (raw.source) {
@@ -532,7 +540,12 @@ export class OwnedNativeInteractionBindings {
     return freeze({
       disposition: permit.request.role,
       evidence,
-      proof: { acknowledgement: ack, target: permit.request.target, source },
+      proof: {
+        acknowledgement: ack,
+        target: permit.request.target,
+        authoredDestination: permit.request.authoredDestination ?? null,
+        source,
+      },
       reason: "matched",
     });
   }

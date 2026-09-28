@@ -321,3 +321,35 @@ it("a reused UUID cannot correlate a retired wrapper's late record", () => {
   expect(authority.ingest(projection({ parentCommandId: "20" }))[0]!.disposition).toBe("viewer");
   expect(authority.hasPendingOperations).toBe(false);
 });
+it("accepts only same-owner semantic admission destinations for authored proof", () => {
+  const authority = new OwnedNativeInteractionBindings({ environmentId, serverScope, serverEpoch });
+  const authoredDestination = {
+    kind: "pane" as const,
+    environmentId,
+    serverScope,
+    paneLifetimeId: id(70),
+    workspaceName: "space",
+    semanticPaneId: "pane.target",
+  };
+  const request = {
+    operationId,
+    role: "authored" as const,
+    target,
+    commands: ["send-keys" as const],
+    source: null,
+    authoredDestination,
+  };
+  expect(() =>
+    authority.admit({
+      ...request,
+      authoredDestination: { ...authoredDestination, environmentId: id(80) },
+    }),
+  ).toThrow();
+  expect(() => authority.admit({ ...request, role: "viewer" })).toThrow();
+  const permit = authority.admit(request)!;
+  const connection = authority.registerConnection(identity, "authored")!;
+  authority.acknowledge(permit, connection, ack);
+  expect(authority.ingest(projection())[0]!.proof!.authoredDestination).toEqual(
+    authoredDestination,
+  );
+});

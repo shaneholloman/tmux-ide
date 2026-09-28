@@ -104,6 +104,17 @@ export class InteractionReceiptJournal {
     };
   }
 
+  /** Bounded newest-first lookup; never exposes retained journal objects. */
+  latestOperationReceipt(operationId: string): InteractionReceipt | null {
+    this.#assertOpen();
+    for (let index = this.#receipts.length - 1; index >= 0; index--) {
+      const entry = this.#receipts[index]!;
+      if (entry.type === "interaction.receipt" && entry.operationId === operationId)
+        return structuredClone(entry);
+    }
+    return null;
+  }
+
   /** Subscribe before taking the initial snapshot to avoid a readiness gap. */
   subscribe(wake: () => void): () => void {
     this.#assertOpen();
