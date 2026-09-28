@@ -418,3 +418,54 @@ describe("constructed native evidence schema conformance", () => {
     expect(InteractionEvidenceSchemaZ.parse(next)).toEqual(next);
   });
 });
+it("prefix hashing preserves exact public references across identities, resets and retirement", () => {
+  const p = projector();
+  const prefix = [environmentId, serverScope.serverId, generation, serverEpoch];
+  for (let sequence = 1; sequence <= 512; sequence++) {
+    const id = String(sequence);
+    const item = p.consume(
+      batch([
+        record(id, 1, {
+          commandId: id,
+          issuerId: id,
+          parentCommandId: id,
+          flags: 0,
+          targetBirthId: "0",
+        }),
+      ]),
+    )[0]!;
+    const expected = nativeInteractionReference([...prefix, "interaction", journalEpoch, id]);
+    expect(item.evidence.interactionId).toBe(expected);
+    expect(item.evidence.actor).toMatchObject({
+      issuerId: nativeInteractionReference([...prefix, "issuer", id]),
+    });
+    expect(item.evidence.observation).toMatchObject({
+      commandId: nativeInteractionReference([...prefix, "command", id]),
+      parentCommandId: nativeInteractionReference([...prefix, "command", id]),
+    });
+    expect(item.evidence.endpoints.destination).toMatchObject({
+      observationRef: nativeInteractionReference([...prefix, "destination", expected]),
+    });
+    expect(p.pendingRecords).toBe(0);
+  }
+  p.reset(otherEpoch);
+  expect(
+    p.consume(batch([record("1")], { journalEpoch: otherEpoch }))[0]!.evidence.interactionId,
+  ).toBe(nativeInteractionReference([...prefix, "interaction", otherEpoch, "1"]));
+  p.dispose();
+  expect(() => p.consume(batch([record("2")]))).toThrow("disposed");
+  const fresh = projector({ serverEpoch: otherEpoch });
+  expect(
+    fresh.consume(batch([record("1")], { serverEpoch: otherEpoch }))[0]!.evidence.interactionId,
+  ).toBe(
+    nativeInteractionReference([
+      environmentId,
+      serverScope.serverId,
+      generation,
+      otherEpoch,
+      "interaction",
+      journalEpoch,
+      "1",
+    ]),
+  );
+});

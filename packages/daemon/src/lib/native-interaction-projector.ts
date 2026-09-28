@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, type Hash } from "node:crypto";
 import {
   EnvironmentIdSchema,
   NativeJournalCursorSchemaZ,
@@ -43,10 +43,12 @@ export interface NativeInteractionProjectorOptions {
 }
 /** Deterministic UUIDv8 references; zero native IDs are never passed here as identity. */
 export function nativeInteractionReference(scope: readonly string[]): string {
-  const bytes = createHash("sha256")
-    .update(JSON.stringify(["tmux-ide-native-reference-v1", ...scope]))
-    .digest()
-    .subarray(0, 16);
+  return referenceDigest(
+    createHash("sha256").update(JSON.stringify(["tmux-ide-native-reference-v1", ...scope])),
+  );
+}
+function referenceDigest(hash: Hash): string {
+  const bytes = hash.digest().subarray(0, 16);
   bytes[6] = (bytes[6]! & 15) | 128;
   bytes[8] = (bytes[8]! & 63) | 128;
   const hex = bytes.toString("hex");
@@ -84,6 +86,7 @@ export class NativeInteractionProjector {
   #journalEpoch: string | null = null;
   #last = 0n;
   #disposed = false;
+  #referencePrefix: Hash | null;
   constructor(options: NativeInteractionProjectorOptions) {
     this.#options = { ...options };
     this.#environmentId = EnvironmentIdSchema.parse(options.environmentId);
@@ -105,18 +108,25 @@ export class NativeInteractionProjector {
     this.#limit = options.maxPendingRecords ?? 256;
     if (!Number.isSafeInteger(this.#limit) || this.#limit < 1 || this.#limit > 1024)
       throw new TypeError("Invalid native assembly bound");
+    // Cache only the immutable owner prefix, never command/actor/pane IDs.
+    // Replacing the closing bracket with a comma allows the dynamic JSON array
+    // tail to reproduce the original byte sequence exactly.
+    this.#referencePrefix = createHash("sha256").update(
+      JSON.stringify([
+        "tmux-ide-native-reference-v1",
+        this.#environmentId,
+        this.#serverScope.serverId,
+        this.#serverScope.generation,
+        this.#serverEpoch,
+      ]).slice(0, -1) + ",",
+    );
   }
   get pendingRecords(): number {
     return this.#pendingCount;
   }
   #reference(...parts: string[]): string {
-    return nativeInteractionReference([
-      this.#environmentId,
-      this.#serverScope.serverId,
-      this.#serverScope.generation,
-      this.#serverEpoch,
-      ...parts,
-    ]);
+    if (!this.#referencePrefix) throw new Error("Native projector disposed");
+    return referenceDigest(this.#referencePrefix.copy().update(JSON.stringify(parts).slice(1)));
   }
   #destination(record: NativeJournalRecord, interactionId: string): InteractionPaneEndpoint {
     if (record.flags & 1 && record.targetBirthId !== "0")
@@ -307,6 +317,7 @@ export class NativeInteractionProjector {
     if (this.#disposed) return [];
     const pending = this.flush("disposed");
     this.#disposed = true;
+    this.#referencePrefix = null;
     return pending;
   }
 }
