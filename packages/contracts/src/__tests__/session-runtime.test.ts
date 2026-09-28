@@ -9,6 +9,15 @@ import {
   SessionRuntimeTerminalInputSchemaZ,
 } from "../session-runtime.ts";
 import { InteractionReceiptSchemaZ } from "../interaction-receipts.ts";
+import { scopedReceiptFixture } from "./fixtures/scoped-receipt.ts";
+// Existing structural/privacy cases use a declared synthetic inventory. Missing/forged
+// provenance is exercised against the raw schema in interaction-receipt-v2.test.ts.
+const ScopedReceiptFixture = {
+  parse: (raw: Record<string, unknown>) =>
+    InteractionReceiptSchemaZ.parse(scopedReceiptFixture(raw)),
+  safeParse: (raw: Record<string, unknown>) =>
+    InteractionReceiptSchemaZ.safeParse(scopedReceiptFixture(raw)),
+};
 
 describe("session runtime architecture contract", () => {
   it("bounds exact binary input and rejects ambiguous or executable encodings", () => {
@@ -137,7 +146,7 @@ describe("session runtime architecture contract", () => {
     "models the %s receipt phase",
     (phase) => {
       expect(
-        InteractionReceiptSchemaZ.parse({
+        ScopedReceiptFixture.parse({
           type: "interaction.receipt",
           operationId: "2a50f1d4-6f57-4f02-8b10-b94bf24967ec",
           sequence: 1,
@@ -187,18 +196,17 @@ describe("session runtime architecture contract", () => {
       at: "2026-08-11T10:00:00.000Z",
       resourceRevision: null,
     };
-    expect(InteractionReceiptSchemaZ.safeParse({ ...base, phase: "observed" }).success).toBe(true);
+    expect(ScopedReceiptFixture.safeParse({ ...base, phase: "observed" }).success).toBe(true);
     expect(
-      InteractionReceiptSchemaZ.safeParse({ ...base, phase: "accepted", proof: null }).success,
+      ScopedReceiptFixture.safeParse({ ...base, phase: "accepted", proof: null }).success,
     ).toBe(false);
     expect(
-      InteractionReceiptSchemaZ.safeParse({ ...base, origin: "external", phase: "observed" })
-        .success,
+      ScopedReceiptFixture.safeParse({ ...base, origin: "external", phase: "observed" }).success,
     ).toBe(false);
   });
 
   it("contracts every structural verb with a semantic target and privacy-safe proof", () => {
-    const receipt = InteractionReceiptSchemaZ.parse({
+    const receipt = ScopedReceiptFixture.parse({
       type: "interaction.receipt",
       operationId: "3a50f1d4-6f57-4f02-8b10-b94bf24967ec",
       sequence: 2,
@@ -222,7 +230,7 @@ describe("session runtime architecture contract", () => {
     expect(receipt.proof).toMatchObject({ cells: 118 });
     expect(JSON.stringify(receipt)).not.toMatch(/text|name|path|runtime/u);
     expect(
-      InteractionReceiptSchemaZ.safeParse({
+      ScopedReceiptFixture.safeParse({
         ...receipt,
         target: { kind: "session" },
       }).success,
@@ -342,7 +350,7 @@ describe("session runtime architecture contract", () => {
     ],
   ] as const)("accepts %s target, summary, and proof", (operationKind, target, summary, proof) => {
     expect(
-      InteractionReceiptSchemaZ.safeParse({
+      ScopedReceiptFixture.safeParse({
         type: "interaction.receipt",
         operationId: "4a50f1d4-6f57-4f02-8b10-b94bf24967ec",
         sequence: 3,
@@ -386,15 +394,15 @@ describe("session runtime architecture contract", () => {
       at: "2026-08-11T10:00:00.000Z",
       resourceRevision: 4,
     };
-    expect(InteractionReceiptSchemaZ.safeParse(resize).success).toBe(true);
+    expect(ScopedReceiptFixture.safeParse(resize).success).toBe(true);
     expect(
-      InteractionReceiptSchemaZ.safeParse({
+      ScopedReceiptFixture.safeParse({
         ...resize,
         proof: { ...resize.proof, semanticPaneId: "pane.other" },
       }).success,
     ).toBe(false);
     expect(
-      InteractionReceiptSchemaZ.safeParse({
+      ScopedReceiptFixture.safeParse({
         ...resize,
         proof: { ...resize.proof, axis: "rows" },
       }).success,
@@ -411,7 +419,7 @@ describe("session runtime architecture contract", () => {
         semanticPaneId: "pane.created",
       },
     };
-    expect(InteractionReceiptSchemaZ.safeParse(split).success).toBe(false);
+    expect(ScopedReceiptFixture.safeParse(split).success).toBe(false);
 
     const rename = {
       ...resize,
@@ -427,7 +435,7 @@ describe("session runtime architecture contract", () => {
         scope: "session" as const,
       },
     };
-    expect(InteractionReceiptSchemaZ.safeParse(rename).success).toBe(false);
+    expect(ScopedReceiptFixture.safeParse(rename).success).toBe(false);
 
     const swap = {
       ...resize,
@@ -443,7 +451,7 @@ describe("session runtime architecture contract", () => {
         targetSemanticPaneId: "pane.other",
       },
     };
-    expect(InteractionReceiptSchemaZ.safeParse(swap).success).toBe(false);
+    expect(ScopedReceiptFixture.safeParse(swap).success).toBe(false);
 
     const zoom = {
       ...resize,
@@ -459,9 +467,9 @@ describe("session runtime architecture contract", () => {
         zoomed: false,
       },
     };
-    expect(InteractionReceiptSchemaZ.safeParse(zoom).success).toBe(false);
+    expect(ScopedReceiptFixture.safeParse(zoom).success).toBe(false);
     expect(
-      InteractionReceiptSchemaZ.safeParse({
+      ScopedReceiptFixture.safeParse({
         ...zoom,
         summary: { ...zoom.summary, desired: "toggle" },
       }).success,
@@ -493,9 +501,9 @@ describe("session runtime architecture contract", () => {
       at: "2026-08-11T10:00:00.000Z",
       resourceRevision: null,
     };
-    expect(InteractionReceiptSchemaZ.safeParse(external).success).toBe(false);
+    expect(ScopedReceiptFixture.safeParse(external).success).toBe(false);
     expect(
-      InteractionReceiptSchemaZ.safeParse({
+      ScopedReceiptFixture.safeParse({
         ...external,
         summary: { operationKind: "workspace.pane.send", observedOnly: true },
       }).success,
