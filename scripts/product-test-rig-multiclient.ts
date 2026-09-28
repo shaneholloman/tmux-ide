@@ -1,11 +1,11 @@
-import { PANE_STREAM_PROTOCOL_VERSION } from "@tmux-ide/contracts";
+import { PANE_STREAM_PROTOCOL_VERSION } from "../packages/contracts/src/index.ts";
 import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
-import { openPaneStreamRuntimeClient } from "@tmux-ide/daemon-client/pane-stream-client";
-import { dispatchOwnerAction } from "@tmux-ide/daemon-client/owner-action-client";
-import type { SessionRuntimeAuthoritySnapshot } from "@tmux-ide/contracts";
+import { openPaneStreamRuntimeClient } from "../packages/daemon-client/src/pane-stream-client.ts";
+import { dispatchOwnerAction } from "../packages/daemon-client/src/owner-action-client.ts";
+import type { SessionRuntimeAuthoritySnapshot } from "../packages/contracts/src/index.ts";
 
 import { createOpenTuiPaneStreamSocket } from "../packages/daemon/src/tui/mirror/open-tui-pane-stream-socket.ts";
 

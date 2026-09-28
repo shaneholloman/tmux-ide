@@ -7,6 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { referenceWorkspaceIntent } from "./lib/performance-reference-workspace.mjs";
+import { frameShowsTerminalFocus } from "./lib/packed-opentui-frame.mjs";
 import { referenceTarget } from "./lib/performance-reference-target.mjs";
 
 import {
@@ -81,6 +82,7 @@ try {
   await registerReferenceProject();
   const readiness = await launchReferenceWorkspace();
   qualifyBunPaneStream(readiness);
+  if (options.preflightOnly) await collectInputTrace(1);
   if (!options.preflightOnly) {
     const startup = await measureStartup();
     const inputTrace = options.inputTrace ?? (await collectInputTrace());
@@ -379,8 +381,11 @@ async function measureStartup() {
   };
 }
 
-async function collectInputTrace() {
-  const tracePath = resolve(root, "artifacts/performance-reference-trace.jsonl");
+async function collectInputTrace(sampleCount = options.inputSamples) {
+  const tracePath = join(
+    reference.runtimeDir,
+    options.preflightOnly ? "diagnostic-input-trace.jsonl" : "input-trace.jsonl",
+  );
   rmSync(tracePath, { force: true });
   const traceEnvironment = {
     ...process.env,
@@ -410,18 +415,16 @@ async function collectInputTrace() {
     // terminal-focus command; a pointer coordinate would couple this gate to
     // adaptive sidebar, dock, and one-pane geometry.
     const canvasFrame = await waitForCapturedFrame(
-      (frame) =>
-        frame.includes(target) && frame.includes("TERMINAL INPUT") && frame.includes("Echo"),
+      (frame) => frame.includes(target) && frameShowsTerminalFocus(frame) && frame.includes("Echo"),
       10_000,
     );
     tmux(["send-keys", "-t", `=${reference.hostSession}:0.0`, "F2"]);
     await waitForCapturedFrame(
-      (frame) =>
-        frame.includes(target) && frame.includes("TERMINAL INPUT") && frame.includes("Echo"),
+      (frame) => frame.includes(target) && frameShowsTerminalFocus(frame) && frame.includes("Echo"),
       2_000,
     );
     await delay(50);
-    for (let ordinal = 0; ordinal < options.inputSamples; ordinal += 1) {
+    for (let ordinal = 0; ordinal < sampleCount; ordinal += 1) {
       const prior = countCompletedLocalTraces(tracePath);
       // Keep the measured host free of a second Node startup/teardown per
       // keystroke. The trace clock begins inside OpenTUI, but that short-lived

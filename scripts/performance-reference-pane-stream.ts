@@ -54,7 +54,9 @@ const client = await openPaneStreamRuntimeClient({
     },
   },
   createSocket: createOpenTuiPaneStreamSocket,
-  onNegotiated: (_pane, result) => resolveNegotiation(result),
+  onNegotiated: (pane, result) => {
+    if (pane === semanticPaneId) resolveNegotiation(result);
+  },
   onTerminalDelivery: () => undefined,
   onLayout: resolveLayout,
   onLayoutSnapshot: (snapshot) => {
@@ -64,12 +66,16 @@ const client = await openPaneStreamRuntimeClient({
     if (requested) resolveLayout(requested);
   },
 });
+let timer: ReturnType<typeof setTimeout> | undefined;
 try {
   const [layoutFrame, negotiated] = await Promise.race([
     Promise.all([layout, negotiation]),
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error("Bun pane-stream live preflight timed out")), 2_000),
-    ),
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error("Bun pane-stream live preflight timed out")),
+        2_000,
+      );
+    }),
   ]);
   if (!negotiated.accepted) throw new Error("Bun pane-stream terminal delivery was rejected");
   if (!layoutFrame.panes.some(({ pane }) => pane === semanticPaneId)) {
@@ -79,6 +85,7 @@ try {
     `${JSON.stringify({ status: "passed", workspaceName, semanticPaneId, paneCount: layoutFrame.panes.length })}\n`,
   );
 } finally {
+  clearTimeout(timer);
   client.close();
 }
 
