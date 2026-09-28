@@ -138,9 +138,12 @@ describe("MirrorService refcounting", () => {
     const retention = await service.retainSession(FIXTURE.session);
     state.truthRows = state.truthRows.slice(0, 2);
     state.windowRows = state.windowRows.slice(0, 1);
-    state.descriptorRows = state.descriptorRows
-      .slice(0, 2)
-      .map((row) => row.replace(/\t2\t2$/u, "\t2\t1"));
+    state.descriptorRows = state.descriptorRows.slice(0, 2).map((row) => {
+      const fields = row.split("\t");
+      // session_windows precedes the optional native pane birth field.
+      fields[19] = "1";
+      return fields.join("\t");
+    });
     const layouts: string[] = [];
 
     const subscription = await service.subscribeLayout(FIXTURE.session, (layout) => {
