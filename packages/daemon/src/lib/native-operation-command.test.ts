@@ -34,3 +34,31 @@ it("carries a validated expected epoch into the native wrapper before its body",
   ]);
   expect(() => nativeOperationWrapperArgs(id, [["capture-pane"]], "invalid")).toThrow();
 });
+
+it("requires epoch and bounded physical identity for a guarded pane", () => {
+  const pane = { paneId: "%0", paneBirthId: "18446744073709551615" };
+  expect(nativeOperationWrapperArgs(id, [["capture-pane", "-p"]], id, pane).slice(4, 8)).toEqual([
+    "-t",
+    "%0",
+    "-B",
+    pane.paneBirthId,
+  ]);
+  expect(() => nativeOperationWrapperArgs(id, [["capture-pane"]], undefined, pane)).toThrow();
+  for (const paneId of ["%01", "%4294967296", "%x", "session"]) {
+    expect(() =>
+      nativeOperationWrapperArgs(id, [["capture-pane"]], id, { ...pane, paneId }),
+    ).toThrow();
+  }
+  for (const paneBirthId of ["0", "01", "18446744073709551616"]) {
+    expect(() =>
+      nativeOperationWrapperArgs(id, [["capture-pane"]], id, { ...pane, paneBirthId }),
+    ).toThrow();
+  }
+});
+it("accepts the existing 256-byte input chunk while keeping an explicit argv bound", () => {
+  const command = ["send-keys", "-t", "%0", "-H", ...Array<string>(256).fill("ff")];
+  expect(() => nativeOperationWrapperArgs(id, [command], id)).not.toThrow();
+  expect(() =>
+    nativeOperationWrapperArgs(id, [["send-keys", ...Array<string>(512).fill("ff")]], id),
+  ).toThrow();
+});

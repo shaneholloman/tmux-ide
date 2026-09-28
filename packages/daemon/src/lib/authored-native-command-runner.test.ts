@@ -18,6 +18,7 @@ function rig(canDispatch?: () => boolean) {
   const observer = {
     ownedOperationTransport: true,
     ownedOperationEpochGuard: true,
+    ownedOperationPaneGuard: true,
     nativeServerEpoch: id,
     admitOwnedOperation: vi.fn(() => ({ operationId: id })),
     registerOwnedConnection: vi.fn(() => ({ bindingId: id })),
@@ -60,7 +61,7 @@ it("dispatches identity and strict wrapper on one connection and preserves captu
   const r = rig();
   expect(r.run(r.request)).toEqual({ output: "terminal\n\n" });
   expect(r.runTmux).toHaveBeenCalledTimes(1);
-  expect(r.runTmux.mock.calls[0]![0].slice(0, 8)).toEqual([
+  expect(r.runTmux.mock.calls[0]![0].slice(0, 12)).toEqual([
     "tmux-ide-events",
     "-i",
     ";",
@@ -68,6 +69,10 @@ it("dispatches identity and strict wrapper on one connection and preserves captu
     "-I",
     "-E",
     id,
+    "-t",
+    "%0",
+    "-B",
+    "1",
     "-O",
   ]);
   expect(r.observer.registerOwnedConnection).toHaveBeenCalledWith(identity, "authored");
@@ -83,9 +88,9 @@ it("falls back only before dispatch if capability or native birth is unavailable
   r.observer.ownedOperationTransport = false;
   expect(r.run(r.request)).toBeNull();
   r.observer.ownedOperationTransport = true;
-  r.observer.ownedOperationEpochGuard = false;
+  r.observer.ownedOperationPaneGuard = false;
   expect(r.run(r.request)).toBeNull();
-  r.observer.ownedOperationEpochGuard = true;
+  r.observer.ownedOperationPaneGuard = true;
   expect(r.run({ ...r.request, targetBirthId: "0" })).toBeNull();
   expect(r.runTmux).not.toHaveBeenCalled();
 });

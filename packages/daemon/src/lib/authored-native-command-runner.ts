@@ -41,7 +41,7 @@ export function createAuthoredNativeCommandRunner(options: {
   ): { readonly output: string } | null => {
     if (options.canDispatch && !options.canDispatch()) return null;
     const observer = options.observation();
-    if (!observer?.ownedOperationTransport || !observer.ownedOperationEpochGuard) return null;
+    if (!observer?.ownedOperationTransport || !observer.ownedOperationPaneGuard) return null;
     const native = nativePaneIdentity(observer.nativeServerEpoch, request.targetBirthId);
     const destination = request.context.interactionContext.destination;
     if (
@@ -100,7 +100,10 @@ export function createAuthoredNativeCommandRunner(options: {
           "tmux-ide-events",
           "-i",
           ";",
-          ...nativeOperationWrapperArgs(request.operationId, request.commands, native.serverEpoch),
+          ...nativeOperationWrapperArgs(request.operationId, request.commands, native.serverEpoch, {
+            paneId: request.targetPaneId,
+            paneBirthId: native.paneBirthId,
+          }),
         ],
         { preserveTrailingNewlines: true },
       );

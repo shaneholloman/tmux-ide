@@ -68,6 +68,12 @@ export class OwnerInteractionObservation {
   get selection() {
     return this.#selection;
   }
+  get ownedOperationPaneGuard(): boolean {
+    return (
+      this.ownedOperationEpochGuard &&
+      this.#capability?.ownedOperationPaneGuard === "direct-pane-v1"
+    );
+  }
   get ownedOperationEpochGuard(): boolean {
     return (
       this.ownedOperationTransport &&

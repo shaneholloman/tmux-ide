@@ -53,6 +53,7 @@ it.skipIf(!binary)(
       const observer = {
         ownedOperationTransport: true,
         ownedOperationEpochGuard: capability.ownedOperationEpochGuard === "server-epoch-v1",
+        ownedOperationPaneGuard: capability.ownedOperationPaneGuard === "direct-pane-v1",
         nativeServerEpoch: capability.serverEpoch,
         admitOwnedOperation: vi.fn(() => ({ operationId: id })),
         registerOwnedConnection: vi.fn((_identity: NativeJournalIdentity) => ({ bindingId: id })),

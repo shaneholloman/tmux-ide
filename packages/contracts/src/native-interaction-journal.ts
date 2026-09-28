@@ -23,6 +23,7 @@ export const NativeJournalCapabilitySchemaZ = z
     readerTransport: z.literal("sessionless-control-v1").optional(),
     ownedOperationTransport: z.literal("direct-wrapper-v1").optional(),
     ownedOperationEpochGuard: z.literal("server-epoch-v1").optional(),
+    ownedOperationPaneGuard: z.literal("direct-pane-v1").optional(),
     serverEpoch: z.uuid(),
     journalEpoch: z.uuid(),
     enabled: z.boolean(),

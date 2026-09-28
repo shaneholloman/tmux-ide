@@ -20,6 +20,7 @@ function rig(canDispatch?: () => boolean) {
   const observer = {
     ownedOperationTransport: true,
     ownedOperationEpochGuard: true,
+    ownedOperationPaneGuard: true,
     nativeServerEpoch: id,
     admitOwnedOperation: vi.fn(() => ({ operationId: id })),
     registerOwnedConnection: vi.fn(() => ({ bindingId: id })),
