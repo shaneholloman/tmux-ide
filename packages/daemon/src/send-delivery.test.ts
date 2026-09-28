@@ -61,6 +61,7 @@ beforeEach(() => {
   mocks.state.mockReturnValue({ running: true });
   mocks.panes.mockReturnValue([pane]);
   mocks.busy.mockReturnValue("idle");
+  mocks.command.mockReturnValue(true);
   mocks.daemon.mockReturnValue({ pid: 123 });
   mocks.alive.mockResolvedValue(true);
   mocks.identity.mockReturnValue("pane.editor\n");
@@ -77,6 +78,18 @@ const run = (message = "hello", noEnter = false) =>
   send(dir, { to: "editor", message, noEnter, json: true });
 
 describe("send delivery authority", () => {
+  it.each(["hello", "long ".repeat(50)])(
+    "reports a failed direct write without retry or success output",
+    async (message) => {
+      mocks.daemon.mockReturnValue(null);
+      mocks.command.mockReturnValue(false);
+      await expect(run(message)).rejects.toMatchObject({ code: "PANE_INPUT_FAILED", exitCode: 1 });
+      expect(mocks.command).toHaveBeenCalledTimes(1);
+      expect(mocks.text).not.toHaveBeenCalled();
+      expect(console.log).not.toHaveBeenCalled();
+    },
+  );
+
   it("scopes target stamps, source identity and credentials through delivery authority", async () => {
     vi.stubEnv("TMUX_PANE", "%7");
     mocks.tmuxArgs.mockImplementation((args: string[]) => ["-S", "/isolated/tmux.sock", ...args]);

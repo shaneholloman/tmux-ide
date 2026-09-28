@@ -15,6 +15,7 @@ vi.mock("./lifecycle.ts", () => ({
   spawnAgent: vi.fn(),
   stopAgent: vi.fn(),
 }));
+import { IdeError } from "../lib/errors.ts";
 import { createVerbHandlers } from "./verbs.ts";
 import { dispatchLine } from "./dispatch.ts";
 import { createStatusTracker } from "../tui/detect/classify.ts";
@@ -29,6 +30,17 @@ const dispatch = (params: unknown) =>
     { subscribe: () => {} },
   );
 describe("control send compatibility", () => {
+  it("reports a failed pane write as an input failure, not a missing target", async () => {
+    delivery.mockImplementation(() => {
+      throw new IdeError("Input failed; delivery was not repeated.", { code: "PANE_INPUT_FAILED" });
+    });
+    expect(await dispatch({ session: "work", target: "%2", message: "hello" })).toMatchObject({
+      ok: false,
+      error: { code: "internal", message: "Input failed; delivery was not repeated." },
+    });
+    expect(delivery).toHaveBeenCalledTimes(1);
+  });
+
   it("forwards explicit session, target, no-enter and dispatch directory", async () => {
     const params = {
       session: "work",

@@ -150,12 +150,12 @@ export function deliverMessage(opts: {
     sendText(session, pane.id, message);
   } else {
     const dispatch = dir ? writeDispatchFile(dir, pane.id, message) : null;
-    if (dispatch) {
-      sendCommand(session, pane.id, dispatch.triggerCmd);
-      sentViaFile = true;
-    } else {
-      sendCommand(session, pane.id, message);
+    if (!sendCommand(session, pane.id, dispatch?.triggerCmd ?? message)) {
+      throw new IdeError(`Could not send input to pane "${pane.id}"; delivery was not repeated.`, {
+        code: "PANE_INPUT_FAILED",
+      });
     }
+    sentViaFile = dispatch !== null;
   }
 
   return {
