@@ -103,3 +103,4 @@ export * from "./interaction-evidence.ts";
 
 export * from "./tmux-server-interaction-events.ts";
 export * from "./automation-operations.ts";
+export * from "./native-interaction-journal.ts";

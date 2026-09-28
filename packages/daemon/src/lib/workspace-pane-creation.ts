@@ -332,7 +332,11 @@ export function createPinnedWorkspaceTmuxRunner(
 /** Execute read-only observer work without blocking the daemon event loop. */
 export function createPinnedWorkspaceTmuxAsyncRunner(
   authority: WorkspacePaneTmuxAuthority,
+  options: Readonly<{ timeoutMs?: number }> = {},
 ): (args: readonly string[], signal?: AbortSignal) => Promise<string> {
+  const timeoutMs = options.timeoutMs ?? 5_000;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300_000)
+    throw new TypeError("Pinned async tmux timeout is invalid.");
   const executablePath = realpathSync(authority.executablePath);
   accessSync(executablePath, constants.X_OK);
   if (!isAbsolute(executablePath) || !statSync(executablePath).isFile()) {
@@ -364,6 +368,7 @@ export function createPinnedWorkspaceTmuxAsyncRunner(
       boundedTmuxRead(executablePath, [...selector, "-u", ...args], {
         env: environment,
         maxBuffer: TMUX_OUTPUT_BYTES,
+        timeoutMs,
         signal,
       }).then((stdout) => stdout.replace(/(?:\r?\n)+$/u, ""));
     if (!namedFence) return execute(selector);

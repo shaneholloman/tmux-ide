@@ -72,8 +72,9 @@ export function createServerGenerationFencedTmuxRunner(
 export function createServerGenerationFencedTmuxAsyncRunner(
   authority: WorkspacePaneTmuxAuthority,
   expected: NativeTmuxServerIdentity,
+  options: Readonly<{ timeoutMs?: number }> = {},
 ): (args: readonly string[], signal?: AbortSignal) => Promise<string> {
-  const run = createPinnedWorkspaceTmuxAsyncRunner(authority);
+  const run = createPinnedWorkspaceTmuxAsyncRunner(authority, options);
   fenceNativeTmuxCommand(["display-message", "-p", ""], expected);
   return async (args, signal) => {
     const command = fenceNativeTmuxCommand(args, expected);
