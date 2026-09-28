@@ -1,3 +1,5 @@
+import type { SessionRuntimeAutomationAuthority } from "../terminal/session-runtime/semantic-mutation-executor.ts";
+import type { SessionRuntimeSemanticIntent } from "@tmux-ide/contracts";
 import {
   PaneSourceCredentialAuthority,
   STARTUP_PANE_CREDENTIAL_TIMEOUT_MS,
@@ -396,6 +398,14 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
         mutate: () =>
           multiplexerBackend.mutate(request, authenticatedHostClientId, undefined, true),
       });
+    },
+    submitAutomationIntent: (
+      operationId: string,
+      intent: SessionRuntimeSemanticIntent,
+      authority: SessionRuntimeAutomationAuthority,
+    ) => {
+      assertOpen();
+      return sessionRuntimeRegistry.submitAutomationIntent(operationId, intent, authority);
     },
     workspaceRegistry,
     interactionReceipts,

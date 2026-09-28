@@ -1,3 +1,4 @@
+import { mountAutomationRoutes } from "./automation.ts";
 import { mountTmuxServerRoutes } from "./tmux-servers.ts";
 import { streamBoundedLogs } from "./log-stream.ts";
 import { mountWorkspaceAdmissionRoute } from "./resources/workspace-admission-route.ts";
@@ -539,11 +540,16 @@ export function createApp(options: CreateAppOptions = {}): Hono {
   // Allow cross-origin (Next.js dashboard, Tailscale, etc.)
   app.use("/*", cors());
 
-  if (options.tmuxServerOwners)
+  if (options.tmuxServerOwners) {
+    mountAutomationRoutes(app, {
+      ownerToken: options.remoteAccess?.ownerToken ?? null,
+      owners: options.tmuxServerOwners,
+    });
     mountTmuxServerRoutes(app, {
       ownerToken: options.remoteAccess?.ownerToken ?? null,
       owners: options.tmuxServerOwners,
     });
+  }
 
   // Owner-only reads use the same early routing boundary as issuance below:
   // remote/project credentials neither authorize nor block the owner bearer.

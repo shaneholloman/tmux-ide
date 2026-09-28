@@ -23,6 +23,7 @@ export const AutomationOperationIntentSchemaZ = z.discriminatedUnion("kind", [
       ...endpoints,
       text: z
         .string()
+        .min(1)
         .max(AUTOMATION_INPUT_MAX_BYTES)
         .refine((value) => !value.includes("\0"), "Input contains NUL")
         .refine(
@@ -77,7 +78,12 @@ export type AutomationOperationSummary = z.infer<typeof AutomationOperationSumma
 const displayLabel = z
   .string()
   .max(160)
-  .refine((value) => !/[\u0000-\u001f\u007f-\u009f]/u.test(value));
+  .refine((value) =>
+    [...value].every((character) => {
+      const code = character.codePointAt(0)!;
+      return code >= 32 && (code < 127 || code > 159);
+    }),
+  );
 export const AutomationPanesResponseSchemaZ = z
   .object({
     version: z.literal(1),
