@@ -117,6 +117,31 @@ describe("native journal wire", () => {
       ).success,
     ).toBe(false);
   });
+  it("keeps64 widest metadata records below the runner64KiB buffer", () => {
+    const max = "18446744073709551615";
+    const wide = {
+      ...record(max),
+      commandId: max,
+      issuerId: max,
+      monotonicUs: max,
+      targetId: 4294967295,
+      targetBirthId: max,
+      requestId: max,
+      parentCommandId: max,
+      transport: 2,
+      derivation: 3,
+      correlation: serverEpoch,
+    };
+    const data = {
+      ...batch([]),
+      oldest: max,
+      newest: max,
+      next: max,
+      records: Array.from({ length: 64 }, () => wide),
+    };
+    expect(NativeJournalBatchSchemaZ.safeParse(data).success).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(data))).toBeLessThan(64 * 1024);
+  });
   it("requires exact contiguous ordering, cursor advance and overflow range", () => {
     const cursor = { serverEpoch, journalEpoch, sequence: "0" };
     expect(() =>
