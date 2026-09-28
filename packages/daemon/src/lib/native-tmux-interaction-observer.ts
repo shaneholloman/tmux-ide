@@ -11,6 +11,10 @@ import {
   type NativeTmuxServerIdentity,
 } from "./tmux-server-generation-runner.ts";
 import type { WorkspacePaneTmuxAuthority } from "./workspace-pane-creation.ts";
+import { NativeJournalControlConnection } from "./native-journal-control-connection.ts";
+
+class NativeJournalLeaseExpired extends Error {}
+class NativeJournalCleanupFailed extends Error {}
 
 export type NativeJournalObserverStatus =
   | "idle"
@@ -136,6 +140,7 @@ export class NativeTmuxInteractionObserver {
   #start: Promise<NativeJournalObserverStatus> | null = null;
   #loop: Promise<void> | null = null;
   #consumerFailed = false;
+  #control: NativeJournalControlConnection | null = null;
   constructor(options: NativeTmuxInteractionObserverOptions) {
     this.#options = { ...options };
     this.#cursor = options.cursor ? NativeJournalCursorSchemaZ.parse(options.cursor) : null;
@@ -166,7 +171,17 @@ export class NativeTmuxInteractionObserver {
   async dispose(): Promise<void> {
     this.#lifetime.abort();
     this.#status = "disposed";
-    await Promise.allSettled([this.#start, this.#loop].filter((value) => value !== null));
+    const settled = await Promise.allSettled(
+      [this.#start, this.#loop].filter((value) => value !== null),
+    );
+    await this.#control?.dispose();
+    this.#control = null;
+    const errors = settled.filter((result) => result.status === "rejected");
+    if (errors.length)
+      throw new AggregateError(
+        errors.map((result) => result.reason),
+        "Native observation retirement failed",
+      );
   }
   #emit(event: NativeJournalObserverEvent): void {
     if (this.#lifetime.signal.aborted || this.#consumerFailed) return;
@@ -193,18 +208,52 @@ export class NativeTmuxInteractionObserver {
     const request = new AbortController();
     const abort = () => request.abort(this.#lifetime.signal.reason);
     this.#lifetime.signal.addEventListener("abort", abort, { once: true });
-    const deadline = setTimeout(
-      () => request.abort(new Error("Native journal deadline")),
-      timeoutMs,
-    );
+    let expired = false;
+    const deadline = setTimeout(() => {
+      expired = true;
+      request.abort(new Error("Native journal deadline"));
+    }, timeoutMs);
     deadline.unref?.();
     try {
-      const output = await this.#io.runTmux(args, request.signal);
+      const persistent =
+        !this.#options.io &&
+        args[0] === "tmux-ide-events" &&
+        args[1] === "-r" &&
+        this.#capability?.readerTransport === "sessionless-control-v1";
+      let output: string;
+      if (persistent) {
+        const control = (this.#control ??= new NativeJournalControlConnection(
+          this.#options.tmuxAuthority,
+          this.#capability!.serverEpoch,
+        ));
+        try {
+          // Bound the handshake independently of the longer idle read lease.
+          await control.start(
+            AbortSignal.any([request.signal, AbortSignal.timeout(this.#commandMs)]),
+          );
+          output = await control.read(this.#cursor!, request.signal);
+        } catch (error) {
+          try {
+            await control.dispose();
+          } catch (cleanupError) {
+            throw new NativeJournalCleanupFailed("Native journal peer retirement failed", {
+              cause: cleanupError,
+            });
+          }
+          this.#control = null;
+          throw error;
+        }
+      } else output = await this.#io.runTmux(args, request.signal);
       request.signal.throwIfAborted();
       this.#lifetime.signal.throwIfAborted();
       if (Buffer.byteLength(output, "utf8") > 65_536)
         throw new Error("Native journal response too large");
       return output;
+    } catch (error) {
+      if (error instanceof NativeJournalCleanupFailed) throw error;
+      if (expired && !this.#lifetime.signal.aborted && args[1] === "-r")
+        throw new NativeJournalLeaseExpired();
+      throw error;
     } finally {
       clearTimeout(deadline);
       this.#lifetime.signal.removeEventListener("abort", abort);
@@ -266,7 +315,15 @@ export class NativeTmuxInteractionObserver {
   async #initialize(): Promise<NativeJournalObserverStatus> {
     try {
       this.#state("probing");
-      if (await this.#probe()) this.#loop = this.#readLoop();
+      if (await this.#probe()) {
+        this.#loop = this.#readLoop().finally(async () => {
+          const control = this.#control;
+          await control?.dispose();
+          this.#control = null;
+        });
+        // Disposal still observes this rejection; prevent an unattended loop error.
+        void this.#loop.catch(() => undefined);
+      }
     } catch {
       if (!this.#lifetime.signal.aborted && !this.#consumerFailed) this.#state("unavailable");
     }
@@ -314,8 +371,14 @@ export class NativeTmuxInteractionObserver {
         }
         if (!response.records.length) throw new Error("Empty native wait response");
         retryMs = this.#retryMs;
-      } catch {
+      } catch (error) {
         if (this.#lifetime.signal.aborted || this.#consumerFailed) return;
+        if (error instanceof NativeJournalCleanupFailed) {
+          this.#state("degraded");
+          return;
+        }
+        // An idle lease ending is neither a gap nor a failed observation source.
+        if (error instanceof NativeJournalLeaseExpired) continue;
         try {
           this.#state("retrying");
           await this.#io.delay(retryMs, this.#lifetime.signal);

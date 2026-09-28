@@ -363,7 +363,7 @@ describe("native observer lifecycle", () => {
     expect(f.io.runTmux).toHaveBeenCalledTimes(1);
     await f.observer.dispose();
   });
-  it("bounds a real wait deadline and backs off before rearming", async () => {
+  it("renews a bounded idle lease without reporting failure or a gap", async () => {
     let aborted = false;
     const f = fixture(
       async (args, signal) => {
@@ -376,12 +376,21 @@ describe("native observer lifecycle", () => {
       { timing: { waitMs: 5 } },
     );
     await f.observer.start();
-    await vi.waitFor(() => expect(f.observer.status).toBe("retrying"), {
-      timeout: 200,
-      interval: 5,
-    });
+    await vi.waitFor(
+      () => expect(vi.mocked(f.io.runTmux).mock.calls.length).toBeGreaterThanOrEqual(3),
+      {
+        timeout: 200,
+        interval: 5,
+      },
+    );
     expect(aborted).toBe(true);
-    expect(f.delays).toEqual([1000]);
+    expect(f.observer.status).toBe("ready");
+    expect(f.delays).toEqual([]);
+    expect(
+      f.events.some(
+        (event) => event.type === "gap" || (event.type === "state" && event.status === "retrying"),
+      ),
+    ).toBe(false);
     await f.observer.dispose();
   });
   it("rejects asynchronous ingestion instead of accumulating promises", async () => {
