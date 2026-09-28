@@ -21,6 +21,7 @@ import { SessionRuntimeRegistry } from "../terminal/session-runtime/registry.ts"
 import { createSessionRuntimeMultiplexerBackend } from "../terminal/session-runtime/multiplexer-backend.ts";
 import { TmuxExternalInteractionObserver } from "./tmux-external-interaction-observer.ts";
 import { InteractionReceiptJournal } from "./interaction-receipt-journal.ts";
+import { InteractionObservationStatusStore } from "./interaction-observation-status.ts";
 import { InteractionEvidenceAuthority } from "./interaction-evidence-authority.ts";
 import {
   createTmuxInteractionObservationHandler,
@@ -162,6 +163,10 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
     serverId: options.serverId,
     generation,
   });
+  const interactionObservation = new InteractionObservationStatusStore(options.environmentId, {
+    serverId: options.serverId,
+    generation,
+  });
   const assertOpen = () => {
     if (disposed) throw new Error("Tmux server owner is retired");
   };
@@ -258,6 +263,18 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
   });
   const observer: TmuxExternalInteractionObserver = new TmuxExternalInteractionObserver({
     daemonInstanceId: generation,
+    onAvailability: (available) => interactionObservation.setStockAvailable(available),
+    onGap: (gap) => {
+      terminalInventoryRuntime.invalidate();
+      if (interactionObservation.getSnapshot().method !== "native-journal")
+        interactionObservation.noteGap(
+          gap.reason === "overflow"
+            ? "retention-overflow"
+            : gap.reason === "hooks-replaced"
+              ? "hooks-replaced"
+              : "uncertain-consume",
+        );
+    },
     internalReadOwnerToken: randomUUID(),
     registry: workspaceRegistry,
     tmuxAuthority: authority,
@@ -266,8 +283,11 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
       const endpoint = interactionEvidence.captureObservedEndpoint(target);
       return endpoint.kind === "pane" ? endpoint : null;
     },
-    onUnresolvedObservation: () => terminalInventoryRuntime.invalidate(),
-    onGap: () => terminalInventoryRuntime.invalidate(),
+    onUnresolvedObservation: () => {
+      if (interactionObservation.getSnapshot().method !== "native-journal")
+        interactionObservation.noteGap("unresolved-target", 1);
+      terminalInventoryRuntime.invalidate();
+    },
     onObserved: createTmuxInteractionObservationHandler({
       invalidateInventory: () => terminalInventoryRuntime.invalidate(),
       consumeAuthored: (observation) =>
@@ -361,6 +381,7 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
             } finally {
               interactionReceipts.dispose();
               interactionEvidence.dispose();
+              interactionObservation.dispose();
             }
           }
         }
@@ -441,6 +462,9 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
     },
     workspaceRegistry,
     interactionReceipts,
+    get interactionObservation(): InteractionObservationStatusStore | null {
+      return disposed ? null : interactionObservation;
+    },
     get interactionEvidence(): InteractionEvidenceAuthority | null {
       return disposed ? null : interactionEvidence;
     },

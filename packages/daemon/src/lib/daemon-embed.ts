@@ -101,6 +101,7 @@ import {
   externalTmuxInteractionDraft,
 } from "./tmux-interaction-observation-handler.ts";
 import { InteractionReceiptJournal } from "./interaction-receipt-journal.ts";
+import { InteractionObservationStatusStore } from "./interaction-observation-status.ts";
 import { InteractionEvidenceAuthority } from "./interaction-evidence-authority.ts";
 import {
   createNativeTerminalAttachmentRuntime,
@@ -1250,24 +1251,40 @@ async function startEmbeddedDaemonGeneration(
     });
     const interactionReceipts = new InteractionReceiptJournal();
     let interactionEvidence: InteractionEvidenceAuthority | null = null;
+    let interactionObservation: InteractionObservationStatusStore | null = null;
     let sessionRuntimeRegistry: SessionRuntimeRegistry | null = null;
     let workspaceOpenHandoff: WorkspaceOpenHandoffCoordinator | null = null;
     let terminalInventoryRuntime: WorkspaceTerminalInventoryRuntime | null = null;
     let sessionMonitor: DaemonSessionMonitor | null = null;
     const externalInteractionObserver = new TmuxExternalInteractionObserver({
       daemonInstanceId: instanceId,
+      onAvailability: (available) => interactionObservation?.setStockAvailable(available),
+      onGap: (gap) => {
+        terminalInventoryRuntime?.invalidate();
+        if (interactionObservation?.getSnapshot().method !== "native-journal")
+          interactionObservation?.noteGap(
+            gap.reason === "overflow"
+              ? "retention-overflow"
+              : gap.reason === "hooks-replaced"
+                ? "hooks-replaced"
+                : "uncertain-consume",
+          );
+      },
       internalReadOwnerToken: localBypassToken,
       resolveCapturedTarget: (target) => {
         const endpoint = interactionEvidence?.captureObservedEndpoint(target);
         return endpoint?.kind === "pane" ? endpoint : null;
       },
-      onUnresolvedObservation: () => terminalInventoryRuntime?.invalidate(),
+      onUnresolvedObservation: () => {
+        if (interactionObservation?.getSnapshot().method !== "native-journal")
+          interactionObservation?.noteGap("unresolved-target", 1);
+        terminalInventoryRuntime?.invalidate();
+      },
       io: { runTmux: fleetFactsTmuxRunner },
       registry: workspaceRegistry,
       tmuxAuthority,
       // A gap cannot reconstruct historical interactions. Refresh inventory
       // facts while authored operations retain their observation deadlines.
-      onGap: () => terminalInventoryRuntime?.invalidate(),
       onObserved: createTmuxInteractionObservationHandler({
         invalidateInventory: () => terminalInventoryRuntime?.invalidate(),
         consumeAuthored: (observation) =>
@@ -1594,6 +1611,8 @@ async function startEmbeddedDaemonGeneration(
         environmentId,
         onDefaultScope: async (scope) => {
           interactionEvidence = new InteractionEvidenceAuthority(environmentId, scope);
+          interactionObservation = new InteractionObservationStatusStore(environmentId, scope);
+          interactionObservation.setStockAvailable(externalInteractionObserver.available);
           await terminalInventoryRuntime!.discoverTerminalInventory();
         },
         defaultAuthority: tmuxAuthority,
@@ -1602,6 +1621,9 @@ async function startEmbeddedDaemonGeneration(
         stateDirectory: resolveRuntimeNamespace().runtimeDir,
         webSocketBaseUrl: canonicalDaemonUrl("ws", bindHostname, port),
         defaultOwner: {
+          get interactionObservation() {
+            return interactionObservation;
+          },
           get interactionEvidence() {
             return interactionEvidence;
           },
@@ -1692,6 +1714,8 @@ async function startEmbeddedDaemonGeneration(
               interactionReceipts.dispose();
               interactionEvidence?.dispose();
               interactionEvidence = null;
+              interactionObservation?.dispose();
+              interactionObservation = null;
             }
             const failures = [...transportResults, ...authorityResults].flatMap((result) =>
               result.status === "rejected" ? [result.reason] : [],

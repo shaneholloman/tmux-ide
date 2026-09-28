@@ -4,7 +4,20 @@ const server = {
   serverId: `tmux-server.${"a".repeat(32)}`,
   generation: "11111111-1111-4111-8111-111111111111",
 };
-const ready = { version: 1, server, type: "ready", after: 0 };
+const observationStatus = {
+  schemaVersion: 1,
+  environmentId: "00000000-0000-4000-8000-000000000001",
+  serverScope: server,
+  method: "unavailable",
+  capabilityVersion: null,
+  commands: [],
+  effects: [],
+  coverage: "unavailable",
+  cursor: null,
+  lastGap: null,
+  droppedCount: "0",
+};
+const ready = { version: 1, server, type: "ready", after: 0, observationStatus };
 const receipt = {
   type: "interaction.receipt",
   sequence: 1,
@@ -19,6 +32,28 @@ const receipt = {
   proof: { operationKind: "workspace.pane.send", observed: true, semanticPaneId: "pane.same" },
   at: "2026-09-28T00:00:00.000Z",
   resourceRevision: null,
+  evidence: {
+    schemaVersion: 1,
+    interactionId: "afbc7eaf-604a-4117-8296-aef44b889af1",
+    revision: 0,
+    endpoints: {
+      destination: {
+        kind: "pane",
+        environmentId: observationStatus.environmentId,
+        serverScope: server,
+        paneLifetimeId: "00000000-0000-4000-8000-000000000003",
+        workspaceName: "same",
+        semanticPaneId: "pane.same",
+      },
+      source: null,
+    },
+    actor: { kind: "unknown", reason: "stock-hook" },
+    observation: { kind: "stock-hook", command: "send-keys" },
+    effect: { kind: "unknown" },
+    occurredAt: null,
+    timeBasis: "unknown",
+    receivedAt: "2026-09-28T00:00:00.000Z",
+  },
 };
 const batch = {
   version: 1,
@@ -51,6 +86,58 @@ function subscribe(frames: unknown[], onBatch = () => {}) {
   });
 }
 describe("interaction subscriber fences", () => {
+  it("rejects status scope mismatch and missing initial coverage", async () => {
+    for (const frames of [
+      [{ ...ready, observationStatus: undefined }],
+      [
+        ready,
+        {
+          version: 1,
+          server,
+          type: "status",
+          observationStatus: {
+            ...observationStatus,
+            serverScope: { ...server, generation: "22222222-2222-4222-8222-222222222222" },
+          },
+        },
+      ],
+    ]) {
+      const stream = subscribe(frames);
+      stream.ready.catch(() => {});
+      await expect(stream.done).rejects.toThrow();
+    }
+  });
+  it("delivers status-only frames without advancing receipt cursor", async () => {
+    const seen: string[] = [];
+    const stream = subscribeTmuxServerInteractions({
+      baseUrl: "http://localhost",
+      ownerToken: "token",
+      server,
+      fetch: fake([
+        ready,
+        {
+          version: 1,
+          server,
+          type: "status",
+          observationStatus: {
+            ...observationStatus,
+            method: "stock-hooks",
+            capabilityVersion: 1,
+            coverage: "partial",
+            commands: ["send-keys", "capture-pane"],
+          },
+        },
+      ]),
+      onBatch: () => {
+        throw Error("Unexpected batch");
+      },
+      onStatus: (status) => seen.push(status.method),
+    });
+    await stream.ready;
+    await stream.done.catch(() => {});
+    expect(seen).toEqual(["unavailable", "stock-hooks"]);
+    expect(stream.getCursor().cursor).toBe(0);
+  });
   it("closes while a consumer is stalled without acknowledging its batch", async () => {
     let started!: () => void;
     const called = new Promise<void>((resolve) => {

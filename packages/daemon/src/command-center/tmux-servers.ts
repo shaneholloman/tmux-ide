@@ -135,9 +135,18 @@ export function mountTmuxServerRoutes(app: Hono, options: TmuxServerRoutesOption
         await candidate.catalog();
         return candidate;
       });
-      return streamTmuxInteractions(c, server, owner.interactionReceipts, Number(raw), () => {
-        options.owners.current(server);
-      });
+      const observation = owner.interactionObservation;
+      if (!observation) throw new Error("Interaction observation scope is unavailable");
+      return streamTmuxInteractions(
+        c,
+        server,
+        owner.interactionReceipts,
+        Number(raw),
+        () => {
+          options.owners.current(server);
+        },
+        observation,
+      );
     }),
   );
 

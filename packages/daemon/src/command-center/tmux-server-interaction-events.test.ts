@@ -1,3 +1,5 @@
+import { InteractionObservationStatusStore } from "../lib/interaction-observation-status.ts";
+import { testStockInteractionEvidence } from "../../test-support/interaction-evidence.ts";
 import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -26,23 +28,38 @@ const draft: InteractionReceiptDraft = {
   proof: { operationKind: "workspace.pane.send", observed: true, semanticPaneId: "pane.same" },
   at: "2026-09-28T00:00:00.000Z",
   resourceRevision: null,
+  evidence: testStockInteractionEvidence(
+    "afbc7eaf-604a-4117-8296-aef44b889af1",
+    "same",
+    "pane.same",
+  ),
 };
 function fixture(capacity = 256) {
   const journals = new Map([
     [a.serverId, new InteractionReceiptJournal(capacity)],
     [b.serverId, new InteractionReceiptJournal(capacity)],
   ]);
+  const statuses = new Map(
+    [a, b].map((scope) => [
+      scope.serverId,
+      new InteractionObservationStatusStore("00000000-0000-4000-8000-000000000001", scope),
+    ]),
+  );
   const app = new Hono();
   mountTmuxServerRoutes(app, {
     ownerToken: "token",
     owners: {
       withOwner: async (scope: typeof a, work: (owner: unknown) => unknown) =>
-        work({ catalog: async () => [], interactionReceipts: journals.get(scope.serverId) }),
+        work({
+          catalog: async () => [],
+          interactionReceipts: journals.get(scope.serverId),
+          interactionObservation: statuses.get(scope.serverId),
+        }),
       current: () => ({}),
     } as unknown as TmuxServerRoutesOptions["owners"],
   });
   const fetcher = ((url: string, init: RequestInit) => app.request(url, init)) as typeof fetch;
-  return { app, journals, fetcher };
+  return { app, journals, statuses, fetcher };
 }
 function deferred() {
   let resolve!: () => void;
@@ -52,6 +69,32 @@ function deferred() {
   return { promise, resolve };
 }
 describe("scoped interaction streams", () => {
+  it("wakes idle streams for coverage changes without allocating receipt cursors", async () => {
+    const f = fixture();
+    const changed = deferred();
+    const stream = subscribeTmuxServerInteractions({
+      baseUrl: "http://localhost",
+      ownerToken: "token",
+      server: a,
+      fetch: f.fetcher,
+      onBatch: () => {
+        throw Error("unexpected receipt");
+      },
+      onStatus: (status) => {
+        if (status.method === "stock-hooks") changed.resolve();
+      },
+    });
+    await stream.ready;
+    expect(stream.getObservationStatus()?.coverage).toBe("unavailable");
+    f.statuses.get(a.serverId)!.setStockAvailable(true);
+    await changed.promise;
+    expect(stream.getObservationStatus()?.coverage).toBe("partial");
+    expect(stream.getCursor().cursor).toBe(0);
+    stream.close();
+    await stream.done;
+    f.journals.forEach((j) => j.dispose());
+    f.statuses.forEach((s) => s.dispose());
+  });
   it("retains raw-before-request events and isolates owners with identical pane/workspace names", async () => {
     const f = fixture();
     f.journals.get(a.serverId)!.publish(draft);
@@ -105,7 +148,7 @@ describe("scoped interaction streams", () => {
       { cursor: 94, gap: { from: 1, through: 30 }, size: 64 },
       { cursor: 100, gap: null, size: 6 },
     ]);
-    await Promise.resolve(); // Callback completion commits the resumable cursor.
+    await vi.waitFor(() => expect(stream.getCursor().cursor).toBe(100));
     const resume = stream.getCursor();
     stream.close();
     await stream.done;

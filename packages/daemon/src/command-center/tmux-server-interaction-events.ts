@@ -6,6 +6,7 @@ import {
   type TmuxServerScope,
   type TmuxServerInteractionEvent,
 } from "@tmux-ide/contracts";
+import type { InteractionObservationStatusStore } from "../lib/interaction-observation-status.ts";
 import type { InteractionReceiptJournal } from "../lib/interaction-receipt-journal.ts";
 
 /** A bounded reader of the owner's retained journal, never a per-client event queue. */
@@ -15,6 +16,7 @@ export function streamTmuxInteractions(
   journal: InteractionReceiptJournal,
   after: number,
   assertCurrent: () => void,
+  observation: InteractionObservationStatusStore,
 ): Response {
   // Invalid/future cursors fail before the SSE response starts.
   try {
@@ -48,6 +50,13 @@ export function streamTmuxInteractions(
       notify();
     });
     const unsubscribe = journal.subscribe(notify);
+    let unsubscribeStatus = () => {};
+    try {
+      unsubscribeStatus = observation.subscribe(notify);
+    } catch (error) {
+      unsubscribe();
+      throw error;
+    }
     const write = async (frame: TmuxServerInteractionEvent) => {
       const data = JSON.stringify(TmuxServerInteractionEventSchemaZ.parse(frame));
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -69,10 +78,19 @@ export function streamTmuxInteractions(
     };
     try {
       assertCurrent();
-      await write({ version: 1, server, type: "ready", after });
+      const initialStatus = observation.getSnapshot();
+      let statusFingerprint = JSON.stringify(initialStatus);
+      await write({ version: 1, server, type: "ready", after, observationStatus: initialStatus });
       while (!stopped) {
         dirty = false;
         assertCurrent();
+        const status = observation.getSnapshot();
+        const nextFingerprint = JSON.stringify(status);
+        if (nextFingerprint !== statusFingerprint) {
+          await write({ version: 1, server, type: "status", observationStatus: status });
+          statusFingerprint = nextFingerprint;
+          continue;
+        }
         const replay = journal.read(cursor);
         const receipts = replay.receipts.slice(0, TMUX_INTERACTION_BATCH_LIMIT);
         if (receipts.length) {
@@ -99,6 +117,7 @@ export function streamTmuxInteractions(
       if (!stopped) await write({ version: 1, server, type: "retired" }).catch(() => undefined);
     } finally {
       unsubscribe();
+      unsubscribeStatus();
     }
   });
 }

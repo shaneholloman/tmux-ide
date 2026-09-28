@@ -304,6 +304,7 @@ export class TmuxExternalInteractionObserver {
   readonly #healthcheckSchedule: HookHealthcheckSchedule;
   #healthcheckDelayMs: number;
   #lastHealthcheckOutcome: HookHealthcheckOutcome = "failed";
+  readonly #onAvailability: ((available: boolean) => void) | undefined;
   readonly #onGap: ((gap: ExternalTmuxInteractionGap) => void) | undefined;
   #tmuxWork: Promise<unknown> = Promise.resolve();
   #reconcile: Promise<void> | null = null;
@@ -329,6 +330,7 @@ export class TmuxExternalInteractionObserver {
     ) => { workspaceName: string; semanticPaneId: string } | null;
     onUnresolvedObservation?: (record: TmuxInputHookRecord) => void;
     diagnostics?: ExternalTmuxObserverDiagnostics;
+    onAvailability?: (available: boolean) => void;
     onGap?: (gap: ExternalTmuxInteractionGap) => void;
     /** Health-check cadence bounds. Tests inject small values; production uses the default. */
     healthcheck?: Partial<HookHealthcheckSchedule>;
@@ -344,6 +346,7 @@ export class TmuxExternalInteractionObserver {
     this.#resolveCapturedTarget = options.resolveCapturedTarget;
     this.#onUnresolvedObservation = options.onUnresolvedObservation;
     this.#onGap = options.onGap;
+    this.#onAvailability = options.onAvailability;
     this.#authenticatedInternalReads = new AuthenticatedInternalReadVerifier({
       daemonInstanceId: options.daemonInstanceId,
       ownerToken: options.internalReadOwnerToken,
@@ -404,7 +407,7 @@ export class TmuxExternalInteractionObserver {
       // observer alive: its retry loop installs the hooks as soon as the first
       // session creates the pinned socket. The HTTP control plane must not be
       // held hostage by optional, currently absent tmux global state.
-      this.#installed = false;
+      this.#setInstalled(false);
     }
     if (!this.#active || this.#abort.signal.aborted) {
       await this.#serializeTmux(async () => {
@@ -543,7 +546,7 @@ export class TmuxExternalInteractionObserver {
       signal,
     );
     signal?.throwIfAborted();
-    this.#installed = true;
+    this.#setInstalled(true);
   }
 
   /**
@@ -565,11 +568,11 @@ export class TmuxExternalInteractionObserver {
         // Hooks that were installed and are now gone dropped every interaction
         // since their removal; the repair restores future observation only.
         if (this.#installed) this.#reportGap("hooks-replaced");
-        this.#installed = false;
+        this.#setInstalled(false);
         try {
           await this.#install(this.#abort.signal);
         } catch {
-          this.#installed = false;
+          this.#setInstalled(false);
         }
         this.#lastHealthcheckOutcome = this.#installed ? "repaired" : "failed";
         finish(this.#installed);
@@ -689,7 +692,7 @@ export class TmuxExternalInteractionObserver {
         if (!this.#active || this.#abort.signal.aborted) break;
         await this.drain();
       } catch {
-        this.#installed = false;
+        this.#setInstalled(false);
         this.#resetHealthcheckBackoff();
         await this.#io.delay(RETRY_MS, this.#abort.signal);
       }
@@ -778,7 +781,7 @@ export class TmuxExternalInteractionObserver {
         }
       }
     }
-    this.#installed = false;
+    this.#setInstalled(false);
   }
 
   async #ownedHooksPresent(signal?: AbortSignal): Promise<boolean> {
@@ -797,6 +800,19 @@ export class TmuxExternalInteractionObserver {
       ownedHookInstalled(output, "after-send-keys", this.#bufferName) &&
       ownedHookInstalled(output, "after-capture-pane", this.#bufferName)
     );
+  }
+
+  get available(): boolean {
+    return this.#installed;
+  }
+  #setInstalled(available: boolean): void {
+    if (this.#installed === available) return;
+    this.#installed = available;
+    try {
+      this.#onAvailability?.(available);
+    } catch {
+      /* observer status is not authority */
+    }
   }
 
   #reportGap(reason: ExternalTmuxInteractionGap["reason"]): void {

@@ -5,6 +5,7 @@ import {
   type TmuxServerScope,
   type TmuxInteractionCursor,
   type TmuxInteractionBatch,
+  type InteractionObservationStatus,
 } from "@tmux-ide/contracts";
 
 export interface TmuxInteractionSubscriptionOptions {
@@ -14,12 +15,14 @@ export interface TmuxInteractionSubscriptionOptions {
   readonly resume?: TmuxInteractionCursor;
   readonly fetch?: typeof fetch;
   readonly readinessTimeoutMs?: number;
+  readonly onStatus?: (status: InteractionObservationStatus) => void;
   readonly onBatch: (batch: TmuxInteractionBatch, signal: AbortSignal) => void | Promise<void>;
 }
 export interface TmuxInteractionSubscription {
   readonly ready: Promise<void>;
   readonly done: Promise<void>;
   getCursor(): TmuxInteractionCursor;
+  getObservationStatus(): InteractionObservationStatus | null;
   close(): void;
 }
 /** One scoped connection. The caller owns reconnect policy and carries this exact cursor scope. */
@@ -33,6 +36,11 @@ export function subscribeTmuxServerInteractions(
   if (resume.server.serverId !== server.serverId || resume.server.generation !== server.generation)
     throw new Error("Receipt resume cursor belongs to another owner");
   let cursor = resume.cursor;
+  let observationStatus: InteractionObservationStatus | null = null;
+  const noteStatus = (status: InteractionObservationStatus) => {
+    observationStatus = status;
+    options.onStatus?.(structuredClone(status));
+  };
   let opened = false;
   let closed = false;
   const lifetime = new AbortController();
@@ -98,10 +106,15 @@ export function subscribeTmuxServerInteractions(
           if (!opened) {
             if (frame.type !== "ready" || frame.after !== cursor)
               throw new Error("Missing receipt readiness barrier");
+            noteStatus(frame.observationStatus);
             opened = true;
             clearTimeout(timer);
             resolveReady();
           } else {
+            if (frame.type === "status") {
+              noteStatus(frame.observationStatus);
+              continue;
+            }
             if (frame.type !== "batch" || frame.after !== cursor)
               throw new Error("Repeated or regressed receipt frame");
             // A consumer may stall indefinitely. Closing the subscription must
@@ -142,6 +155,8 @@ export function subscribeTmuxServerInteractions(
   return {
     ready,
     done,
+    getObservationStatus: () =>
+      observationStatus === null ? null : structuredClone(observationStatus),
     getCursor: () => ({ server: { ...server }, cursor }),
     close() {
       closed = true;
