@@ -1,3 +1,7 @@
+import { Hono } from "hono";
+import { streamTmuxInteractions } from "../command-center/tmux-server-interaction-events.ts";
+import { subscribeTmuxServerInteractions } from "@tmux-ide/daemon-client/tmux-server-interaction-events";
+import type { InteractionReceipt } from "@tmux-ide/contracts";
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
@@ -58,6 +62,26 @@ describe.skipIf(!hasTmux).sequential("independent native tmux server owners", ()
     // stay in its owner despite colliding session and semantic pane names.
     const beforeA = owners[0]!.interactionReceipts.read(0).cursor;
     const beforeB = owners[1]!.interactionReceipts.read(0).cursor;
+    const streamScope = {
+      serverId: `tmux-server.${"a".repeat(32)}`,
+      generation: owners[0]!.generation,
+    };
+    const observed: InteractionReceipt[] = [];
+    const app = new Hono();
+    app.get("/events", (c) =>
+      streamTmuxInteractions(c, streamScope, owners[0]!.interactionReceipts, beforeA, () => {}),
+    );
+    const subscription = subscribeTmuxServerInteractions({
+      baseUrl: "http://localhost",
+      ownerToken: "fixture",
+      server: streamScope,
+      resume: { server: streamScope, cursor: beforeA },
+      fetch: (async () => app.request("/events")) as typeof fetch,
+      onBatch: (batch) => {
+        observed.push(...batch.receipts);
+      },
+    });
+    await subscription.ready;
     run(sockets[0]!, ["send-keys", "-t", "shared:0.0", "-l", "raw-before-mutation"]);
     run(sockets[0]!, ["capture-pane", "-p", "-t", "shared:0.0"]);
     await vi.waitFor(() => {
@@ -74,6 +98,16 @@ describe.skipIf(!hasTmux).sequential("independent native tmux server owners", ()
         ),
       ).toBe(true);
     });
+    await vi.waitFor(() => {
+      expect(observed.some((receipt) => receipt.operationKind === "workspace.pane.send")).toBe(
+        true,
+      );
+      expect(observed.some((receipt) => receipt.operationKind === "workspace.pane.read")).toBe(
+        true,
+      );
+    });
+    subscription.close();
+    await subscription.done;
     expect(owners[1]!.interactionReceipts.read(beforeB).receipts).toEqual([]);
     expect((await owners[0]!.catalog())[0]!.sessionName).toBe("shared");
     expect((await owners[1]!.catalog())[0]!.sessionName).toBe("shared");

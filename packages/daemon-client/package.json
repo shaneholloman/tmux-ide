@@ -28,7 +28,8 @@
     "./fleet-connection-status": "./src/fleet-connection-status.ts",
     "./fleet-environments": "./src/fleet-environments.ts",
     "./tmux-server-client": "./src/tmux-server-client.ts",
-    "./scoped-tmux-server-transport": "./src/scoped-tmux-server-transport.ts"
+    "./scoped-tmux-server-transport": "./src/scoped-tmux-server-transport.ts",
+    "./tmux-server-interaction-events": "./src/tmux-server-interaction-events.ts"
   },
   "main": "src/index.ts",
   "scripts": {

@@ -1,3 +1,4 @@
+import { streamTmuxInteractions } from "./tmux-server-interaction-events.ts";
 import { mountTmuxServerNativeBackingRoute } from "./tmux-server-native-backing.ts";
 import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
@@ -123,6 +124,23 @@ export function mountTmuxServerRoutes(app: Hono, options: TmuxServerRoutesOption
     }),
   );
   const scoped = `${base}/:serverId/:generation`;
+  app.get(
+    `${scoped}/interaction-events`,
+    route(async (c) => {
+      const server = scope(c);
+      const raw = c.req.query("after") ?? "0";
+      if (!/^(0|[1-9][0-9]*)$/u.test(raw) || !Number.isSafeInteger(Number(raw)))
+        throw new TypeError("Invalid receipt cursor");
+      const owner = await options.owners.withOwner(server, async (candidate) => {
+        await candidate.catalog();
+        return candidate;
+      });
+      return streamTmuxInteractions(c, server, owner.interactionReceipts, Number(raw), () => {
+        options.owners.current(server);
+      });
+    }),
+  );
+
   mountTmuxServerNativeBackingRoute(app, {
     scopedPath: scoped,
     ownerToken: options.ownerToken,
