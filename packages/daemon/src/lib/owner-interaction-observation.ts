@@ -3,9 +3,21 @@ import type {
   InteractionObservationGap,
   InteractionObservationStatus,
   NativeJournalCapability,
+  NativeJournalIdentity,
+  NativeOperationIdentity,
   TmuxServerScope,
 } from "@tmux-ide/contracts";
-import { NativeInteractionProjector } from "./native-interaction-projector.ts";
+import {
+  NativeInteractionProjector,
+  type NativeInteractionProjection,
+} from "./native-interaction-projector.ts";
+import {
+  OwnedNativeInteractionBindings,
+  type OwnedNativeConnection,
+  type OwnedNativeOperation,
+  type OwnedNativeOperationRequest,
+  type OwnedNativeInteractionDecision,
+} from "./owned-native-interaction-bindings.ts";
 import {
   NativeTmuxInteractionObserver,
   type NativeJournalObserverEvent,
@@ -25,6 +37,8 @@ export interface OwnerInteractionObservationOptions {
   readonly enabled: boolean;
   readonly status: InteractionObservationStatusStore;
   readonly publishEvidence: (evidence: InteractionEvidence) => void;
+  /** True means the exact proof enriched an existing authored receipt instead. */
+  readonly publishOwnedEvidence?: (decision: OwnedNativeInteractionDecision) => boolean;
   readonly readerFactory?: (options: NativeTmuxInteractionObserverOptions) => Reader;
 }
 /** One passive observation owner per generation. Hooks retain their independent authored completion role. */
@@ -39,6 +53,9 @@ export class OwnerInteractionObservation {
   #projector: NativeInteractionProjector | null = null;
   #capability: NativeJournalCapability | null = null;
   #start: Promise<void> | null = null;
+  #bindings: OwnedNativeInteractionBindings | null = null;
+  #bindingTimer: ReturnType<typeof setTimeout> | null = null;
+  #bindingDeadline: number | null = null;
   constructor(options: OwnerInteractionObservationOptions) {
     this.#options = options;
     this.#selection = options.enabled && options.nativeServerIdentity ? "pending" : "stock";
@@ -50,6 +67,100 @@ export class OwnerInteractionObservation {
   }
   get selection() {
     return this.#selection;
+  }
+  get ownedOperationTransport(): boolean {
+    return !this.#disposed && !this.#halted && this.#bindings !== null;
+  }
+  registerOwnedConnection(identity: NativeJournalIdentity, role: "viewer" | "authored") {
+    return this.#withBindings((bindings) => {
+      const connection = bindings.registerConnection(identity, role);
+      if (!connection) this.#options.status.noteGap("uncertain-consume", 0);
+      return connection;
+    }, null);
+  }
+  admitOwnedOperation(request: OwnedNativeOperationRequest): OwnedNativeOperation | null {
+    return this.#withBindings((bindings) => {
+      this.#decisions(bindings.expire());
+      const permit = bindings.admit(request);
+      if (!permit) this.#options.status.noteGap("uncertain-consume", 0);
+      this.#scheduleBindings();
+      return permit;
+    }, null);
+  }
+  acknowledgeOwnedOperation(
+    permit: OwnedNativeOperation,
+    connection: OwnedNativeConnection,
+    acknowledgement: NativeOperationIdentity,
+  ): void {
+    this.#withBindings((bindings) => {
+      this.#decisions(bindings.acknowledge(permit, connection, acknowledgement));
+      this.#scheduleBindings();
+    }, undefined);
+  }
+  closeOwnedConnection(connection: OwnedNativeConnection): void {
+    this.#withBindings((bindings) => {
+      this.#decisions(bindings.closeConnection(connection));
+      this.#scheduleBindings();
+    }, undefined);
+  }
+  #withBindings<T>(action: (bindings: OwnedNativeInteractionBindings) => T, fallback: T): T {
+    if (!this.ownedOperationTransport) return fallback;
+    try {
+      return action(this.#bindings!);
+    } catch {
+      // Metadata publication must never turn an already executed terminal action
+      // into a failure that encourages the caller to send it again.
+      this.#halted = true;
+      this.#retireBindings(false);
+      this.#unavailable();
+      void this.#reader?.dispose().catch(() => undefined);
+      return fallback;
+    }
+  }
+  #decisions(decisions: readonly OwnedNativeInteractionDecision[]) {
+    for (const decision of decisions) {
+      if (this.#disposed) return;
+      if (decision.reason === "overflow" || decision.reason === "pending-expired")
+        this.#options.status.noteGap("uncertain-consume", 0);
+      if (decision.disposition === "authored" && this.#options.publishOwnedEvidence?.(decision))
+        continue;
+      this.#options.publishEvidence(decision.evidence);
+    }
+  }
+  #scheduleBindings() {
+    const deadline = this.#bindings?.nextExpiryAt ?? null;
+    if (deadline === this.#bindingDeadline) return;
+    if (this.#bindingTimer) clearTimeout(this.#bindingTimer);
+    this.#bindingTimer = null;
+    this.#bindingDeadline = deadline;
+    if (deadline === null || this.#disposed || this.#halted) return;
+    this.#bindingTimer = setTimeout(
+      () => {
+        this.#bindingTimer = null;
+        this.#bindingDeadline = null;
+        if (this.#disposed || this.#halted || !this.#bindings) return;
+        try {
+          this.#decisions(this.#bindings.expire());
+          this.#scheduleBindings();
+        } catch {
+          this.#halted = true;
+          this.#retireBindings(false);
+          this.#unavailable();
+          void this.#reader?.dispose().catch(() => undefined);
+        }
+      },
+      Math.max(0, deadline - performance.now()),
+    );
+    this.#bindingTimer.unref?.();
+  }
+  #retireBindings(publish: boolean) {
+    if (this.#bindingTimer) clearTimeout(this.#bindingTimer);
+    this.#bindingTimer = null;
+    this.#bindingDeadline = null;
+    const bindings = this.#bindings;
+    this.#bindings = null;
+    const decisions = bindings?.dispose() ?? [];
+    if (publish) this.#decisions(decisions);
   }
   stockAvailable(available: boolean) {
     this.#stockAvailable = available;
@@ -102,9 +213,15 @@ export class OwnerInteractionObservation {
       cursor: null,
     });
   }
-  #ready(capability: NativeJournalCapability) {
+  #ready(capability: NativeJournalCapability, cursor?: InteractionObservationStatus["cursor"]) {
     this.#selection = "native";
     this.#capability = capability;
+    if (capability.ownedOperationTransport === "direct-wrapper-v1")
+      this.#bindings ??= new OwnedNativeInteractionBindings({
+        environmentId: this.#options.environmentId,
+        serverScope: this.#options.serverScope,
+        serverEpoch: capability.serverEpoch,
+      });
     this.#projector ??= new NativeInteractionProjector({
       environmentId: this.#options.environmentId,
       serverScope: this.#options.serverScope,
@@ -118,14 +235,18 @@ export class OwnerInteractionObservation {
       coverage: "declared-capabilities",
       commands: ["send-keys", "capture-pane", "paste-buffer", "send-prefix"],
       effects: ["input-enqueued", "snapshot-produced"],
-      cursor: current.cursor,
+      cursor: cursor === undefined ? current.cursor : cursor,
     });
   }
-  #publish(items: readonly { evidence: InteractionEvidence }[]) {
-    for (const item of items) {
-      if (this.#disposed) return;
-      this.#options.publishEvidence(item.evidence);
-    }
+  #publish(items: readonly NativeInteractionProjection[]) {
+    if (this.#disposed) return;
+    if (this.#bindings?.hasPendingOperations) this.#decisions(this.#bindings.ingestBatch(items));
+    else
+      for (const item of items) {
+        if (this.#disposed) return;
+        this.#options.publishEvidence(item.evidence);
+      }
+    this.#scheduleBindings();
   }
   #event(event: NativeJournalObserverEvent) {
     if (this.#disposed || this.#halted || this.#selection === "stock") return;
@@ -143,8 +264,10 @@ export class OwnerInteractionObservation {
               "incompatible",
               "disabled",
             ].includes(event.status)
-          )
+          ) {
             this.#halted = true;
+            this.#retireBindings(true);
+          }
         }
         return;
       }
@@ -180,20 +303,14 @@ export class OwnerInteractionObservation {
         return;
       }
       this.#publish(this.#projector.consume(event.batch));
-      const current = this.#options.status.getSnapshot();
       const cursor: InteractionObservationStatus["cursor"] = {
         epoch: event.batch.journalEpoch,
         sequence: event.batch.next,
       };
-      if (this.#capability) this.#ready(this.#capability);
-      this.#options.status.setNativeStatus({
-        ...this.#options.status.getSnapshot(),
-        cursor,
-        lastGap: current.lastGap,
-        droppedCount: current.droppedCount,
-      });
+      if (this.#capability) this.#ready(this.#capability, cursor);
     } catch (error) {
       this.#halted = true;
+      this.#retireBindings(false);
       this.#unavailable();
       // Stop a failing consumer; never switch to a second passive publisher.
       void this.#reader?.dispose().catch(() => undefined);
@@ -203,6 +320,7 @@ export class OwnerInteractionObservation {
   dispose(): Promise<void> {
     if (this.#disposal) return this.#disposal;
     this.#disposed = true;
+    this.#retireBindings(false);
     return (this.#disposal = (async () => {
       try {
         await this.#reader?.dispose();
