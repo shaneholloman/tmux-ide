@@ -81,13 +81,15 @@ try {
   await registerReferenceProject();
   const readiness = await launchReferenceWorkspace();
   qualifyBunPaneStream(readiness);
-  const startup = await measureStartup();
-  const inputTrace = options.inputTrace ?? (await collectInputTrace());
-  measurements = {
-    startup,
-    inputToPaint: measureInputToPaint(inputTrace),
-    memory: measureMemory(),
-  };
+  if (!options.preflightOnly) {
+    const startup = await measureStartup();
+    const inputTrace = options.inputTrace ?? (await collectInputTrace());
+    measurements = {
+      startup,
+      inputToPaint: measureInputToPaint(inputTrace),
+      memory: measureMemory(),
+    };
+  }
   succeeded = true;
 } finally {
   if (!options.keepOnFailure || succeeded) {
@@ -281,23 +283,41 @@ function preflightCanonicalDaemon() {
       "Canonical daemon predates the measured commit. Rebuild/restart the daemon from this clean checkout before running reference qualification.",
     );
 }
-const report = {
-  version: REFERENCE_REPORT_VERSION,
-  measuredAt: new Date().toISOString(),
-  status: Object.values(measurements).some(({ status }) => status === "failed")
-    ? "failed"
-    : Object.values(measurements).every(({ status }) => status === "passed")
-      ? "passed"
-      : "incomplete",
-  provenance,
-  measurements,
-};
-validateReferenceReport(report, source);
-mkdirSync(dirname(reportPath), { recursive: true });
-writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
-process.stdout.write(`Reference qualification: ${report.status}\nReport: ${reportPath}\n`);
-if (report.status === "failed" || (options.requireComplete && report.status !== "passed"))
-  process.exitCode = 1;
+if (options.preflightOnly) {
+  mkdirSync(dirname(reportPath), { recursive: true });
+  writeFileSync(
+    reportPath,
+    JSON.stringify(
+      {
+        version: 1,
+        kind: "reference-preflight",
+        passed: true,
+        provenance,
+        timingQualification: false,
+      },
+      null,
+      2,
+    ),
+  );
+} else {
+  const report = {
+    version: REFERENCE_REPORT_VERSION,
+    measuredAt: new Date().toISOString(),
+    status: Object.values(measurements).some(({ status }) => status === "failed")
+      ? "failed"
+      : Object.values(measurements).every(({ status }) => status === "passed")
+        ? "passed"
+        : "incomplete",
+    provenance,
+    measurements,
+  };
+  validateReferenceReport(report, source);
+  mkdirSync(dirname(reportPath), { recursive: true });
+  writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+  process.stdout.write(`Reference qualification: ${report.status}\nReport: ${reportPath}\n`);
+  if (report.status === "failed" || (options.requireComplete && report.status !== "passed"))
+    process.exitCode = 1;
+}
 
 async function measureStartup() {
   const rawSamples = [];
@@ -638,6 +658,7 @@ function parseOptions(args) {
     inputTrace: null,
     build: true,
     requireComplete: false,
+    preflightOnly: false,
     keepOnFailure: false,
   };
   for (let index = 0; index < args.length; index += 1) {
@@ -647,6 +668,7 @@ function parseOptions(args) {
     else if (arg === "--memory-samples") parsed.memorySamples = Number(args[++index]);
     else if (arg === "--input-samples") parsed.inputSamples = Number(args[++index]);
     else if (arg === "--input-trace") parsed.inputTrace = args[++index];
+    else if (arg === "--preflight-only") parsed.preflightOnly = true;
     else if (arg === "--no-build") parsed.build = false;
     else if (arg === "--require-complete") parsed.requireComplete = true;
     else if (arg === "--keep-on-failure") parsed.keepOnFailure = true;

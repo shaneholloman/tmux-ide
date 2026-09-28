@@ -1,10 +1,10 @@
-import { PANE_STREAM_PROTOCOL_VERSION } from "@tmux-ide/contracts";
+import { PANE_STREAM_PROTOCOL_VERSION } from "../packages/contracts/src/pane-stream.ts";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { openPaneStreamRuntimeClient } from "@tmux-ide/daemon-client/pane-stream-client";
-import type { PaneStreamServerFrame } from "@tmux-ide/contracts";
+import { openPaneStreamRuntimeClient } from "../packages/daemon-client/src/pane-stream-client.ts";
+import type { PaneStreamServerFrame } from "../packages/contracts/src/pane-stream.ts";
 
 import { createOpenTuiPaneStreamSocket } from "../packages/daemon/src/tui/mirror/open-tui-pane-stream-socket.ts";
 

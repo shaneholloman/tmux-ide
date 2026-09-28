@@ -15,6 +15,8 @@ const output = resolve(process.argv[2] ?? ".tasks/isolated-product-performance")
 // Never overwrite a previous run, including one that failed before startup.
 mkdirSync(dirname(output), { recursive: true, mode: 0o700 });
 mkdirSync(output, { mode: 0o700 });
+const preflightOnly = process.argv[3] === "--preflight-only";
+if (process.argv[3] && !preflightOnly) throw new Error("Unknown qualification mode");
 const cancellation = createPackedCancellation();
 const base = { ...process.env };
 for (const key of Object.keys(base))
@@ -96,6 +98,7 @@ try {
       "--report",
       join(output, "reference.json"),
       "--require-complete",
+      ...(preflightOnly ? ["--preflight-only"] : []),
     ],
     referenceEnv,
   );
@@ -117,11 +120,12 @@ try {
   )
     throw new Error("ProductTestRig changed frozen artifacts");
   rigArtifactsVerified = true;
-  await run("portable", ["scripts/performance-portable-evidence.mjs"], {
-    ...rigEnv,
-    TMUX_IDE_PRODUCT_RIG_STATE: join(output, "rig/state.json"),
-    TMUX_IDE_PORTABLE_EVIDENCE_REPORT: join(output, "portable.json"),
-  });
+  if (!preflightOnly)
+    await run("portable", ["scripts/performance-portable-evidence.mjs"], {
+      ...rigEnv,
+      TMUX_IDE_PRODUCT_RIG_STATE: join(output, "rig/state.json"),
+      TMUX_IDE_PORTABLE_EVIDENCE_REPORT: join(output, "portable.json"),
+    });
 } catch (error) {
   failures.push(error);
 } finally {
@@ -161,6 +165,7 @@ try {
         {
           schemaVersion: 1,
           completed: failures.length === 0,
+          mode: preflightOnly ? "preflight-only" : "measurement",
           source: provenance,
           finalSource,
           deterministicRebuildVerified,
