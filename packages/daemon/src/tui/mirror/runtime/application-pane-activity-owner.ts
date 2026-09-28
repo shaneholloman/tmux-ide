@@ -15,6 +15,7 @@ import {
   INTERACTION_PRESENCE_MS,
   interactionForPane,
   interactionActivityAt,
+  interactionIsViewerActivity,
   initialInteractionFeedState,
   interactionPresenceIsFresh,
   reduceInteractionReceipt,
@@ -86,9 +87,10 @@ export function createApplicationPaneActivityOwner(
     setActivity(
       feed.activity.filter(
         (receipt) =>
-          receipt.type === "interaction.evidence" ||
-          receipt.operationKind === "workspace.pane.read" ||
-          receipt.operationKind === "workspace.pane.send",
+          !interactionIsViewerActivity(receipt) &&
+          (receipt.type === "interaction.evidence" ||
+            receipt.operationKind === "workspace.pane.read" ||
+            receipt.operationKind === "workspace.pane.send"),
       ),
     );
     const deadlines = [

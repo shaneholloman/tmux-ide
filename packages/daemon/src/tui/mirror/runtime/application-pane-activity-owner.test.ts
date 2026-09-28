@@ -273,3 +273,51 @@ it("joins physical activity only through current birth metadata and expires alia
   expect(r.activity.activity()[0]!.evidence?.endpoints.destination).toEqual(physical);
   r.dispose();
 });
+
+it("keeps verified viewer operations out of Home activity and pane badges", async () => {
+  const scope = source(),
+    r = rig([scope]);
+  try {
+    const base = receipt(scope, 1).evidence!;
+    const entry = InteractionEvidenceRecordSchemaZ.parse({
+      type: "interaction.evidence",
+      sequence: 1,
+      evidence: {
+        ...base,
+        actor: {
+          kind: "native",
+          issuerId: uuid,
+          identity: "connection",
+          sourceBindingId: null,
+          classification: { kind: "viewer", bindingId: uuid },
+        },
+        observation: {
+          kind: "native-journal",
+          serverEpoch: uuid,
+          command: "capture-pane",
+          cursor: { epoch: uuid, sequence: "1" },
+          commandId: uuid,
+          parentCommandId: uuid,
+          correlatedOperationId: null,
+        },
+        effect: { kind: "snapshot-produced" },
+      },
+    });
+    await r.calls[0]!.options.onBatch(
+      {
+        version: 1,
+        type: "batch",
+        server: scope.server,
+        after: 0,
+        cursor: 1,
+        gap: null,
+        receipts: [entry],
+      },
+      new AbortController().signal,
+    );
+    expect(r.activity.activity()).toEqual([]);
+    expect(interactionForCurrentPane(r.activity(), endpoint(scope))).toBeUndefined();
+  } finally {
+    r.dispose();
+  }
+});

@@ -542,6 +542,46 @@ describe("native evidence journal projection", () => {
     expect(interactionReceiptLabel(entry)).toBe("External input enqueued");
     expect(state.activity[0]).not.toHaveProperty("workspaceName");
   });
+  it("retains proven viewer evidence without turning it into pane activity", () => {
+    const entry = native();
+    entry.evidence.actor = {
+      kind: "native",
+      issuerId: fixtureId,
+      identity: "connection",
+      sourceBindingId: null,
+      classification: { kind: "viewer", bindingId: fixtureId },
+    };
+    const state = reduceReceipt(initialInteractionFeedState(), entry);
+    expect(state.activity).toEqual([entry]);
+    expect(state.sequence).toBe(1);
+    expect(interactionForPane(state, endpoint("pane.native"))).toBeNull();
+
+    const physical = native(2);
+    physical.evidence.actor = entry.evidence.actor;
+    physical.evidence.endpoints.destination = {
+      kind: "native-pane",
+      environmentId: fixtureId,
+      serverScope: endpoint("x").serverScope,
+      serverEpoch: fixtureId,
+      paneBirthId: "7",
+    };
+    const current = reduceReceipt(initialInteractionFeedState(), physical);
+    expect(current.activity).toEqual([physical]);
+    expect(
+      interactionForPane(current, endpoint("pane.native"), {
+        serverEpoch: fixtureId,
+        paneBirthId: "7",
+      }),
+    ).toBeNull();
+    physical.evidence.actor = { kind: "unknown", reason: "unavailable" };
+    const unknown = reduceReceipt(initialInteractionFeedState(), physical);
+    expect(
+      interactionForPane(unknown, endpoint("pane.native"), {
+        serverEpoch: fixtureId,
+        paneBirthId: "7",
+      })?.effect.kind,
+    ).toBe("input-enqueued");
+  });
   it("projects only resolved full lifetime and rejects downgraded replay enrichment", () => {
     const entry = native();
     const state = reduceReceipt(initialInteractionFeedState(), entry);

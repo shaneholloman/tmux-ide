@@ -216,6 +216,17 @@ export function interactionSummaryLabel(
 export function interactionActivityAt(entry: InteractionJournalEntry): string {
   return entry.type === "interaction.evidence" ? entry.evidence.receivedAt : entry.at;
 }
+/** Verified viewer operations remain in history but are not agent activity. */
+export function interactionIsViewerActivity(entry: InteractionJournalEntry): boolean {
+  if (entry.type !== "interaction.evidence") return false;
+  const actor = entry.evidence.actor;
+  return (
+    entry.evidence.observation.kind === "native-journal" &&
+    actor.kind === "native" &&
+    actor.identity === "connection" &&
+    actor.classification.kind === "viewer"
+  );
+}
 export function interactionActivityOperationKind(
   entry: InteractionJournalEntry,
 ): InteractionReceipt["operationKind"] | null {
@@ -416,6 +427,7 @@ export function reduceInteractionReceipt(
   const destination = evidence?.endpoints.destination;
   const operationKind = interactionActivityOperationKind(receipt);
   if (
+    interactionIsViewerActivity(receipt) ||
     (receipt.type === "interaction.receipt" && receipt.target.kind !== "pane") ||
     (operationKind !== "workspace.pane.send" && operationKind !== "workspace.pane.read") ||
     !evidence ||
@@ -469,7 +481,7 @@ export function interactionForPane(
   // At most INTERACTION_ACTIVITY_LIMIT entries. Current aliases are never written back
   // into retained history; a linked physical pane can appear in several sessions.
   for (const entry of state.activity) {
-    if (entry.type !== "interaction.evidence") continue;
+    if (entry.type !== "interaction.evidence" || interactionIsViewerActivity(entry)) continue;
     const evidence = entry.evidence;
     const destination = evidence.endpoints.destination;
     if (destination.kind !== "native-pane" || interactionNativePaneEndpointKey(destination) !== key)
