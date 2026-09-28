@@ -1,5 +1,7 @@
 import {
-  InteractionReceiptSchemaZ,
+  InteractionJournalEntrySchemaZ,
+  type InteractionJournalEntry,
+  type InteractionEvidenceRecord,
   type InteractionReceipt,
   type InteractionPaneEndpoint,
   type InteractionEffectEvidence,
@@ -20,7 +22,7 @@ export function interactionPaneEndpointKey(endpoint: ResolvedInteractionEndpoint
     endpoint.semanticPaneId,
   ]);
 }
-function receiptOwnerKey(receipt: InteractionReceipt): string {
+function receiptOwnerKey(receipt: InteractionJournalEntry): string {
   const endpoint = receipt.evidence?.endpoints.destination;
   return endpoint
     ? JSON.stringify([
@@ -30,8 +32,8 @@ function receiptOwnerKey(receipt: InteractionReceipt): string {
       ])
     : "structural";
 }
-function receiptOperationKey(receipt: InteractionReceipt): string {
-  return `${receiptOwnerKey(receipt)}:${receipt.operationId}`;
+function receiptOperationKey(receipt: InteractionJournalEntry): string {
+  return `${receiptOwnerKey(receipt)}:${receipt.type === "interaction.evidence" ? "native:" + receipt.evidence.interactionId : receipt.operationId}`;
 }
 
 export const INTERACTION_ACTIVITY_LIMIT = 64;
@@ -135,7 +137,7 @@ export interface InteractionFeedState {
   readonly sequence: number;
   readonly cursors: Readonly<Record<string, number>>;
   /** One latest receipt per operation, newest first and strictly bounded. */
-  readonly activity: readonly InteractionReceipt[];
+  readonly activity: readonly InteractionJournalEntry[];
   /** Latest visible interaction for each semantic pane. */
   readonly panes: Readonly<Record<string, PaneInteractionProjection>>;
 }
@@ -194,7 +196,36 @@ export function interactionSummaryLabel(
   }
 }
 
-export function interactionReceiptLabel(receipt: InteractionReceipt): string {
+export function interactionActivityAt(entry: InteractionJournalEntry): string {
+  return entry.type === "interaction.evidence" ? entry.evidence.receivedAt : entry.at;
+}
+export function interactionActivityOperationKind(
+  entry: InteractionJournalEntry,
+): InteractionReceipt["operationKind"] | null {
+  if (entry.type === "interaction.receipt") return entry.operationKind;
+  const evidence = entry.evidence;
+  if (evidence.effect.kind === "snapshot-produced") return "workspace.pane.read";
+  if (evidence.effect.kind === "input-enqueued" || evidence.effect.kind === "no-input")
+    return "workspace.pane.send";
+  if (evidence.observation.kind !== "native-journal" || evidence.observation.command === "unknown")
+    return null;
+  return evidence.observation.command === "capture-pane"
+    ? "workspace.pane.read"
+    : "workspace.pane.send";
+}
+export function interactionReceiptLabel(receipt: InteractionJournalEntry): string {
+  if (receipt.type === "interaction.evidence") {
+    const effect = receipt.evidence.effect.kind;
+    if (effect === "input-enqueued") return "External input enqueued";
+    if (effect === "snapshot-produced") return "External snapshot produced";
+    if (effect === "no-input") return "External command · no input";
+    const kind = interactionActivityOperationKind(receipt);
+    return kind === "workspace.pane.read"
+      ? "External read command observed"
+      : kind === "workspace.pane.send"
+        ? "External input command observed"
+        : "External activity observed";
+  }
   const commandOnly = receipt.phase === "observed" && receipt.evidence?.effect.kind === "unknown";
   const action =
     commandOnly && receipt.operationKind === "workspace.pane.send"
@@ -236,31 +267,51 @@ export function interactionReceiptIdentity(receipt: InteractionReceipt): string 
 }
 
 export function interactionReceiptTargetLabel(
-  receipt: Pick<InteractionReceipt, "operationKind" | "origin" | "target" | "evidence">,
+  receipt:
+    | Pick<InteractionReceipt, "operationKind" | "origin" | "target" | "evidence">
+    | InteractionEvidenceRecord,
   paneLabel: (endpoint: ResolvedInteractionEndpoint) => string = (endpoint) =>
     endpoint.semanticPaneId,
 ): string {
   const destination = receipt.evidence?.endpoints.destination;
   const source = receipt.evidence?.endpoints.source;
+  if ("type" in receipt && receipt.type === "interaction.evidence") {
+    if (destination?.kind !== "pane") return "Unresolved pane";
+    const kind = interactionActivityOperationKind(receipt);
+    if (kind === null) return paneLabel(destination);
+    return paneInteractionRelationshipLabel(
+      {
+        origin: "external",
+        sourceEndpoint: source?.kind === "pane" ? source : null,
+        destinationEndpoint: destination,
+        operationKind: kind,
+      },
+      paneLabel,
+    );
+  }
+  const authored = receipt as Pick<
+    InteractionReceipt,
+    "operationKind" | "origin" | "target" | "evidence"
+  >;
   if (
     destination?.kind === "pane" &&
-    (receipt.operationKind === "workspace.pane.send" ||
-      receipt.operationKind === "workspace.pane.read")
+    (authored.operationKind === "workspace.pane.send" ||
+      authored.operationKind === "workspace.pane.read")
   ) {
     return paneInteractionRelationshipLabel(
       {
-        origin: receipt.origin,
+        origin: authored.origin,
         sourceEndpoint: source?.kind === "pane" ? source : null,
         destinationEndpoint: destination,
-        operationKind: receipt.operationKind,
+        operationKind: authored.operationKind,
       },
       paneLabel,
     );
   }
   if (destination?.kind === "pane") return paneLabel(destination);
-  return receipt.target.kind === "window"
+  return authored.target.kind === "window"
     ? "Window"
-    : receipt.target.kind === "pane"
+    : authored.target.kind === "pane"
       ? "Pane"
       : "Session";
 }
@@ -294,9 +345,9 @@ export function paneInteractionRelationshipLabel(
  */
 export function reduceInteractionReceipt(
   previous: InteractionFeedState,
-  raw: InteractionReceipt,
+  raw: InteractionJournalEntry,
 ): InteractionFeedState {
-  const receipt = InteractionReceiptSchemaZ.parse(raw);
+  const receipt = InteractionJournalEntrySchemaZ.parse(raw);
   const ownerKey = receiptOwnerKey(receipt);
   if (receipt.sequence <= (previous.cursors[ownerKey] ?? 0)) return previous;
   const sequence = Math.max(previous.sequence, receipt.sequence);
@@ -312,11 +363,19 @@ export function reduceInteractionReceipt(
       existing.evidence !== null &&
       receipt.evidence !== null &&
       canEnrichInteractionEvidence(existing.evidence, receipt.evidence);
-    const validTransition =
-      interactionPhaseCanAdvance(existing.phase, receipt.phase) ||
-      (existing.phase === receipt.phase && enriches);
+    const native =
+      existing.type === "interaction.evidence" && receipt.type === "interaction.evidence";
+    const validTransition = native
+      ? enriches
+      : existing.type === "interaction.receipt" &&
+        receipt.type === "interaction.receipt" &&
+        (interactionPhaseCanAdvance(existing.phase, receipt.phase) ||
+          (existing.phase === receipt.phase && enriches));
     if (
-      interactionReceiptIdentity(existing) !== interactionReceiptIdentity(receipt) ||
+      (!native &&
+        (existing.type !== "interaction.receipt" ||
+          receipt.type !== "interaction.receipt" ||
+          interactionReceiptIdentity(existing) !== interactionReceiptIdentity(receipt))) ||
       !validTransition ||
       (existing.evidence !== null && receipt.evidence !== null && !enriches)
     )
@@ -333,10 +392,10 @@ export function reduceInteractionReceipt(
   );
   const evidence = receipt.evidence;
   const destination = evidence?.endpoints.destination;
+  const operationKind = interactionActivityOperationKind(receipt);
   if (
-    receipt.target.kind !== "pane" ||
-    (receipt.operationKind !== "workspace.pane.send" &&
-      receipt.operationKind !== "workspace.pane.read") ||
+    (receipt.type === "interaction.receipt" && receipt.target.kind !== "pane") ||
+    (operationKind !== "workspace.pane.send" && operationKind !== "workspace.pane.read") ||
     !evidence ||
     destination?.kind !== "pane"
   )
@@ -355,13 +414,14 @@ export function reduceInteractionReceipt(
     direction,
     sourcePaneId: source?.semanticPaneId ?? null,
     destinationPaneId: destination.semanticPaneId,
-    operationKind: receipt.operationKind,
-    operationId: receipt.operationId,
-    phase: receipt.phase,
-    origin: receipt.origin,
+    operationKind,
+    operationId:
+      receipt.type === "interaction.evidence" ? evidence.interactionId : receipt.operationId,
+    phase: receipt.type === "interaction.evidence" ? "observed" : receipt.phase,
+    origin: receipt.type === "interaction.evidence" ? "external" : receipt.origin,
     label: interactionReceiptLabel(receipt),
     sequence: receipt.sequence,
-    at: receipt.at,
+    at: interactionActivityAt(receipt),
   });
   panes[interactionPaneEndpointKey(destination)] = projection(destination, "incoming");
   if (source && interactionPaneEndpointKey(source) !== interactionPaneEndpointKey(destination))

@@ -2,6 +2,8 @@ import {
   InteractionReceiptV1SchemaZ,
   InteractionReceiptV2SchemaZ,
   type InteractionReceipt,
+  type InteractionJournalEntry,
+  InteractionEvidenceRecordSchemaZ,
 } from "@tmux-ide/contracts";
 import { describe, expect, it } from "vitest";
 
@@ -16,6 +18,10 @@ import {
   reduceInteractionReceipt as reduceReceipt,
 } from "./interaction-receipts.ts";
 
+function onlyReceipt(entry: InteractionJournalEntry | undefined): InteractionReceipt {
+  if (!entry || entry.type !== "interaction.receipt") throw Error("Expected authored receipt");
+  return entry;
+}
 const fixtureId = "00000000-0000-4000-8000-000000000001";
 function endpoint(semanticPaneId: string) {
   return {
@@ -141,7 +147,7 @@ describe("interaction receipt reducer", () => {
     });
 
     expect(observed.activity).toHaveLength(1);
-    expect(observed.activity[0]?.phase).toBe("observed");
+    expect(onlyReceipt(observed.activity[0]).phase).toBe("observed");
     expect(interactionForPane(observed, endpoint("pane.alpha"))).toMatchObject({
       phase: "observed",
       label: "sdk observed · delivered 84 characters + Enter",
@@ -351,7 +357,7 @@ describe("interaction receipt reducer", () => {
       operationKind: "workspace.pane.resize",
       target: { kind: "pane", semanticPaneId: "pane.tests" },
     });
-    expect(state.activity[0]?.summary).not.toHaveProperty("text");
+    expect(onlyReceipt(state.activity[0]).summary).not.toHaveProperty("text");
     expect(state.panes).toEqual({});
   });
 
@@ -420,7 +426,7 @@ describe("interaction receipt reducer", () => {
         semanticPaneId: "pane.alpha",
       },
     });
-    expect(observed.activity[0]?.phase).toBe("observed");
+    expect(onlyReceipt(observed.activity[0]).phase).toBe("observed");
     expect(observed.panes).not.toHaveProperty("pane.stale");
     expect(interactionForPane(observed, endpoint("pane.editor"))).not.toBeNull();
 
@@ -430,7 +436,7 @@ describe("interaction receipt reducer", () => {
       phase: "accepted",
     });
     expect(regressed.sequence).toBe(3);
-    expect(regressed.activity[0]?.phase).toBe("observed");
+    expect(onlyReceipt(regressed.activity[0]).phase).toBe("observed");
     expect(regressed.panes[interactionPaneEndpointKey(endpoint("pane.alpha"))]?.sequence).toBe(2);
 
     const mutated = reduceFixtureReceipt(regressed, {
@@ -445,7 +451,7 @@ describe("interaction receipt reducer", () => {
       },
     });
     expect(mutated.sequence).toBe(4);
-    expect(mutated.activity[0]?.target).toEqual({
+    expect(onlyReceipt(mutated.activity[0]).target).toEqual({
       kind: "pane",
       semanticPaneId: "pane.alpha",
     });
@@ -492,5 +498,71 @@ describe("scoped receipt evidence", () => {
       paneLifetimeId: "00000000-0000-4000-8000-000000000009",
     };
     expect(reduceReceipt(state, forged).activity).toEqual(state.activity);
+  });
+});
+
+describe("native evidence journal projection", () => {
+  function native(sequence = 1) {
+    return InteractionEvidenceRecordSchemaZ.parse({
+      type: "interaction.evidence",
+      sequence,
+      evidence: {
+        schemaVersion: 1,
+        interactionId: fixtureId,
+        revision: 0,
+        endpoints: { destination: endpoint("pane.native"), source: null },
+        actor: { kind: "unknown", reason: "unavailable" },
+        observation: {
+          kind: "native-journal",
+          command: "unknown",
+          cursor: { epoch: fixtureId, sequence: String(sequence) },
+          commandId: null,
+          parentCommandId: null,
+          correlatedOperationId: null,
+        },
+        effect: { kind: "input-enqueued" },
+        occurredAt: null,
+        timeBasis: "unknown",
+        receivedAt: "2026-09-28T00:00:00.000Z",
+      },
+    });
+  }
+  it("preserves unresolved effects without fabricating semantic fields", () => {
+    const entry = native();
+    entry.evidence.endpoints.destination = {
+      kind: "unresolved-pane",
+      environmentId: fixtureId,
+      serverScope: endpoint("x").serverScope,
+      observationRef: fixtureId,
+    };
+    const state = reduceReceipt(initialInteractionFeedState(), entry);
+    expect(state.activity).toEqual([entry]);
+    expect(state.panes).toEqual({});
+    expect(interactionReceiptLabel(entry)).toBe("External input enqueued");
+    expect(state.activity[0]).not.toHaveProperty("workspaceName");
+  });
+  it("projects only resolved full lifetime and rejects downgraded replay enrichment", () => {
+    const entry = native();
+    const state = reduceReceipt(initialInteractionFeedState(), entry);
+    expect(interactionForPane(state, endpoint("pane.native"))?.effect.kind).toBe("input-enqueued");
+    const downgrade = native(2);
+    downgrade.evidence.revision = 1;
+    downgrade.evidence.effect = { kind: "unknown" };
+    const next = reduceReceipt(state, downgrade);
+    expect(next.activity).toEqual([entry]);
+    expect(next.sequence).toBe(2);
+    expect(
+      interactionForPane(next, {
+        ...endpoint("pane.native"),
+        paneLifetimeId: "22222222-2222-4222-8222-222222222222",
+      }),
+    ).toBeNull();
+  });
+  it("retains unknown commands without inventing send presence", () => {
+    const entry = native();
+    entry.evidence.effect = { kind: "unknown" };
+    const state = reduceReceipt(initialInteractionFeedState(), entry);
+    expect(state.activity).toHaveLength(1);
+    expect(state.panes).toEqual({});
   });
 });
