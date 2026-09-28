@@ -194,24 +194,42 @@ if (args[0] === "--client") {
   );
   const cli = async (role: string, action: string, extra: string[] = []) => {
     const instance = instances[role];
-    return JSON.parse(
-      await run(
-        descriptor.node,
-        [
-          join(sourceRoot, "scripts/development-instance.mjs"),
-          action,
-          "--worktree",
-          instance.worktree,
-          "--name",
-          instance.name,
-          "--store",
-          instance.store,
-          "--json",
-          ...extra,
-        ],
-        action === "rebuild" ? 240000 : 45000,
-      ),
-    );
+    try {
+      return JSON.parse(
+        await run(
+          descriptor.node,
+          [
+            join(sourceRoot, "scripts/development-instance.mjs"),
+            action,
+            "--worktree",
+            instance.worktree,
+            "--name",
+            instance.name,
+            "--store",
+            instance.store,
+            "--json",
+            ...extra,
+          ],
+          action === "rebuild" ? 240000 : 45000,
+        ),
+      );
+    } catch (error) {
+      const stdout = (error as { stdout?: unknown }).stdout;
+      if (typeof stdout === "string" && stdout.length <= 65536) {
+        try {
+          const failure = JSON.parse(stdout);
+          save(role + "-" + action + "-failure.json", {
+            code: failure.code,
+            reason: failure.reason,
+            operation: failure.operation,
+            diagnostic: failure.diagnostic,
+          });
+        } catch {
+          /* Never copy arbitrary child output or credentials. */
+        }
+      }
+      throw error;
+    }
   };
   const receipts: Record<string, unknown> & { cleanup: Record<string, boolean> } = {
     version: 1,
