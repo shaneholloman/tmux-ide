@@ -1,10 +1,10 @@
 ---
 title: CLI reference
-description: The supported tmux-ide commands and flags in 2.9.0-beta.44
+description: The supported tmux-ide commands and flags in 2.9.0-beta.45
 ---
 
 This page follows the public surface printed by `tmux-ide --help` in
-`2.9.0-beta.44`. `--json` is available on the scripting commands that explicitly
+`2.9.0-beta.45`. `--json` is available on the scripting commands that explicitly
 list it below; interactive commands do not emit JSON.
 
 ## Open tmux-ide
@@ -116,6 +116,26 @@ inspect its actual state stamp. Project or managed settings may override user
 settings. Repair preserves unrelated hooks and an explicit `disableAllHooks`
 preference. Permission/input notifications report blocked; idle notifications do
 not override a completed turn.
+
+## Agent automation (development)
+
+The following commands require a development build and matching daemon; they
+are not included in the published `2.9.0-beta.45` package.
+
+| Command                                                     | What it does                                        |
+| ----------------------------------------------------------- | --------------------------------------------------- |
+| `tmux-ide automation panes --json`                          | Discover scoped pane endpoints                      |
+| `tmux-ide automation reserve --json`                        | Reserve the read or send intent supplied on stdin   |
+| `tmux-ide automation execute --json`                        | Execute a saved handle and intent supplied on stdin |
+| `tmux-ide automation read --json`                           | Reserve and execute a read intent from stdin        |
+| `tmux-ide automation send --json`                           | Reserve and execute a send intent from stdin        |
+| `tmux-ide automation status GENERATION OPERATION_ID --json` | Query an existing operation without repeating it    |
+| `tmux-ide mcp`                                              | Serve the same automation API over MCP stdio        |
+
+Persist the reserved handle before executing when delivery recovery matters.
+An uncertain response is not permission to send again with a new handle. See
+[Agent automation](/docs/automation) for request formats, source credentials,
+retry rules, and SDK usage.
 
 ## Adopt ordinary tmux sessions
 
