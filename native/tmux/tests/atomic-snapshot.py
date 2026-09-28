@@ -147,10 +147,15 @@ try:
   (b'wrapped-'+b'x'*210+b'\r\n')*35,
   'wide: 界🙂 é\r\n'.encode()+b'\x1b[38;2;12;34;56mRGB\x1b[48;5;42mBG\x1b[4:3mUL\x1b[0m\tTAB\r\n'+
   b'\x1b]8;;https://example.test/a\x1b\\'+b'LINK'*65+b'\x1b]8;;\x1b\\\r\n'+
-  b'%end 1 2 3\r\n%continue %0\r\n{"ansiEnd":true}']
+  b'%end 1 2 3\r\n%continue %0\r\n{"ansiEnd":true}', None]
  for sample_no,payload in enumerate(samples):
   script=pathlib.Path(root)/('dual-'+str(sample_no)+'.py')
-  script.write_text('import os,time\nos.write(1,'+repr(payload)+')\ntime.sleep(60)\n')
+  # Insert blank lines above wrapped rows, retaining a wrapped final row
+  # while dropping its continuation. This proves the no-terminal-LF edge.
+  if payload is None:
+   script.write_text('import os,time\nw,h=os.get_terminal_size(1)\nos.write(1,b"x"*(w*2+1)+b"\\x1b[H\\x1b["+str(h-2).encode()+b"L")\ntime.sleep(60)\n')
+  else:
+   script.write_text('import os,time\nos.write(1,'+repr(payload)+')\ntime.sleep(60)\n')
   pane,birth=call('new-window','-d','-P','-F','#{pane_id}\t#{pane_birth_id}','-t','proof',shlex.join([sys.executable,str(script)])).strip().split('\t')
   time.sleep(.08)
   a.pause();lines=capture(a,'-D');meta=snapshot(lines)
@@ -162,7 +167,12 @@ try:
   ansi=bytes.fromhex(''.join(chunks));end=next(r for r in records if 'ansiEnd' in r)
   assert end=={'ansiEnd':True,'bytes':len(ansi),'chunks':len(chunks)},end
   stock=subprocess.run([binary,'-S',socket,'capture-pane','-p','-e','-J','-S','-','-t',pane],env=env,capture_output=True,check=True).stdout
-  assert ansi==stock,(sample_no,ansi,stock)
+  if payload is None:
+   final_row=[r for r in records if 'row' in r][-1]
+   assert final_row['flags'] & 1, final_row
+   assert ansi.endswith(b'x') and not ansi.endswith(b'\n'),ansi
+   assert ansi+b'\n'==stock,(ansi,stock)
+  else:assert ansi==stock,(sample_no,ansi,stock)
   # Actual control reply frames remove exactly one capture terminal newline,
   # then one trailing CR from each line. Plain seed bytes use CRLF joins.
   stock_lines=a.execute('capture-pane -p -e -J -S - -t '+pane)
