@@ -15,7 +15,7 @@ const serverEpoch = "a729e244-2531-430c-a947-2dd0a68b0341";
 const journalEpoch = "973ab7cb-f8a7-471e-87e8-b40a7da2bf29";
 const otherEpoch = "000ba6a9-2bd1-4a68-80db-1b07628c19d6";
 const capability: NativeJournalCapability = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   type: "capability",
   serverEpoch,
   journalEpoch,
@@ -25,6 +25,7 @@ const capability: NativeJournalCapability = {
     "pty-enqueue-v1",
     "capture-produced-v1",
     "cooperative-operation-v1",
+    "pane-identity-v1",
   ],
   capacity: 4096,
   maxBatch: 256,
@@ -39,6 +40,7 @@ const record = (sequence: string) => ({
   monotonicUs: "1",
   count: "0",
   targetId: 0,
+  targetBirthId: "1",
   kind: 1,
   outcome: 1,
   flags: 1,
@@ -49,7 +51,7 @@ const record = (sequence: string) => ({
   correlation: null,
 });
 const batch = (sequences: string[], extra: Record<string, unknown> = {}) => ({
-  schemaVersion: 1,
+  schemaVersion: 2,
   type: "batch",
   serverEpoch,
   journalEpoch,
@@ -234,7 +236,7 @@ describe("native observer lifecycle", () => {
           ? pending(signal)
           : ((reset = true),
             JSON.stringify({
-              schemaVersion: 1,
+              schemaVersion: 2,
               type: "reset",
               serverEpoch,
               journalEpoch: otherEpoch,
@@ -307,6 +309,25 @@ describe("native observer lifecycle", () => {
     await started;
     await disposal;
     expect(f.events).toHaveLength(count);
+  });
+  it("rejects version1 before enable and accepts explicit birth exhaustion", async () => {
+    const old = fixture(async () => JSON.stringify({ ...capability, schemaVersion: 1 }), {
+      enable: true,
+    });
+    expect(await old.observer.start()).toBe("incompatible");
+    expect(old.io.runTmux).toHaveBeenCalledTimes(1);
+    await old.observer.dispose();
+    const exhausted = fixture(async (args) =>
+      JSON.stringify(args.includes("-V") ? capability : batch([], { degraded: 16 })),
+    );
+    await exhausted.observer.start();
+    await flush();
+    expect(exhausted.observer.status).toBe("degraded");
+    await exhausted.observer.dispose();
+    expect(
+      NativeJournalRecordSchemaZ.safeParse({ ...record("1"), flags: 0, targetBirthId: "1" })
+        .success,
+    ).toBe(false);
   });
   it("rejects unknown coverage before enabling", async () => {
     const f = fixture(

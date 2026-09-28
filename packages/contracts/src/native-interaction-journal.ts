@@ -14,23 +14,24 @@ export const NATIVE_JOURNAL_COVERAGE = [
   "pty-enqueue-v1",
   "capture-produced-v1",
   "cooperative-operation-v1",
+  "pane-identity-v1",
 ] as const;
 export const NativeJournalCapabilitySchemaZ = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.literal(2),
     type: z.literal("capability"),
     serverEpoch: z.uuid(),
     journalEpoch: z.uuid(),
     enabled: z.boolean(),
     coverage: z
       .array(z.enum(NATIVE_JOURNAL_COVERAGE))
-      .length(4)
-      .refine((items) => new Set(items).size === 4),
+      .length(5)
+      .refine((items) => new Set(items).size === 5),
     capacity: z.literal(4096),
     maxBatch: z.literal(256),
     maxWaiters: z.literal(4),
     waitingReaders: z.int().min(0).max(4),
-    degraded: z.int().min(0).max(15),
+    degraded: z.int().min(0).max(31),
   })
   .strict();
 export const NativeJournalRecordSchemaZ = z
@@ -40,6 +41,7 @@ export const NativeJournalRecordSchemaZ = z
     issuerId: NativeJournalUint64SchemaZ,
     monotonicUs: NativeJournalUint64SchemaZ,
     count: NativeJournalUint64SchemaZ,
+    targetBirthId: NativeJournalUint64SchemaZ,
     targetId: z.int().min(0).max(4294967295),
     kind: z.int().min(1).max(6),
     outcome: z.int().min(1).max(3),
@@ -58,14 +60,14 @@ export const NativeJournalRecordSchemaZ = z
       (record.kind === 2 && (record.flags & ~33) !== 0) ||
       ((record.kind === 3 || record.kind === 4) && (record.flags & ~1) !== 0) ||
       (record.kind >= 5 && (record.flags !== 1 || record.outcome !== 1)) ||
-      (!(record.flags & 1) && record.targetId !== 0) ||
+      (!(record.flags & 1) && (record.targetId !== 0 || record.targetBirthId !== "0")) ||
       (record.kind === 5 && record.count === "0")
     )
       context.addIssue({ code: "custom", message: "inconsistent native record" });
   });
 export const NativeJournalBatchSchemaZ = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.literal(2),
     type: z.literal("batch"),
     serverEpoch: z.uuid(),
     journalEpoch: z.uuid(),
@@ -74,12 +76,12 @@ export const NativeJournalBatchSchemaZ = z
     gap: z.object({ from: positive, through: positive }).strict().nullable(),
     records: z.array(NativeJournalRecordSchemaZ).max(64),
     next: NativeJournalUint64SchemaZ,
-    degraded: z.int().min(0).max(15),
+    degraded: z.int().min(0).max(31),
   })
   .strict();
 export const NativeJournalResetSchemaZ = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.literal(2),
     type: z.literal("reset"),
     serverEpoch: z.uuid(),
     journalEpoch: z.uuid(),
