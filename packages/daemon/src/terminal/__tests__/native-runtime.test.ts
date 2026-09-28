@@ -957,6 +957,35 @@ describe("async terminal inventory reads", () => {
     },
   );
 
+  it.each(["invalidate", "dispose"] as const)(
+    "rejects stale publication when %s happens during awaited adoption",
+    async (kind) => {
+      const { registry, root } = createRegistry("workspace.alpha", "runtime:session");
+      let release!: () => void;
+      let observedSignal: AbortSignal | undefined;
+      const runtime = new WorkspaceTerminalInventoryRuntime({
+        registry,
+        tmuxAuthority: authority(root),
+        commandExecutor: syncStartup,
+        readCommandExecutor: asyncInventory("runtime:session", []),
+        onInventory: async (_snapshot, signal) => {
+          observedSignal = signal;
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+        },
+      });
+      await runtime.whenReady();
+      const pending = runtime.discoverTerminalInventory();
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+      runtime[kind]();
+      expect(observedSignal?.aborted).toBe(true);
+      release();
+      await expect(pending).rejects.toMatchObject({ code: "discovery-failed" });
+      runtime.dispose();
+    },
+  );
+
   it("publishes each authoritative inventory snapshot to the generation-owned cache seam", async () => {
     const { registry, root } = createRegistry("workspace.alpha", "runtime:session");
     const adopted: NativeTerminalInventorySnapshot[] = [];

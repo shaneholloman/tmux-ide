@@ -1,3 +1,4 @@
+import { PaneSourceDiscovery } from "./pane-source-discovery.ts";
 import { createBackgroundNativeCapture } from "./background-native-capture.ts";
 import { createOwnedViewerAdapterFactory } from "./owned-viewer-factory.ts";
 import { createAuthoredNativeCommandRunner } from "./authored-native-command-runner.ts";
@@ -225,6 +226,9 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
       return output;
     },
   });
+  const sourceDiscovery = new PaneSourceDiscovery(sourceCredentials, () =>
+    workspaceRegistry.list(),
+  );
   const sessionRuntimeRegistry: SessionRuntimeRegistry = new SessionRuntimeRegistry({
     generation,
     semanticMutations: {
@@ -318,13 +322,40 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
     nativeServerEpoch: () => observationSelector.nativeServerEpoch ?? null,
     resolveInteractionEndpoint: (workspaceName, semanticPaneId) =>
       interactionEvidence?.captureAuthoredEndpoint(workspaceName, semanticPaneId) ?? null,
-    onInventory: (snapshot) => {
+    onInventory: async (snapshot, signal) => {
       multiplexer.adoptPaneInventory(snapshot.panes);
       interactionEvidence.adoptInventory(snapshot.panes);
+      await sourceDiscovery.prepare(
+        snapshot.panes.map((pane) => ({
+          ...pane,
+          paneLifetimeId: pane.semanticPaneId
+            ? (interactionEvidence?.captureInventoryEndpoint(
+                pane.sessionName,
+                pane.runtimePaneId,
+                pane.semanticPaneId,
+              )?.paneLifetimeId ?? null)
+            : null,
+        })),
+        signal,
+      );
     },
-    onSessionInventory: (session, snapshot) => {
+    onSessionInventory: async (session, snapshot, signal) => {
       multiplexer.adoptSessionPaneInventory(session, snapshot?.panes ?? []);
       interactionEvidence.adoptSessionInventory(session, snapshot?.panes ?? []);
+      if (snapshot)
+        await sourceDiscovery.prepare(
+          snapshot.panes.map((pane) => ({
+            ...pane,
+            paneLifetimeId: pane.semanticPaneId
+              ? (interactionEvidence?.captureInventoryEndpoint(
+                  pane.sessionName,
+                  pane.runtimePaneId,
+                  pane.semanticPaneId,
+                )?.paneLifetimeId ?? null)
+              : null,
+          })),
+          signal,
+        );
     },
   });
   const observer: TmuxExternalInteractionObserver = new TmuxExternalInteractionObserver({

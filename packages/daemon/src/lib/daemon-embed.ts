@@ -1,3 +1,4 @@
+import { PaneSourceDiscovery } from "./pane-source-discovery.ts";
 import { createBackgroundNativeCapture } from "./background-native-capture.ts";
 import { createOwnedViewerAdapterFactory } from "./owned-viewer-factory.ts";
 import { publishOwnerInteractionReceipt } from "./interaction-receipt-publication.ts";
@@ -1171,6 +1172,9 @@ async function startEmbeddedDaemonGeneration(
       run: (args) => nativeGenerationTmuxRunner(args),
       runAsync: (args, signal) => fleetFactsTmuxRunner(args, signal),
     });
+    const sourceDiscovery = new PaneSourceDiscovery(paneSourceCredentials, () =>
+      workspaceRegistry.list(),
+    );
     const legacySession = process.env.TMUX_IDE_SESSION;
     if (
       legacySession &&
@@ -1630,13 +1634,40 @@ async function startEmbeddedDaemonGeneration(
         nativeServerEpoch: () => observationSelector?.nativeServerEpoch ?? null,
         resolveInteractionEndpoint: (workspaceName, semanticPaneId) =>
           interactionEvidence?.captureAuthoredEndpoint(workspaceName, semanticPaneId) ?? null,
-        onInventory: (snapshot) => {
+        onInventory: async (snapshot, signal) => {
           workspaceMultiplexer.adoptPaneInventory(snapshot.panes);
           interactionEvidence?.adoptInventory(snapshot.panes);
+          await sourceDiscovery.prepare(
+            snapshot.panes.map((pane) => ({
+              ...pane,
+              paneLifetimeId: pane.semanticPaneId
+                ? (interactionEvidence?.captureInventoryEndpoint(
+                    pane.sessionName,
+                    pane.runtimePaneId,
+                    pane.semanticPaneId,
+                  )?.paneLifetimeId ?? null)
+                : null,
+            })),
+            signal,
+          );
         },
-        onSessionInventory: (sessionName, snapshot) => {
+        onSessionInventory: async (sessionName, snapshot, signal) => {
           workspaceMultiplexer.adoptSessionPaneInventory(sessionName, snapshot?.panes ?? []);
           interactionEvidence?.adoptSessionInventory(sessionName, snapshot?.panes ?? []);
+          if (snapshot)
+            await sourceDiscovery.prepare(
+              snapshot.panes.map((pane) => ({
+                ...pane,
+                paneLifetimeId: pane.semanticPaneId
+                  ? (interactionEvidence?.captureInventoryEndpoint(
+                      pane.sessionName,
+                      pane.runtimePaneId,
+                      pane.semanticPaneId,
+                    )?.paneLifetimeId ?? null)
+                  : null,
+              })),
+              signal,
+            );
         },
         ...(runtimeObservability ? { observability: runtimeObservability } : {}),
       } satisfies ConstructorParameters<typeof WorkspaceTerminalInventoryRuntime>[0];

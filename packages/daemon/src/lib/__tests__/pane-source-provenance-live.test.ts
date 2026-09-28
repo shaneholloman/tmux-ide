@@ -11,6 +11,7 @@ import {
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 
+import { createAutomationClient } from "@tmux-ide/daemon-client/automation-client";
 import { send } from "../../send.ts";
 import { startEmbeddedDaemon, type EmbeddedDaemonHandle } from "../daemon-embed.ts";
 import { PANE_SOURCE_CREDENTIAL_OPTION } from "../pane-source-credentials.ts";
@@ -301,5 +302,59 @@ describe.skipIf(!hasTmux).sequential("authenticated pane provenance, full daemon
     expect(await response.json()).toMatchObject({ ok: false });
     expect(run(["capture-pane", "-p", "-t", targetPane])).not.toContain(staleMarker);
     expect(run(["has-session", "-t", session])).toBe("");
+  });
+  it("sessionless daemon grants sources for newly TUI-discovered panes before their first automation call", async () => {
+    await handle?.stop({ gracefulMs: 100 });
+    handle = null;
+    delete process.env.TMUX_IDE_SESSION;
+    handle = await startEmbeddedDaemon({ localBypassToken: ownerToken, silent: true });
+    const lateSession = `${session}-late`;
+    const latePane = run(["new-session", "-d", "-P", "-F", "#{pane_id}", "-s", lateSession]);
+    run(["set-option", "-p", "-t", latePane, "@tmux_ide_pane_id", "pane.late"]);
+    getDefaultWorkspaceRegistry().add({
+      name: "workspace.late",
+      sessionName: lateSession,
+      projectDir: root,
+    });
+    expect(
+      run(["display-message", "-p", "-t", latePane, `#{${PANE_SOURCE_CREDENTIAL_OPTION}}`]),
+    ).toBe("");
+    const tui = await fetch(
+      `${handle.apiBaseUrl}/api/project/${encodeURIComponent(lateSession)}/terminal-runtime-inventory?version=1`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } },
+    );
+    expect(tui.status).toBe(200);
+    const token = run([
+      "display-message",
+      "-p",
+      "-t",
+      latePane,
+      `#{${PANE_SOURCE_CREDENTIAL_OPTION}}`,
+    ]);
+    expect(token.length).toBeGreaterThan(30);
+    const client = createAutomationClient({
+      baseUrl: handle.apiBaseUrl,
+      ownerToken,
+      sourceCredential: token,
+    });
+    const panes = (await client.discover()).panes;
+    const source = panes.find((pane) => pane.endpoint.semanticPaneId === "pane.late")!.endpoint;
+    const target = panes.find((pane) => pane.endpoint.semanticPaneId === "pane.tests")!.endpoint;
+    const intent = { kind: "read" as const, source, target };
+    const { handle: operation } = await client.reserve(intent);
+    expect((await client.execute(operation, intent)).read?.availability).toBe("available");
+    const replacement = run(["split-window", "-d", "-P", "-F", "#{pane_id}", "-t", latePane]);
+    run(["kill-pane", "-t", latePane]);
+    run(["set-option", "-p", "-t", replacement, "@tmux_ide_pane_id", "pane.late"]);
+    const updated = (await client.discover()).panes.find(
+      (pane) => pane.endpoint.semanticPaneId === "pane.late",
+    )!.endpoint;
+    expect(updated.paneLifetimeId).not.toBe(source.paneLifetimeId);
+    expect(
+      run(["display-message", "-p", "-t", replacement, `#{${PANE_SOURCE_CREDENTIAL_OPTION}}`]),
+    ).not.toBe(token);
+    await expect(client.reserve({ ...intent, source: updated })).rejects.toMatchObject({
+      code: "invalid-source",
+    });
   });
 });

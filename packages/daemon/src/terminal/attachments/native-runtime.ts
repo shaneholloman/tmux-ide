@@ -1221,11 +1221,15 @@ export interface WorkspaceTerminalInventoryRuntimeOptions {
   }) => AgentStatusProbe;
   /** Opt-in bounded daemon qualification spans; production normally uses the disabled singleton. */
   readonly observability?: SessionRuntimeObservability;
-  readonly onInventory?: (snapshot: NativeTerminalInventorySnapshot) => void;
+  readonly onInventory?: (
+    snapshot: NativeTerminalInventorySnapshot,
+    signal: AbortSignal,
+  ) => void | Promise<void>;
   readonly onSessionInventory?: (
     sessionName: string,
     snapshot: NativeTerminalInventorySnapshot | null,
-  ) => void;
+    signal: AbortSignal,
+  ) => void | Promise<void>;
 }
 
 /**
@@ -1269,9 +1273,9 @@ export class WorkspaceTerminalInventoryRuntime {
   ) => Promise<NativeTerminalInventorySnapshot>;
   readonly #agentStatusProbe: AgentStatusProbe | null;
   readonly #observability: SessionRuntimeObservability;
-  readonly #onInventory: ((snapshot: NativeTerminalInventorySnapshot) => void) | null;
+  readonly #onInventory: WorkspaceTerminalInventoryRuntimeOptions["onInventory"] | null;
   readonly #onSessionInventory:
-    | ((sessionName: string, snapshot: NativeTerminalInventorySnapshot | null) => void)
+    | WorkspaceTerminalInventoryRuntimeOptions["onSessionInventory"]
     | null;
   readonly #prewarmSessionRuntime:
     | ((sessionName: string, runtimeSessionId: string, signal: AbortSignal) => Promise<void>)
@@ -1519,13 +1523,17 @@ export class WorkspaceTerminalInventoryRuntime {
     );
   }
 
-  #publishInventory(
+  async #publishInventory(
     snapshot: NativeTerminalInventorySnapshot,
     nativeEpoch: string | null,
-  ): NativeTerminalInventorySnapshot {
+    signal: AbortSignal,
+    epoch: number,
+  ): Promise<NativeTerminalInventorySnapshot> {
     try {
-      this.#onInventory?.(snapshot);
+      await this.#onInventory?.(snapshot, signal);
     } catch {
+      if (signal.aborted || this.#disposed || this.#inventoryEpoch !== epoch)
+        throw new NativeTerminalAttachmentRuntimeError("discovery-failed");
       // Inventory still renders; stale evidence must not escape a failed adoption.
       return {
         ...snapshot,
@@ -1536,6 +1544,8 @@ export class WorkspaceTerminalInventoryRuntime {
         })),
       };
     }
+    if (signal.aborted || this.#disposed || this.#inventoryEpoch !== epoch)
+      throw new NativeTerminalAttachmentRuntimeError("discovery-failed");
     return {
       ...snapshot,
       panes: snapshot.panes.map((pane) => ({
@@ -1575,7 +1585,7 @@ export class WorkspaceTerminalInventoryRuntime {
         if (staleRetry < 1) return this.#readInventory(signal, staleRetry + 1);
         throw new NativeTerminalAttachmentRuntimeError("discovery-failed");
       }
-      return this.#publishInventory(snapshot, nativeEpoch);
+      return this.#publishInventory(snapshot, nativeEpoch, signal, epoch);
     }
     if (this.#inventoryRead?.epoch === epoch) return this.#inventoryRead.promise;
     const abort = new AbortController();
@@ -1594,7 +1604,7 @@ export class WorkspaceTerminalInventoryRuntime {
         if (staleRetry < 1) return this.#readInventory(undefined, staleRetry + 1);
         throw new NativeTerminalAttachmentRuntimeError("discovery-failed");
       }
-      return this.#publishInventory(value, nativeEpoch);
+      return this.#publishInventory(value, nativeEpoch, abort.signal, epoch);
     })().finally(() => {
       if (this.#inventoryRead?.promise === promise) this.#inventoryRead = null;
     });
@@ -1827,12 +1837,25 @@ export class WorkspaceTerminalInventoryRuntime {
         throw new NativeTerminalAttachmentRuntimeError("discovery-failed");
       }
       try {
-        this.#onSessionInventory?.(workspace.sessionName, shouldPrewarm ? inventory : null);
+        await this.#onSessionInventory?.(
+          workspace.sessionName,
+          shouldPrewarm ? inventory : null,
+          signal,
+        );
+        const callbackRetry = retryIfReplaced();
+        if (callbackRetry) return callbackRetry;
+        if (
+          this.#trustedSessionInventoryCurrent?.(workspace.sessionName, trustedInventoryToken) !==
+          true
+        )
+          throw new NativeTerminalAttachmentRuntimeError("discovery-failed");
         trustedInteractionInventoryAdopted = shouldPrewarm;
       } catch {
         // A cache consumer cannot own terminal inventory discovery.
       }
     }
+    const adoptionRetry = retryIfReplaced();
+    if (adoptionRetry) return adoptionRetry;
     this.#observeWorkspaceSession?.(workspace.name, workspace.sessionName);
     return Object.freeze({
       workspaceName: workspace.name,
