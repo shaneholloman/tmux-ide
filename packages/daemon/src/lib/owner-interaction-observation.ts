@@ -75,6 +75,12 @@ export class OwnerInteractionObservation {
       this.ownedOperationPaneGuard && this.#capability?.atomicPaneSnapshot === "capture-resume-v1"
     );
   }
+  get atomicPaneSnapshotDual(): boolean {
+    return (
+      this.ownedOperationPaneGuard &&
+      this.#capability?.atomicPaneSnapshotDual === "capture-resume-dual-v2"
+    );
+  }
   get ownedOperationSessionGuard(): boolean {
     return (
       this.ownedOperationEpochGuard &&

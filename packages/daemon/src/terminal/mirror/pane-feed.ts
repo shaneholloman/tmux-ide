@@ -64,6 +64,15 @@ export function seedBytesFromCapture(lines: readonly string[]): Uint8Array {
   return Buffer.from(lines.join("\r\n"), "latin1");
 }
 
+/** Normalize the bytes exactly as capture-pane/control-mode does, once per snapshot. */
+export function captureLinesFromAnsiBytes(ansiCapture: Uint8Array): readonly string[] {
+  let text = Buffer.from(ansiCapture).toString("latin1");
+  if (text.endsWith("\n")) text = text.slice(0, -1);
+  return Object.freeze(
+    text.split("\n").map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line)),
+  );
+}
+
 export class PaneFeed {
   static readonly MAX_HELD_CHUNKS = 512;
   static readonly MAX_HELD_BYTES = 1024 * 1024;
@@ -139,12 +148,7 @@ export class PaneFeed {
   /** Same capture instant, with stock control-print normalization for plain consumers. */
   captureDualReply(epoch: number, snapshot: NativeGridCapture, ansiCapture: Uint8Array): void {
     if (epoch !== this.epoch || this.state !== "awaiting-capture") return;
-    let text = Buffer.from(ansiCapture).toString("latin1");
-    // capture-pane removes one final LF before control_write adds its delimiter.
-    if (text.endsWith("\n")) text = text.slice(0, -1);
-    this.seedLines = text
-      .split("\n")
-      .map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
+    this.seedLines = captureLinesFromAnsiBytes(ansiCapture);
     this.nativeSeed = snapshot;
     this.state = "awaiting-cursor";
   }

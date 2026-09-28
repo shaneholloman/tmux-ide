@@ -20,7 +20,11 @@ export interface OwnedViewerAuthority {
   readonly environmentId: string;
   readonly serverScope: TmuxServerScope;
   /** Null until all wrapper, epoch and physical pane guards are verified. */
-  capability(): { serverEpoch: string; atomicPaneSnapshot?: boolean } | null;
+  capability(): {
+    serverEpoch: string;
+    atomicPaneSnapshot?: boolean;
+    atomicPaneSnapshotDual?: boolean;
+  } | null;
   subscribeReady?: (listener: () => void) => () => void;
   register(identity: NativeJournalIdentity): OwnedNativeConnection | null;
   admit(request: OwnedNativeOperationRequest): OwnedNativeOperation | null;
@@ -88,7 +92,10 @@ export class OwnedViewerAdapter {
     };
   }
   /** Available only on the actual attached issuer, never the journal reader. */
-  atomicSnapshotEpoch(io: MirrorChannelIo): string | null {
+  atomicSnapshotEpoch(
+    io: MirrorChannelIo,
+    representation: "native" | "dual" = "native",
+  ): string | null {
     try {
       const capability = this.authority.capability();
       const actual = io.nativeViewerIdentity;
@@ -96,11 +103,13 @@ export class OwnedViewerAdapter {
         io === this.#io &&
         this.#connection &&
         this.#identity &&
-        capability?.atomicPaneSnapshot === true &&
+        (representation === "dual"
+          ? capability?.atomicPaneSnapshotDual
+          : capability?.atomicPaneSnapshot) === true &&
         actual &&
         actual.connectionId === this.#identity.connectionId &&
         actual.serverEpoch === this.#identity.serverEpoch &&
-        capability.serverEpoch === actual.serverEpoch
+        capability?.serverEpoch === actual.serverEpoch
         ? actual.serverEpoch
         : null;
     } catch {

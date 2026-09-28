@@ -3865,12 +3865,14 @@ describe("native capture-resume recovery", () => {
       ],
     };
   }
-  async function setup(plain = false, manualPause = false) {
+  async function setup(plain = false, manualPause = false, dual = false) {
     const callbacks: Array<(reply: { ok: boolean; lines: string[] }) => void> = [];
     const adapter = {
       bindIo: vi.fn(),
       dispose: vi.fn(),
-      atomicSnapshotEpoch: vi.fn(() => epoch as string | null),
+      atomicSnapshotEpoch: vi.fn((_io, representation = "native") =>
+        representation === "dual" && !dual ? null : (epoch as string | null),
+      ),
       tryDispatch: vi.fn<NonNullable<SessionChannelOptions["ownedViewer"]>["tryDispatch"]>(
         (_io, request, reply) => {
           if (!request.commands[0]?.includes("-Q")) return false;
@@ -3891,6 +3893,50 @@ describe("native capture-resume recovery", () => {
     events.events.length = 0;
     return { rig, adapter, callbacks, events, handle };
   }
+  it.each([false, true])(
+    "delivers negotiated dual snapshots to plain/mixed subscribers: %s",
+    async (mixed) => {
+      const s = await setup(true, false, true);
+      const nativeEvents = collect();
+      try {
+        if (mixed) {
+          s.rig.channel.subscribePane("pane.alpha", nativeEvents.onEvent, undefined, true);
+          s.rig.sim.reply(nativeBootstrapLines());
+          s.rig.sim.reply(["0 0 100 50"]);
+          nativeEvents.events.length = 0;
+        }
+        s.rig.sim.feedLines("%pause %1");
+        expect(s.adapter.tryDispatch.mock.calls.at(-1)?.[1].commands[0]).toContain("-D");
+        const rows = snapshot().lines.slice(0, -1);
+        rows[0] = JSON.stringify({
+          ...JSON.parse(rows[0]!),
+          snapshotVersion: 2,
+          representation: "dual",
+        });
+        s.callbacks[0]!({
+          ok: true,
+          lines: [
+            ...rows,
+            JSON.stringify({ ansiHex: "410a" }),
+            JSON.stringify({ ansiEnd: true, bytes: 2, chunks: 1 }),
+            "%continue %1",
+          ],
+        });
+        const plainSeed = s.events.events.find((e) => e.type === "seed");
+        expect(plainSeed).not.toHaveProperty("native");
+        expect(bytesOf(s.events.events)).toEqual(["A"]);
+        if (mixed) {
+          expect(nativeEvents.events.find((e) => e.type === "seed")).toHaveProperty(
+            "native.version",
+            2,
+          );
+          expect(bytesOf(nativeEvents.events)).toEqual([""]);
+        }
+      } finally {
+        await s.rig.channel.dispose();
+      }
+    },
+  );
   it("publishes one atomic grid synchronously and admits following output without continue debt", async () => {
     const s = await setup();
     try {
@@ -3912,23 +3958,45 @@ describe("native capture-resume recovery", () => {
       await s.rig.channel.dispose();
     }
   });
-  it("repauses after unknown committed output and never retries it as unsupported", async () => {
-    const s = await setup();
-    try {
-      s.rig.sim.feedLines("%pause %1");
-      s.callbacks[0]!({ ok: true, lines: ["malformed", "%continue %1"] });
-      s.rig.sim.feedLines("%output %1 discarded");
-      expect(s.events.events.some((e) => e.type === "seed")).toBe(false);
-      runRecoveryTimer(s.rig);
-      expect(s.rig.sim.written.filter((c) => c === "refresh-client -A '%1:pause'")).toHaveLength(2);
-      s.callbacks[0]!(snapshot()); // late callback cannot publish another attempt
-      expect(s.events.events.some((e) => e.type === "seed")).toBe(false);
-      s.callbacks[1]!(snapshot());
-      expect(s.events.events.filter((e) => e.type === "seed")).toHaveLength(1);
-    } finally {
-      await s.rig.channel.dispose();
-    }
-  });
+  it.each([false, true])(
+    "repauses after unknown committed output without stock replay (dual=%s)",
+    async (dual) => {
+      const s = await setup(dual, false, dual);
+      const valid = () => {
+        const reply = snapshot();
+        if (dual) {
+          reply.lines[0] = JSON.stringify({
+            ...JSON.parse(reply.lines[0]!),
+            snapshotVersion: 2,
+            representation: "dual",
+          });
+          reply.lines.splice(
+            -1,
+            0,
+            JSON.stringify({ ansiHex: "410a" }),
+            JSON.stringify({ ansiEnd: true, bytes: 2, chunks: 1 }),
+          );
+        }
+        return reply;
+      };
+      try {
+        s.rig.sim.feedLines("%pause %1");
+        s.callbacks[0]!({ ok: true, lines: ["malformed", "%continue %1"] });
+        s.rig.sim.feedLines("%output %1 discarded");
+        expect(s.events.events.some((e) => e.type === "seed")).toBe(false);
+        runRecoveryTimer(s.rig);
+        expect(s.rig.sim.written.filter((c) => c === "refresh-client -A '%1:pause'")).toHaveLength(
+          2,
+        );
+        s.callbacks[0]!(valid()); // late callback cannot publish another attempt
+        expect(s.events.events.some((e) => e.type === "seed")).toBe(false);
+        s.callbacks[1]!(valid());
+        expect(s.events.events.filter((e) => e.type === "seed")).toHaveLength(1);
+      } finally {
+        await s.rig.channel.dispose();
+      }
+    },
+  );
   it.each(["epoch", "dispose", "membership"])("does not publish stale %s replies", async (kind) => {
     const s = await setup();
     try {

@@ -1,7 +1,10 @@
 import {
   decodeNativeAtomicSnapshot,
+  decodeNativeAtomicDualSnapshot,
+  nativeAtomicDualSnapshotPlan,
   nativeAtomicSnapshotPlan,
   type NativeAtomicSnapshotTarget,
+  type NativeAtomicSnapshotResult,
 } from "./native-atomic-snapshot.ts";
 import { boundedTmuxInteractionAppendCommand } from "../../lib/tmux-interaction-retention.ts";
 import {
@@ -100,7 +103,7 @@ import {
   classifyNativeWindowLinkGuardResult,
 } from "../../lib/tmux-window-link-guard.ts";
 import { FlowLedger } from "./flow-ledger.ts";
-import { PaneFeed } from "./pane-feed.ts";
+import { PaneFeed, captureLinesFromAnsiBytes } from "./pane-feed.ts";
 import type {
   TrustedMirrorPaneInventory,
   TrustedMirrorSessionInventory,
@@ -1832,33 +1835,36 @@ export class SessionChannel {
     else this.beginFinalRecovery(recovery);
   }
 
-  private nativeRecoveryTarget(pane: PaneRecord): NativeAtomicSnapshotTarget | null {
-    // Native seeds carry no ANSI fallback. Mixed/plain subscribers retain the
-    // existing collector until a separately reviewed representation exists.
+  private nativeRecoveryTarget(
+    pane: PaneRecord,
+  ): (NativeAtomicSnapshotTarget & { representation: "native" | "dual" }) | null {
+    // Mixed/plain recovery requires an explicitly negotiated dual snapshot.
     const live = [...pane.subs].filter((sub) => !sub.closed && !sub.frozen);
+    const representation = live.every((sub) => sub.nativeBootstrap) ? "native" : "dual";
     const birth = pane.descriptor?.nativePaneBirthId;
     let epoch: string | null | undefined;
     try {
-      epoch = this.opts.ownedViewer?.atomicSnapshotEpoch?.(this.io);
+      epoch = this.opts.ownedViewer?.atomicSnapshotEpoch?.(this.io, representation);
     } catch {
       // Optional capability failure cannot strand ordinary recovery.
       return null;
     }
-    return live.length > 0 && live.every((sub) => sub.nativeBootstrap) && birth && epoch
-      ? { serverEpoch: epoch, paneId: pane.runtimeId, paneBirthId: birth }
+    return live.length > 0 && birth && epoch
+      ? { serverEpoch: epoch, paneId: pane.runtimeId, paneBirthId: birth, representation }
       : null;
   }
 
   private recoverNativeAtomic(
     pane: PaneRecord,
     recovery: RecoveryRecord,
-    target: NativeAtomicSnapshotTarget,
+    target: NativeAtomicSnapshotTarget & { representation: "native" | "dual" },
   ): void {
     if (this.recoveryPane(recovery) !== pane) return;
     const currentTarget = this.nativeRecoveryTarget(pane);
     if (
       currentTarget?.serverEpoch !== target.serverEpoch ||
-      currentTarget.paneBirthId !== target.paneBirthId
+      currentTarget.paneBirthId !== target.paneBirthId ||
+      currentTarget.representation !== target.representation
     ) {
       this.failRecovery(recovery, "command-error");
       return;
@@ -1880,6 +1886,7 @@ export class SessionChannel {
         recovery.reseedOrdinal === ordinal &&
         current?.serverEpoch === target.serverEpoch &&
         current.paneBirthId === target.paneBirthId &&
+        current.representation === target.representation &&
         live.length === participants.length &&
         participants.every(({ sub }) => live.includes(sub))
       );
@@ -1913,13 +1920,31 @@ export class SessionChannel {
       recovery.cancelCommandDeadline = this.scheduleRecovery(failed, RECOVERY_COMMAND_DEADLINE_MS);
       const accepted = this.opts.ownedViewer!.tryDispatch(
         this.io,
-        nativeAtomicSnapshotPlan(target),
+        target.representation === "dual"
+          ? nativeAtomicDualSnapshotPlan({
+              serverEpoch: target.serverEpoch,
+              paneId: target.paneId,
+              paneBirthId: target.paneBirthId,
+            })
+          : nativeAtomicSnapshotPlan({
+              serverEpoch: target.serverEpoch,
+              paneId: target.paneId,
+              paneBirthId: target.paneBirthId,
+            }),
         (reply) => {
           if (settled || !exact()) {
             failed();
             return;
           }
-          const result = decodeNativeAtomicSnapshot(reply, target);
+          const expected = {
+            serverEpoch: target.serverEpoch,
+            paneId: target.paneId,
+            paneBirthId: target.paneBirthId,
+          };
+          const result: NativeAtomicSnapshotResult & { readonly ansiCapture?: Uint8Array } =
+            target.representation === "dual"
+              ? decodeNativeAtomicDualSnapshot(reply, expected)
+              : decodeNativeAtomicSnapshot(reply, expected);
           if (result.status !== "ok") {
             failed();
             return;
@@ -1930,8 +1955,12 @@ export class SessionChannel {
           // asynchronous notification debt to the legacy continue queue.
           recovery.continueReply = true;
           recovery.continueNotify = true;
+          const ansiLines = result.ansiCapture
+            ? captureLinesFromAnsiBytes(result.ansiCapture)
+            : null;
           const deliveries = participants.map(({ sub, epoch }) => {
-            sub.feed.captureNativeReply(epoch, result.capture);
+            if (sub.nativeBootstrap) sub.feed.captureNativeReply(epoch, result.capture);
+            else if (ansiLines) sub.feed.captureReply(epoch, ansiLines);
             return {
               sub,
               events: sub.feed.cursorReply(

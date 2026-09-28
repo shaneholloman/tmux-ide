@@ -19,7 +19,7 @@ const request = {
   resultIndex: 0,
   limits: { maxBytes: 1024, maxLines: 2 },
 };
-function setup(atomic = false) {
+function setup(atomic = false, dual = false) {
   const bindings = new OwnedNativeInteractionBindings({ environmentId, serverScope, serverEpoch });
   const uncertain = vi.fn();
   let ready = true;
@@ -29,7 +29,9 @@ function setup(atomic = false) {
     serverScope,
     capability: () => {
       if (capabilityFailure) throw new Error("retired owner");
-      return ready ? { serverEpoch, atomicPaneSnapshot: atomic } : null;
+      return ready
+        ? { serverEpoch, atomicPaneSnapshot: atomic, atomicPaneSnapshotDual: dual }
+        : null;
     },
     register: (value) => bindings.registerConnection(value, "viewer"),
     admit: (value) => bindings.admit(value),
@@ -218,4 +220,18 @@ it("atomic snapshot capability requires the current actual attached identity", (
   legacy.options.onIdentity(identity);
   expect(legacy.adapter.atomicSnapshotEpoch(legacy.io)).toBeNull();
   legacy.adapter.dispose();
+});
+
+it("dual capability remains independently negotiated and fenced to the actual issuer", () => {
+  const nativeOnly = setup(true);
+  nativeOnly.options.onIdentity(identity);
+  expect(nativeOnly.adapter.atomicSnapshotEpoch(nativeOnly.io, "dual")).toBeNull();
+  nativeOnly.adapter.dispose();
+  const dual = setup(true, true);
+  dual.options.onIdentity(identity);
+  expect(dual.adapter.atomicSnapshotEpoch(dual.io, "dual")).toBe(serverEpoch);
+  expect(dual.adapter.atomicSnapshotEpoch({ ...dual.io }, "dual")).toBeNull();
+  dual.disable();
+  expect(dual.adapter.atomicSnapshotEpoch(dual.io, "dual")).toBeNull();
+  dual.adapter.dispose();
 });

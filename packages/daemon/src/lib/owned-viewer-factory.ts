@@ -20,7 +20,11 @@ export function createOwnedViewerAdapterFactory(options: {
         owner.ownedOperationEpochGuard &&
         owner.ownedOperationPaneGuard &&
         owner.nativeServerEpoch
-          ? { serverEpoch: owner.nativeServerEpoch, atomicPaneSnapshot: owner.atomicPaneSnapshot }
+          ? {
+              serverEpoch: owner.nativeServerEpoch,
+              atomicPaneSnapshot: owner.atomicPaneSnapshot,
+              atomicPaneSnapshotDual: owner.atomicPaneSnapshotDual,
+            }
           : null,
       subscribeReady: (listener) => options.status.subscribe(listener),
       register: (identity) => owner.registerOwnedConnection(identity, "viewer"),

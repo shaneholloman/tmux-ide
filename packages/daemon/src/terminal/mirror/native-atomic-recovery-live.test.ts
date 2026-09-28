@@ -12,9 +12,9 @@ import { nativeInteractionReference } from "../../lib/native-interaction-project
 import { MirrorService } from "./mirror-service.ts";
 
 const binary = process.env.TMUX_IDE_NATIVE_JOURNAL_TEST_BINARY;
-it.skipIf(!binary)(
-  "real owner and MirrorService recover native snapshots through the attached issuer across scopes",
-  async () => {
+it.skipIf(!binary).each(["native", "plain", "mixed"])(
+  "real owner and MirrorService recover %s snapshots through the attached issuer across scopes",
+  async (representation) => {
     const directory = mkdtempSync(join(tmpdir(), "tmux-viewer-production-"));
     const environmentId = randomUUID();
     const servers: Array<(...args: string[]) => string> = [];
@@ -109,28 +109,58 @@ it.skipIf(!binary)(
         const subscription = await service.subscribe({
           session: "probe",
           semanticPaneId: "pane.viewer",
-          nativeBootstrap: true,
+          nativeBootstrap: representation === "native",
           onEvent: (event) => events.push(event),
         });
+        const companionEvents: import("./events.ts").MirrorPaneEvent[] = [];
+        const companion =
+          representation === "mixed"
+            ? await service.subscribe({
+                session: "probe",
+                semanticPaneId: "pane.viewer",
+                nativeBootstrap: true,
+                onEvent: (event) => companionEvents.push(event),
+              })
+            : null;
         subscription.sendText(`VIEWER_${label}`);
         subscription.sendKey("Enter");
-        const backing = await subscription.captureNativeBacking();
-        expect(["ok", "changed"]).toContain(backing.status);
+        if (representation === "native") {
+          const backing = await subscription.captureNativeBacking();
+          expect(["ok", "changed"]).toContain(backing.status);
+        }
         expect(owner.atomicPaneSnapshot).toBe(true);
         await vi.waitFor(() => expect(events.some((event) => event.type === "seed")).toBe(true));
+        companion?.freeze();
         subscription.freeze();
         run("send-keys", "-t", paneId, "-l", "WHILE_PAUSED");
         run("send-keys", "-t", paneId, "Enter");
         events.length = 0;
+        companionEvents.length = 0;
         admit.mockClear();
         subscription.thaw();
+        companion?.thaw();
         await vi.waitFor(
           () =>
             expect(events).toContainEqual({ type: "flow", state: "resumed", reason: "requested" }),
           { timeout: 5000 },
         );
         expect(events.filter((event) => event.type === "seed")).toHaveLength(1);
-        expect(events.find((event) => event.type === "seed")).toHaveProperty("native.version", 2);
+        const seed = events.find((event) => event.type === "seed");
+        if (representation === "native") {
+          expect(seed).toHaveProperty("native.version", 2);
+          expect(seed?.type === "seed" && seed.data.byteLength).toBe(0);
+        } else {
+          expect(owner.atomicPaneSnapshotDual).toBe(true);
+          expect(seed).not.toHaveProperty("native");
+          expect(seed?.type === "seed" && Buffer.from(seed.data).toString()).toContain(
+            "WHILE_PAUSED",
+          );
+        }
+        if (companion) {
+          const nativeSeed = companionEvents.find((event) => event.type === "seed");
+          expect(nativeSeed).toHaveProperty("native.version", 2);
+          expect(nativeSeed?.type === "seed" && nativeSeed.data.byteLength).toBe(0);
+        }
         expect(events.some((event) => event.type === "fault")).toBe(false);
         expect(
           admit.mock.calls.filter(([request]) => request.commands.includes("capture-pane")),
@@ -182,6 +212,7 @@ it.skipIf(!binary)(
             (value) => value.endpoints.destination.serverScope.serverId === serverScope.serverId,
           ),
         ).toBe(true);
+        await companion?.close();
         await subscription.close();
         await retained.close();
         await service.dispose();
