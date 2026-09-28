@@ -15,6 +15,7 @@ import { SessionRuntimeRegistry } from "../terminal/session-runtime/registry.ts"
 import { createSessionRuntimeMultiplexerBackend } from "../terminal/session-runtime/multiplexer-backend.ts";
 import { TmuxExternalInteractionObserver } from "./tmux-external-interaction-observer.ts";
 import { InteractionReceiptJournal } from "./interaction-receipt-journal.ts";
+import { InteractionEvidenceAuthority } from "./interaction-evidence-authority.ts";
 import {
   createTmuxInteractionObservationHandler,
   externalTmuxInteractionDraft,
@@ -32,6 +33,7 @@ import {
 } from "./tmux-server-generation-runner.ts";
 
 export interface NativeTmuxServerOwnerOptions {
+  readonly environmentId: string;
   readonly serverId: string;
   readonly generation: string;
   readonly tmuxAuthority: WorkspacePaneTmuxAuthority;
@@ -150,6 +152,10 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
   let disposePromise: Promise<void> | null = null;
   let observerStarted: Promise<void> | null = null;
   const interactionReceipts = new InteractionReceiptJournal();
+  const interactionEvidence = new InteractionEvidenceAuthority(options.environmentId, {
+    serverId: options.serverId,
+    generation,
+  });
   const assertOpen = () => {
     if (disposed) throw new Error("Tmux server owner is retired");
   };
@@ -200,9 +206,14 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
     sessionRuntimeRegistry,
     tmuxAuthority: { ...authority, trustedCwd: options.stateDirectory, nativeServerIdentity },
     agentStatusProbeFactory: ({ run }) => createTmuxAgentStatusProbe({ run }),
-    onInventory: (snapshot) => multiplexer.adoptPaneInventory(snapshot.panes),
-    onSessionInventory: (session, snapshot) =>
-      multiplexer.adoptSessionPaneInventory(session, snapshot?.panes ?? []),
+    onInventory: (snapshot) => {
+      multiplexer.adoptPaneInventory(snapshot.panes);
+      interactionEvidence.adoptInventory(snapshot.panes);
+    },
+    onSessionInventory: (session, snapshot) => {
+      multiplexer.adoptSessionPaneInventory(session, snapshot?.panes ?? []);
+      interactionEvidence.adoptSessionInventory(session, snapshot?.panes ?? []);
+    },
   });
   const observer: TmuxExternalInteractionObserver = new TmuxExternalInteractionObserver({
     daemonInstanceId: generation,
@@ -210,6 +221,11 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
     registry: workspaceRegistry,
     tmuxAuthority: authority,
     io: { runTmux: generationRunAsync },
+    resolveCapturedTarget: (target) => {
+      const endpoint = interactionEvidence.captureObservedEndpoint(target);
+      return endpoint.kind === "pane" ? endpoint : null;
+    },
+    onUnresolvedObservation: () => terminalInventoryRuntime.invalidate(),
     onGap: () => terminalInventoryRuntime.invalidate(),
     onObserved: createTmuxInteractionObservationHandler({
       invalidateInventory: () => terminalInventoryRuntime.invalidate(),
@@ -288,6 +304,7 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
               await sessionRuntimeRegistry.dispose();
             } finally {
               interactionReceipts.dispose();
+              interactionEvidence.dispose();
             }
           }
         }
@@ -298,6 +315,7 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
   try {
     await terminalInventoryRuntime.whenReady();
     await catalog();
+    await terminalInventoryRuntime.discoverTerminalInventory();
     observerStarted ??= observer.start();
     await observerStarted;
   } catch (error) {
@@ -348,6 +366,15 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
     },
     workspaceRegistry,
     interactionReceipts,
+    get interactionEvidence(): InteractionEvidenceAuthority | null {
+      return disposed ? null : interactionEvidence;
+    },
+    // Nondefault owners do not yet issue source credentials. Unknown is deliberate.
+    resolveInteractionSource: (
+      _credential: string,
+      _workspaceName: string,
+      _claimedSemanticPaneId: string,
+    ): ReturnType<InteractionEvidenceAuthority["captureSourceBinding"]> => null,
     multiplexerBackend,
     sessionRuntimeRegistry,
     terminalInventoryRuntime,

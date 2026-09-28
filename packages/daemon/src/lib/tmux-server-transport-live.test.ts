@@ -37,6 +37,7 @@ describe.skipIf(!executable)("scoped terminal HTTP transport", () => {
       probe: createTmuxServerProbe(tmux),
       create: async (registration, scope, observation) =>
         createNativeTmuxServerOwner({
+          environmentId: "00000000-0000-4000-8000-000000000001",
           ...scope,
           tmuxAuthority: observation.authority,
           nativeServerIdentity: observation.nativeServerIdentity,

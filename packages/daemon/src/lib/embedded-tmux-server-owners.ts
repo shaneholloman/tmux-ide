@@ -2,7 +2,7 @@ import type { Server, IncomingMessage } from "node:http";
 import type { Socket } from "node:net";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { tmuxServerPaneStreamPath } from "@tmux-ide/contracts";
+import { tmuxServerPaneStreamPath, type TmuxServerScope } from "@tmux-ide/contracts";
 import {
   TmuxServerOwners,
   MAX_TMUX_SERVER_OWNERS,
@@ -22,6 +22,8 @@ import {
 
 /** Adapts the established default owner without duplicating its control clients. */
 export async function createEmbeddedTmuxServerOwners(options: {
+  readonly environmentId: string;
+  readonly onDefaultScope?: (scope: TmuxServerScope) => Promise<void>;
   readonly defaultAuthority: WorkspacePaneTmuxAuthority;
   readonly defaultGeneration: string;
   readonly expectedDefaultProofDigest: string | null;
@@ -87,6 +89,7 @@ export async function createEmbeddedTmuxServerOwners(options: {
       if (registration.serverId === defaultRegistration.serverId) await retireDefault();
       const route = tmuxServerPaneStreamPath(scope);
       const owner = await createNativeTmuxServerOwner({
+        environmentId: options.environmentId,
         ...scope,
         tmuxAuthority: observation.authority,
         nativeServerIdentity: observation.nativeServerIdentity,
@@ -109,7 +112,11 @@ export async function createEmbeddedTmuxServerOwners(options: {
       };
     },
   });
-  if (defaultObservation && defaultObservation.fingerprint === options.expectedDefaultProofDigest)
+  if (defaultObservation && defaultObservation.fingerprint === options.expectedDefaultProofDigest) {
+    await options.onDefaultScope?.({
+      serverId: defaultRegistration.serverId,
+      generation: options.defaultGeneration,
+    });
     owners.adopt(
       defaultRegistration,
       { serverId: defaultRegistration.serverId, generation: options.defaultGeneration },
@@ -121,6 +128,7 @@ export async function createEmbeddedTmuxServerOwners(options: {
         dispose: retireDefault,
       },
     );
+  }
   try {
     if (
       !defaultObservation ||

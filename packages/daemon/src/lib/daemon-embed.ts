@@ -101,6 +101,7 @@ import {
   externalTmuxInteractionDraft,
 } from "./tmux-interaction-observation-handler.ts";
 import { InteractionReceiptJournal } from "./interaction-receipt-journal.ts";
+import { InteractionEvidenceAuthority } from "./interaction-evidence-authority.ts";
 import {
   createNativeTerminalAttachmentRuntime,
   type NativeTerminalAttachmentRuntime,
@@ -1248,6 +1249,7 @@ async function startEmbeddedDaemonGeneration(
         : {}),
     });
     const interactionReceipts = new InteractionReceiptJournal();
+    let interactionEvidence: InteractionEvidenceAuthority | null = null;
     let sessionRuntimeRegistry: SessionRuntimeRegistry | null = null;
     let workspaceOpenHandoff: WorkspaceOpenHandoffCoordinator | null = null;
     let terminalInventoryRuntime: WorkspaceTerminalInventoryRuntime | null = null;
@@ -1255,6 +1257,11 @@ async function startEmbeddedDaemonGeneration(
     const externalInteractionObserver = new TmuxExternalInteractionObserver({
       daemonInstanceId: instanceId,
       internalReadOwnerToken: localBypassToken,
+      resolveCapturedTarget: (target) => {
+        const endpoint = interactionEvidence?.captureObservedEndpoint(target);
+        return endpoint?.kind === "pane" ? endpoint : null;
+      },
+      onUnresolvedObservation: () => terminalInventoryRuntime?.invalidate(),
       io: { runTmux: fleetFactsTmuxRunner },
       registry: workspaceRegistry,
       tmuxAuthority,
@@ -1503,9 +1510,14 @@ async function startEmbeddedDaemonGeneration(
             : {}),
         },
         agentStatusProbeFactory: ({ run }) => createTmuxAgentStatusProbe({ run }),
-        onInventory: (snapshot) => workspaceMultiplexer.adoptPaneInventory(snapshot.panes),
-        onSessionInventory: (sessionName, snapshot) =>
-          workspaceMultiplexer.adoptSessionPaneInventory(sessionName, snapshot?.panes ?? []),
+        onInventory: (snapshot) => {
+          workspaceMultiplexer.adoptPaneInventory(snapshot.panes);
+          interactionEvidence?.adoptInventory(snapshot.panes);
+        },
+        onSessionInventory: (sessionName, snapshot) => {
+          workspaceMultiplexer.adoptSessionPaneInventory(sessionName, snapshot?.panes ?? []);
+          interactionEvidence?.adoptSessionInventory(sessionName, snapshot?.panes ?? []);
+        },
         ...(runtimeObservability ? { observability: runtimeObservability } : {}),
       } satisfies ConstructorParameters<typeof WorkspaceTerminalInventoryRuntime>[0];
       terminalInventoryRuntime = new WorkspaceTerminalInventoryRuntime(terminalRuntimeOptions);
@@ -1542,12 +1554,30 @@ async function startEmbeddedDaemonGeneration(
       });
       await externalInteractionObserver.start();
       serverOwners = await createEmbeddedTmuxServerOwners({
+        environmentId,
+        onDefaultScope: async (scope) => {
+          interactionEvidence = new InteractionEvidenceAuthority(environmentId, scope);
+          await terminalInventoryRuntime!.discoverTerminalInventory();
+        },
         defaultAuthority: tmuxAuthority,
         defaultGeneration: instanceId,
         expectedDefaultProofDigest: initialTmuxProof?.digest ?? null,
         stateDirectory: resolveRuntimeNamespace().runtimeDir,
         webSocketBaseUrl: canonicalDaemonUrl("ws", bindHostname, port),
         defaultOwner: {
+          get interactionEvidence() {
+            return interactionEvidence;
+          },
+          resolveInteractionSource: (credential, workspaceName, claimedSemanticPaneId) => {
+            const session = workspaceRegistry.get(workspaceName)?.sessionName;
+            if (!session || !interactionEvidence) return null;
+            const grant = paneSourceCredentials.resolveBinding(
+              credential,
+              session,
+              claimedSemanticPaneId,
+            );
+            return grant ? interactionEvidence.captureSourceBinding(grant) : null;
+          },
           interactionReceipts,
           catalog: createNativeTmuxServerCatalog(workspaceRegistry, fleetFactsTmuxRunner),
           openSession: async (liveSessionId) => {
@@ -1621,6 +1651,7 @@ async function startEmbeddedDaemonGeneration(
               await sessionRuntimeRegistry!.dispose();
             } finally {
               interactionReceipts.dispose();
+              interactionEvidence?.dispose();
             }
             const failures = [...transportResults, ...authorityResults].flatMap((result) =>
               result.status === "rejected" ? [result.reason] : [],

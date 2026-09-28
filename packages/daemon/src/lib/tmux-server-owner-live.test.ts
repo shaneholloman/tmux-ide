@@ -48,7 +48,8 @@ describe.skipIf(!hasTmux).sequential("independent native tmux server owners", ()
       run(socket, ["set-option", "-p", "-t", "shared:0.0", "@tmux_ide_pane_id", "pane.shared"]);
       owners.push(
         await createNativeTmuxServerOwner({
-          serverId: `server-${index}`,
+          environmentId: "00000000-0000-4000-8000-000000000001",
+          serverId: `tmux-server.${String(index).padStart(32, "0")}`,
           generation: randomUUID(),
           tmuxAuthority: { executablePath, socketSelector: { kind: "path", path: socket } },
           stateDirectory: join(root, `state-${index}`),
@@ -186,6 +187,7 @@ describe.skipIf(!hasTmux).sequential("independent native tmux server owners", ()
         const address = server.address();
         if (!address || typeof address === "string") throw new Error("Missing port");
         const owner = await createNativeTmuxServerOwner({
+          environmentId: "00000000-0000-4000-8000-000000000001",
           ...scope,
           tmuxAuthority: observation.authority,
           stateDirectory: join(root, scope.generation),

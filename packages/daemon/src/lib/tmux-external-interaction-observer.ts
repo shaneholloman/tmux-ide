@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 
 import { WorkspacePaneCreationReferenceSchemaZ } from "@tmux-ide/contracts";
 import { z } from "zod";
+import { TerminalAttachmentSemanticPaneIdSchemaZ } from "@tmux-ide/contracts";
 
 import { logger } from "./log.ts";
 import {
@@ -95,6 +96,13 @@ export interface ExternalTmuxInteraction {
   readonly operationKind: "workspace.pane.send" | "workspace.pane.read";
   /** Present only for this daemon generation's product-authored operation. */
   readonly operationId: string | null;
+  readonly capturedTarget?: CapturedTmuxInteractionTarget;
+}
+
+export interface CapturedTmuxInteractionTarget {
+  readonly runtimePaneId: string;
+  readonly sessionId: string;
+  readonly semanticPaneId: string;
 }
 
 export interface ExternalTmuxInteractionObserverIo {
@@ -221,6 +229,7 @@ export interface TmuxInputHookRecord {
   readonly runtimePaneId: string;
   readonly operationMarker: string | null;
   readonly operationKind: "workspace.pane.send" | "workspace.pane.read";
+  readonly capturedTarget?: CapturedTmuxInteractionTarget;
 }
 
 /** Parse only the closed metadata written by our tmux hook. */
@@ -229,7 +238,7 @@ export function parseTmuxInputHookRecords(raw: string): readonly TmuxInputHookRe
   for (const encoded of raw.split(EVENT_SEPARATOR)) {
     if (!encoded) continue;
     const fields = encoded.split(FIELD_SEPARATOR);
-    if (fields.length !== 3 || !RUNTIME_PANE.test(fields[0]!)) continue;
+    if ((fields.length !== 3 && fields.length !== 5) || !RUNTIME_PANE.test(fields[0]!)) continue;
     const marker = fields[1]!;
     if (marker.length > 160 || /[\r\n]/u.test(marker)) continue;
     const operationKind = fields[2];
@@ -240,6 +249,17 @@ export function parseTmuxInputHookRecords(raw: string): readonly TmuxInputHookRe
       runtimePaneId: fields[0]!,
       operationMarker: marker || null,
       operationKind,
+      ...(fields.length === 5 &&
+      /^\$(?:0|[1-9][0-9]*)$/u.test(fields[3]!) &&
+      TerminalAttachmentSemanticPaneIdSchemaZ.safeParse(fields[4]).success
+        ? {
+            capturedTarget: {
+              runtimePaneId: fields[0]!,
+              sessionId: fields[3]!,
+              semanticPaneId: fields[4]!,
+            },
+          }
+        : {}),
     });
   }
   return records;
@@ -269,6 +289,10 @@ export class TmuxExternalInteractionObserver {
   readonly #registry: WorkspaceRegistry;
   readonly #io: ExternalTmuxInteractionObserverIo;
   readonly #onObserved: (interaction: ExternalTmuxInteraction) => boolean;
+  readonly #resolveCapturedTarget?: (
+    target: CapturedTmuxInteractionTarget,
+  ) => { workspaceName: string; semanticPaneId: string } | null;
+  readonly #onUnresolvedObservation?: (record: TmuxInputHookRecord) => void;
   readonly #bufferName: string;
   readonly #signalChannel: string;
   readonly #abort = new AbortController();
@@ -299,6 +323,11 @@ export class TmuxExternalInteractionObserver {
      * must fall through to the caller's honest external-observation path.
      */
     onObserved: (interaction: ExternalTmuxInteraction) => boolean;
+    /** Supplying this disables late pane lookup, including for retained legacy records. */
+    resolveCapturedTarget?: (
+      target: CapturedTmuxInteractionTarget,
+    ) => { workspaceName: string; semanticPaneId: string } | null;
+    onUnresolvedObservation?: (record: TmuxInputHookRecord) => void;
     diagnostics?: ExternalTmuxObserverDiagnostics;
     onGap?: (gap: ExternalTmuxInteractionGap) => void;
     /** Health-check cadence bounds. Tests inject small values; production uses the default. */
@@ -312,6 +341,8 @@ export class TmuxExternalInteractionObserver {
     this.#healthcheckDelayMs = this.#healthcheckSchedule.baseMs;
     this.#registry = options.registry ?? getDefaultWorkspaceRegistry();
     this.#onObserved = options.onObserved;
+    this.#resolveCapturedTarget = options.resolveCapturedTarget;
+    this.#onUnresolvedObservation = options.onUnresolvedObservation;
     this.#onGap = options.onGap;
     this.#authenticatedInternalReads = new AuthenticatedInternalReadVerifier({
       daemonInstanceId: options.daemonInstanceId,
@@ -472,7 +503,10 @@ export class TmuxExternalInteractionObserver {
       // Bound markers at the producer, including across multibyte input.
       const validMarker = `#{&&:#{m/r:^[A-Za-z0-9:._-]*$,#{${markerOption}}},#{e|<=:#{n:${markerOption}},160}}`;
       const marker = `#{?${validMarker},#{${markerOption}},}`;
-      const data = `#{pane_id}${FIELD_SEPARATOR}${marker}${FIELD_SEPARATOR}${operationKind}${EVENT_SEPARATOR}`;
+      const stampOption = "@tmux_ide_pane_id";
+      const validStamp = `#{&&:#{m/r:^[A-Za-z0-9][A-Za-z0-9._-]*$,#{${stampOption}}},#{e|<=:#{n:${stampOption}},128}}`;
+      const stamp = `#{?${validStamp},#{${stampOption}},}`;
+      const data = `#{pane_id}${FIELD_SEPARATOR}${marker}${FIELD_SEPARATOR}${operationKind}${FIELD_SEPARATOR}#{session_id}${FIELD_SEPARATOR}${stamp}${EVENT_SEPARATOR}`;
       // Expand pane/marker identity at hook invocation, then schedule the
       // append+signal as a background tmux-native command list. No shell and
       // no second tmux client sit on the invoking command queue. The tiny
@@ -682,6 +716,21 @@ export class TmuxExternalInteractionObserver {
       ? record.operationMarker.slice(ownPrefix.length)
       : null;
     const operationId = z.uuid().safeParse(authoredOperationId);
+    if (this.#resolveCapturedTarget) {
+      const target = record.capturedTarget
+        ? this.#resolveCapturedTarget(record.capturedTarget)
+        : null;
+      if (!target) {
+        this.#onUnresolvedObservation?.(record);
+        return false;
+      }
+      return this.#onObserved({
+        ...target,
+        operationKind: record.operationKind,
+        operationId: operationId.success ? operationId.data : null,
+        capturedTarget: record.capturedTarget,
+      });
+    }
     let identity: string;
     try {
       identity = await this.#io.runTmux(
@@ -709,6 +758,7 @@ export class TmuxExternalInteractionObserver {
       semanticPaneId,
       operationKind: record.operationKind,
       operationId: operationId.success ? operationId.data : null,
+      ...(record.capturedTarget ? { capturedTarget: record.capturedTarget } : {}),
     });
   }
 

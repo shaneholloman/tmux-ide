@@ -27,6 +27,7 @@ describe.skipIf(!hasTmux).sequential("scoped ordinary session admission", () => 
   it("opens an unstamped ordinary session and retains healthy IDs on repeated opens", async () => {
     run(["new-session", "-d", "-s", "ordinary", "exec sleep 300"]);
     owner = await createNativeTmuxServerOwner({
+      environmentId: "00000000-0000-4000-8000-000000000001",
       serverId: `tmux-server.${"a".repeat(32)}`,
       generation: randomUUID(),
       tmuxAuthority: authority,

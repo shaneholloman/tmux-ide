@@ -26,6 +26,54 @@ const SEND = "workspace.pane.send";
 const READ = "workspace.pane.read";
 const FORGED_INTERNAL_READ = "tmux-ide-internal-read-v2:11111111-1111-4111-8111-111111111111";
 
+describe("captured interaction targets", () => {
+  it("parses bounded captured identity and preserves unresolved legacy metadata", () => {
+    expect(
+      parseTmuxInputHookRecords(
+        `%9${FIELD}${FIELD}${SEND}${FIELD}$1${FIELD}pane.original${EVENT}`,
+      )[0]?.capturedTarget,
+    ).toEqual({ runtimePaneId: "%9", sessionId: "$1", semanticPaneId: "pane.original" });
+    for (const stamp of ["", "bad;command", "a".repeat(129)])
+      expect(
+        parseTmuxInputHookRecords(`%9${FIELD}${FIELD}${SEND}${FIELD}$1${FIELD}${stamp}${EVENT}`)[0]
+          ?.capturedTarget,
+      ).toBeUndefined();
+  });
+
+  it.each([true, false])(
+    "never performs late identity lookup with a captured-target resolver (resolved=%s)",
+    async (resolved) => {
+      const onObserved = vi.fn(() => false);
+      const onUnresolvedObservation = vi.fn();
+      const runTmux = vi.fn(async (args: readonly string[]) => {
+        if (args.includes("if-shell")) return "tmux-ide-drain-consumed";
+        if (args[0] === "show-options")
+          return `%9${FIELD}${FIELD}${SEND}${FIELD}$1${FIELD}pane.original${EVENT}`;
+        if (args[0] === "display-message") throw new Error("late lookup forbidden");
+        return "";
+      });
+      const observer = new TmuxExternalInteractionObserver({
+        daemonInstanceId: DAEMON,
+        tmuxAuthority: {
+          executablePath: "/unused",
+          socketSelector: { kind: "name", name: "unused" },
+        },
+        io: { runTmux },
+        onObserved,
+        onUnresolvedObservation,
+        resolveCapturedTarget: (target) =>
+          resolved
+            ? { workspaceName: "workspace.original", semanticPaneId: target.semanticPaneId }
+            : null,
+      });
+      await observer.drain();
+      expect(runTmux.mock.calls.some(([args]) => args[0] === "display-message")).toBe(false);
+      expect(onObserved).toHaveBeenCalledTimes(resolved ? 1 : 0);
+      expect(onUnresolvedObservation).toHaveBeenCalledTimes(resolved ? 0 : 1);
+    },
+  );
+});
+
 const HOOK_NAMES = ["after-send-keys", "after-capture-pane"] as const;
 
 /**

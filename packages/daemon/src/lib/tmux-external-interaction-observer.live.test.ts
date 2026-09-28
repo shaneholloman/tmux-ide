@@ -25,6 +25,49 @@ describe.skipIf(!hasTmux).sequential("tmux external interaction observer live", 
   const roots: string[] = [];
   const observers: TmuxExternalInteractionObserver[] = [];
 
+  it("captures semantic and session identity before the pane disappears", async () => {
+    const root = mkdtempSync("/tmp/tmux-ide-captured-target-");
+    roots.push(root);
+    const socketPath = join(root, "tmux.sock");
+    const executablePath = realpathSync(
+      execFileSync("which", ["tmux"], { encoding: "utf8" }).trim(),
+    );
+    const run = (args: readonly string[]) =>
+      execFileSync(executablePath, ["-S", socketPath, ...args], { encoding: "utf8" }).trim();
+    run(["-f", "/dev/null", "new-session", "-d", "-s", "project", "cat"]);
+    const pane = run(["display-message", "-p", "-t", "project", "#{pane_id}"]);
+    const sessionId = run(["display-message", "-p", "-t", "project", "#{session_id}"]);
+    run(["split-window", "-d", "-t", pane, "cat"]);
+    run(["set-option", "-p", "-t", pane, "@tmux_ide_pane_id", "pane.original"]);
+    const onObserved = vi.fn(() => false);
+    const resolveCapturedTarget = vi.fn((target) => ({
+      workspaceName: "workspace.original",
+      semanticPaneId: target.semanticPaneId,
+    }));
+    const observer = new TmuxExternalInteractionObserver({
+      daemonInstanceId: randomUUID(),
+      tmuxAuthority: { executablePath, socketSelector: { kind: "path", path: socketPath } },
+      onObserved,
+      resolveCapturedTarget,
+    });
+    observers.push(observer);
+    await observer.install();
+    run(["send-keys", "-t", pane, "-l", "hello"]);
+    run(["kill-pane", "-t", pane]);
+    await vi.waitFor(async () => {
+      await observer.drain();
+      expect(onObserved).toHaveBeenCalledOnce();
+    });
+    expect(resolveCapturedTarget).toHaveBeenCalledWith({
+      runtimePaneId: pane,
+      sessionId,
+      semanticPaneId: "pane.original",
+    });
+    expect(onObserved).toHaveBeenCalledWith(
+      expect.objectContaining({ semanticPaneId: "pane.original" }),
+    );
+  });
+
   afterEach(async () => {
     const settled = await Promise.allSettled(
       observers.splice(0).map((observer) => observer.dispose()),
