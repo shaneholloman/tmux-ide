@@ -1322,8 +1322,7 @@ async function startEmbeddedDaemonGeneration(
         timing?: Parameters<typeof workspaceMultiplexer.mutate>[1],
       ) => {
         if (intent.verb === "workspace.pane.read") {
-          workspaceMultiplexer.readPane(operationId, intent);
-          return;
+          return workspaceMultiplexer.readPane(operationId, intent);
         }
         if (
           intent.verb === "workspace.window.link.select" ||

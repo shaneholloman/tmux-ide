@@ -142,6 +142,65 @@ function submit(
 }
 
 describe("SessionSemanticMutationExecutor", () => {
+  it("returns snapshot text only to the first caller and keeps pending/completed replay metadata-only", async () => {
+    const text = "PRIVATE TERMINAL CONTENT\n";
+    let finish!: (value: SessionRuntimeIntentResult) => void;
+    const execute = vi.fn(
+      () =>
+        new Promise<SessionRuntimeIntentResult>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const receipts: unknown[] = [];
+    let sequence = 0;
+    const executor = new SessionSemanticMutationExecutor({
+      resolveSession: () => "alpha",
+      execute,
+      publishReceipt: (input) => {
+        const receipt = { type: "interaction.receipt" as const, sequence: ++sequence, ...input };
+        receipts.push(receipt);
+        return receipt;
+      },
+    });
+    const intent = {
+      verb: "workspace.pane.read" as const,
+      workspaceName: "alpha",
+      semanticPaneId: "pane.alpha",
+      origin: "sdk" as const,
+    };
+    const first = submit(executor, OP_A, intent);
+    const pendingReplay = submit(executor, OP_A, intent);
+    await Promise.resolve();
+    finish({
+      verb: intent.verb,
+      operationId: OP_A,
+      daemonInstanceId: OP_B,
+      workspaceName: "alpha",
+      semanticPaneId: "pane.alpha",
+      format: "ansi",
+      byteCount: Buffer.byteLength(text),
+      capturedByteCount: Buffer.byteLength(text),
+      truncated: false,
+      availability: "available",
+      text,
+    });
+    executor.observe({
+      operationId: OP_A,
+      workspaceName: "alpha",
+      semanticPaneId: "pane.alpha",
+      operationKind: intent.verb,
+    });
+    expect(await first).toMatchObject({ availability: "available", text });
+    expect(await pendingReplay).toMatchObject({ availability: "replay-unavailable", text: null });
+    expect(await submit(executor, OP_A, intent)).toMatchObject({
+      availability: "replay-unavailable",
+      text: null,
+    });
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(receipts)).not.toContain(text.trim());
+    await executor.dispose();
+  });
+
   it("holds the existing session lane until asynchronous link proof completes", async () => {
     let finish!: () => void;
     const pending = new Promise<void>((resolve) => {

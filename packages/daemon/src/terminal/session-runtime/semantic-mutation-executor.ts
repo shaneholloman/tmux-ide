@@ -4,6 +4,7 @@ import {
   type AuthoredInteractionOrigin,
   type InteractionReceipt,
   type SessionRuntimeSemanticIntent,
+  type SessionRuntimePaneReadResult,
   type WorkspaceMultiplexerMutationResult,
 } from "@tmux-ide/contracts";
 import { z } from "zod";
@@ -28,7 +29,10 @@ import {
   type SemanticMutationResourceChange,
 } from "./semantic-mutation-resource-changes.ts";
 
-export type SessionRuntimeIntentResult = WorkspaceMultiplexerMutationResult | void;
+export type SessionRuntimeIntentResult =
+  | WorkspaceMultiplexerMutationResult
+  | SessionRuntimePaneReadResult
+  | void;
 export type ExecutableSessionRuntimeIntent = SessionRuntimeSemanticIntent;
 
 export interface SessionRuntimeTmuxObservation {
@@ -109,7 +113,16 @@ const MISSING_SESSION_LEDGER = Symbol("missing-session-ledger");
 type SessionLedgerKey = string | typeof MISSING_SESSION_LEDGER;
 
 function replayedResult(result: SessionRuntimeIntentResult): SessionRuntimeIntentResult {
-  return result === undefined ? undefined : { ...result, outcome: "replayed" };
+  if (result === undefined) return undefined;
+  if (result.verb === "workspace.pane.read") return retainedResult(result);
+  return { ...result, outcome: "replayed" };
+}
+
+/** Terminal contents belong only to the first caller, never the operation ledger. */
+function retainedResult(result: SessionRuntimeIntentResult): SessionRuntimeIntentResult {
+  return result?.verb === "workspace.pane.read"
+    ? { ...result, availability: "replay-unavailable", text: null }
+    : result;
 }
 
 /**
@@ -242,7 +255,7 @@ export class SessionSemanticMutationExecutor {
       () => undefined,
     );
     this.#tails.set(session, tail);
-    this.#remember(ledger, operationId, fingerprint, result);
+    this.#remember(ledger, operationId, fingerprint, result, intent.verb === "workspace.pane.read");
     void tail.finally(() => {
       if (this.#tails.get(session) === tail) this.#tails.delete(session);
     });
@@ -301,10 +314,12 @@ export class SessionSemanticMutationExecutor {
     operationId: string,
     fingerprint: string,
     promise: Promise<SessionRuntimeIntentResult>,
+    containsSnapshot = false,
   ) {
-    const record: OperationRecord = { fingerprint, promise, status: "active" };
+    const retainedPromise = containsSnapshot ? promise.then(retainedResult) : promise;
+    const record: OperationRecord = { fingerprint, promise: retainedPromise, status: "active" };
     ledger.set(operationId, record);
-    void promise.then(
+    void retainedPromise.then(
       () => {
         record.status = "settled";
       },
