@@ -1659,7 +1659,7 @@ async function startEmbeddedDaemonGeneration(
             enabled: nativeObservationRequested,
             status: interactionObservation,
             publishEvidence: (evidence) => {
-              interactionReceipts.publishEvidence(evidence);
+              interactionReceipts.appendEvidence(evidence);
             },
           });
           observationSelector.stockAvailable(externalInteractionObserver.available);

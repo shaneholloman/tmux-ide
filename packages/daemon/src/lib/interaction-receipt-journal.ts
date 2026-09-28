@@ -41,19 +41,26 @@ export class InteractionReceiptJournal {
       type: "interaction.receipt",
       sequence: this.#sequence + 1,
     });
-    return this.#append(receipt);
+    return structuredClone(this.#append(receipt));
   }
 
   publishEvidence(evidence: InteractionEvidence): InteractionEvidenceRecord {
+    return structuredClone(this.#append(this.#parseEvidence(evidence)));
+  }
+
+  /** Same validation and input isolation, without an unused detached return value. */
+  appendEvidence(evidence: InteractionEvidence): void {
+    this.#append(this.#parseEvidence(evidence));
+  }
+
+  #parseEvidence(evidence: InteractionEvidence): InteractionEvidenceRecord {
     this.#assertOpen();
     if (!Number.isSafeInteger(this.#sequence + 1)) throw new Error("Receipt cursor exhausted");
-    return this.#append(
-      InteractionEvidenceRecordSchemaZ.parse({
-        type: "interaction.evidence",
-        sequence: this.#sequence + 1,
-        evidence,
-      }),
-    );
+    return InteractionEvidenceRecordSchemaZ.parse({
+      type: "interaction.evidence",
+      sequence: this.#sequence + 1,
+      evidence,
+    });
   }
 
   #append<T extends InteractionJournalEntry>(entry: T): T {
@@ -61,7 +68,7 @@ export class InteractionReceiptJournal {
     this.#receipts.push(entry);
     if (this.#receipts.length > this.#capacity) this.#receipts.shift();
     this.#scheduleWake();
-    return structuredClone(entry);
+    return entry;
   }
 
   #scheduleWake(): void {

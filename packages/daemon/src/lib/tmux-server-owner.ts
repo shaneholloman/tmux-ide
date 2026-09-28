@@ -179,7 +179,7 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
     enabled: nativeInteractionObservationRequested(),
     status: interactionObservation,
     publishEvidence: (evidence) => {
-      interactionReceipts.publishEvidence(evidence);
+      interactionReceipts.appendEvidence(evidence);
     },
   });
   const assertOpen = () => {

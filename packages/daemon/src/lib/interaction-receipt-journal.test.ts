@@ -136,3 +136,47 @@ describe("owner receipt journal", () => {
       expect(() => new InteractionReceiptJournal(capacity)).toThrow();
   });
 });
+
+it("void evidence append keeps strict validation, isolation, retention and wake semantics", async () => {
+  const journal = new InteractionReceiptJournal(2);
+  const wake = vi.fn();
+  journal.subscribe(wake);
+  const evidence = {
+    ...draft.evidence!,
+    actor: { kind: "unknown" as const, reason: "unavailable" as const },
+    observation: {
+      kind: "native-journal" as const,
+      serverEpoch: "00000000-0000-4000-8000-000000000007",
+      command: "unknown" as const,
+      cursor: { epoch: "00000000-0000-4000-8000-000000000008", sequence: "1" },
+      commandId: null,
+      parentCommandId: null,
+      correlatedOperationId: null,
+    },
+    effect: { kind: "input-enqueued" as const },
+  };
+  expect(() => journal.appendEvidence(draft.evidence!)).toThrow();
+  expect(() =>
+    journal.appendEvidence({ ...evidence, unexpected: true } as typeof evidence),
+  ).toThrow();
+  expect(journal.read(0).cursor).toBe(0);
+  expect(journal.appendEvidence(evidence)).toBeUndefined();
+  evidence.observation.cursor.sequence = "2";
+  evidence.revision = 99;
+  const retained = journal.read(0).receipts[0]!;
+  expect(retained.evidence).toMatchObject({
+    revision: 0,
+    observation: { cursor: { sequence: "1" } },
+  });
+  retained.evidence!.revision = 42;
+  expect(journal.read(0).receipts[0]!.evidence!.revision).toBe(0);
+  journal.appendEvidence(evidence);
+  const returned = journal.publishEvidence(evidence);
+  returned.evidence.revision = 88;
+  expect(journal.read(0)).toMatchObject({ cursor: 3, gap: { from: 1, through: 1 } });
+  expect(journal.read(0).receipts[1]!.evidence!.revision).toBe(99);
+  await Promise.resolve();
+  expect(wake).toHaveBeenCalledTimes(1);
+  journal.dispose();
+  expect(() => journal.appendEvidence(evidence)).toThrow("retired");
+});
