@@ -1,10 +1,11 @@
-import { interactionPaneEndpointKey } from "@tmux-ide/core";
+import type { InteractionObservationStatus } from "@tmux-ide/contracts";
+import { interactionActivityAt, interactionPaneEndpointKey } from "@tmux-ide/core";
 import type { PaneInteractionEndpoint } from "../ui/pane-interaction-presentation.ts";
 import {
   interactionForCurrentPane,
   nameForCurrentEndpoint,
 } from "./application-pane-interaction-identity.ts";
-import type { InteractionReceipt } from "@tmux-ide/contracts";
+import type { InteractionJournalEntry } from "@tmux-ide/contracts";
 
 /* @jsxImportSource @opentui/solid */
 import type { JSX } from "solid-js";
@@ -65,8 +66,11 @@ export interface ApplicationHomeSurfaceProps {
   readonly onToggleAgentAttention?: () => void;
   readonly agentRoster?: HomeAgentSnapshot;
   readonly activityDaemonId?: string | null;
+  readonly interactionObservation?: (
+    endpoint: PaneInteractionEndpoint,
+  ) => InteractionObservationStatus | null;
   readonly paneInteractions?: ReadonlyMap<string, PaneInteractionEvent>;
-  readonly recentPaneActivity?: readonly InteractionReceipt[];
+  readonly recentPaneActivity?: readonly InteractionJournalEntry[];
   readonly agentSelection?: HomeAgentSelectionSnapshot;
   readonly agentInputActive?: boolean;
   readonly onSelectAgent?: (key: string) => void;
@@ -182,8 +186,8 @@ export function ApplicationHomeSurface(props: ApplicationHomeSurfaceProps): JSX.
   });
   const paneLabel = (endpoint: PaneInteractionEndpoint) =>
     nameForCurrentEndpoint(props.agentRoster?.rows ?? [], endpoint);
-  const activityTime = (receipt: InteractionReceipt) => {
-    const at = Date.parse(receipt.at);
+  const activityTime = (receipt: InteractionJournalEntry) => {
+    const at = Date.parse(interactionActivityAt(receipt));
     return Number.isFinite(at)
       ? `${new Date(at).toISOString().slice(5, 16).replace("T", " ")}Z`
       : "Time unknown";
@@ -447,6 +451,7 @@ export function ApplicationHomeSurface(props: ApplicationHomeSurfaceProps): JSX.
             <PaneInteractionDetails
               theme={props.theme}
               event={value.event}
+              observationStatus={props.interactionObservation?.(value.event.destinationEndpoint)}
               paneName={(id) => value.names.get(interactionPaneEndpointKey(id))}
               width={bodyWidth()}
               viewportWidth={props.width}

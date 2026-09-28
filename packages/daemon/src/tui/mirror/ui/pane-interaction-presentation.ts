@@ -1,5 +1,11 @@
-import type { InteractionReceipt, InteractionPaneEndpoint } from "@tmux-ide/contracts";
-import { interactionPaneEndpointKey, type PaneInteractionProjection } from "@tmux-ide/core";
+import type { InteractionObservationStatus } from "@tmux-ide/contracts";
+import type { InteractionJournalEntry, InteractionPaneEndpoint } from "@tmux-ide/contracts";
+import {
+  interactionActivityAt,
+  interactionActivityOperationKind,
+  interactionPaneEndpointKey,
+  type PaneInteractionProjection,
+} from "@tmux-ide/core";
 
 export type PaneInteractionEndpoint = Extract<InteractionPaneEndpoint, { kind: "pane" }>;
 export type PaneInteractionEvent = Pick<
@@ -16,15 +22,16 @@ export type PaneInteractionEvent = Pick<
   | "at"
 > & { direction?: "incoming" | "outgoing" };
 export function receiptPaneInteraction(
-  receipt: InteractionReceipt,
+  receipt: InteractionJournalEntry,
   viewingEndpoint?: PaneInteractionEndpoint | null,
 ): PaneInteractionEvent | null {
   const evidence = receipt.evidence;
+  const operationKind = interactionActivityOperationKind(receipt);
   const destination = evidence?.endpoints.destination;
   if (
     !evidence ||
     destination?.kind !== "pane" ||
-    !["workspace.pane.read", "workspace.pane.send"].includes(receipt.operationKind)
+    (operationKind !== "workspace.pane.read" && operationKind !== "workspace.pane.send")
   )
     return null;
   const source = evidence.endpoints.source?.kind === "pane" ? evidence.endpoints.source : null;
@@ -36,16 +43,17 @@ export function receiptPaneInteraction(
       interactionPaneEndpointKey(source) !== interactionPaneEndpointKey(destination)
         ? "outgoing"
         : "incoming",
-    operationId: receipt.operationId,
-    operationKind: receipt.operationKind,
-    phase: receipt.phase,
-    origin: receipt.origin,
+    operationId:
+      receipt.type === "interaction.evidence" ? evidence.interactionId : receipt.operationId,
+    operationKind,
+    phase: receipt.type === "interaction.evidence" ? "observed" : receipt.phase,
+    origin: receipt.type === "interaction.evidence" ? "external" : receipt.origin,
     sourcePaneId: source?.semanticPaneId ?? null,
     destinationPaneId: destination.semanticPaneId,
     sourceEndpoint: source,
     destinationEndpoint: destination,
     effect: evidence.effect,
-    at: receipt.at,
+    at: interactionActivityAt(receipt),
   };
 }
 export function paneInteractionPresentation(
@@ -122,5 +130,35 @@ export function paneInteractionPresentation(
         : read
           ? "Read completed"
           : "Input delivered",
+  };
+}
+
+/** Latest owner coverage is distinct from the evidence of this particular event. */
+export function interactionCoveragePresentation(
+  status: InteractionObservationStatus | null | undefined,
+): { label: string; detail: string; gap: string | null } {
+  const gap = status?.lastGap
+    ? `Some activity may be missing${status.droppedCount === null ? "" : ` · ${status.droppedCount} known dropped`}.`
+    : null;
+  if (!status || status.method === "unavailable")
+    return {
+      label: "Observation unavailable",
+      detail:
+        "Live observation is not available for this server. Earlier activity may still be shown.",
+      gap,
+    };
+  if (status.method === "stock-hooks")
+    return {
+      label: "Partial · tmux hooks",
+      detail:
+        "Observes send and capture commands. Delivery and the caller’s identity are not confirmed.",
+      gap,
+    };
+  return {
+    label: "Native tmux observation",
+    detail: status.effects.length
+      ? "Observes declared commands and effects. An observed effect does not identify its caller or prove the application processed input."
+      : "Observes declared commands. Caller identity and application processing need separate evidence.",
+    gap,
   };
 }

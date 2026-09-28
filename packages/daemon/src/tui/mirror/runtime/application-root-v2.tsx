@@ -617,6 +617,7 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
               paletteCloseArmed={paletteCommands.closeArmed}
               paletteCommands={paletteCommandList}
               paneInteractions={paneInteractions}
+              interactionObservation={paneInteractions.observationStatus}
               recentPaneActivity={paneInteractions.activity}
               activityDaemonId={() => generation()?.daemonGeneration ?? null}
               terminalRendererSource={terminalRendererSource}

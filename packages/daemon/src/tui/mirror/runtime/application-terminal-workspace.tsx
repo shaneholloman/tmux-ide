@@ -1,3 +1,4 @@
+import type { InteractionObservationStatus } from "@tmux-ide/contracts";
 import { interactionPaneEndpointKey } from "@tmux-ide/core";
 import type { PaneInteractionEndpoint } from "../ui/pane-interaction-presentation.ts";
 import type { InteractionPaneEndpoint } from "@tmux-ide/contracts";
@@ -159,6 +160,9 @@ export interface ApplicationTerminalWorkspaceProps {
   >;
   readonly connectionStatus?: string;
   readonly onScrollbackChange?: (active: boolean) => void;
+  readonly interactionObservation?: (
+    endpoint: PaneInteractionEndpoint,
+  ) => InteractionObservationStatus | null;
   readonly paneInteractions?: Accessor<ReadonlyMap<string, PaneInteractionProjection>>;
   readonly layout: Accessor<OpenTuiWorkspaceLayoutSnapshot>;
   readonly adapter: PaneScopedTerminalAdapter;
@@ -1967,6 +1971,7 @@ export function ApplicationTerminalWorkspace(props: ApplicationTerminalWorkspace
           <PaneInteractionDetails
             theme={props.theme}
             event={details.event}
+            observationStatus={props.interactionObservation?.(details.event.destinationEndpoint)}
             paneName={(id) => details.names.get(interactionPaneEndpointKey(id))}
             width={props.width}
             viewportWidth={props.width}

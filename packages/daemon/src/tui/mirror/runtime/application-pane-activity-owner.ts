@@ -1,5 +1,7 @@
 import type {
-  InteractionReceipt,
+  InteractionJournalEntry,
+  InteractionPaneEndpoint,
+  InteractionObservationStatus,
   TmuxServerScope,
   TmuxInteractionCursor,
 } from "@tmux-ide/contracts";
@@ -22,7 +24,10 @@ export interface ApplicationInteractionSource {
   readonly ownerToken: string;
 }
 export type ApplicationPaneActivity = Accessor<ReadonlyMap<string, PaneInteractionProjection>> & {
-  readonly activity: Accessor<readonly InteractionReceipt[]>;
+  readonly activity: Accessor<readonly InteractionJournalEntry[]>;
+  readonly observationStatus: (
+    endpoint: InteractionPaneEndpoint,
+  ) => InteractionObservationStatus | null;
 };
 const ownerKey = (source: Pick<ApplicationInteractionSource, "environmentId" | "server">) =>
   JSON.stringify([source.environmentId, source.server.serverId, source.server.generation]);
@@ -34,7 +39,16 @@ export function createApplicationPaneActivityOwner(
   subscribe = subscribeTmuxServerInteractions,
 ): ApplicationPaneActivity {
   const [panes, setPanes] = createSignal<ReadonlyMap<string, PaneInteractionProjection>>(new Map());
-  const [activity, setActivity] = createSignal<readonly InteractionReceipt[]>([]);
+  const [activity, setActivity] = createSignal<readonly InteractionJournalEntry[]>([]);
+  const [statuses, setStatuses] = createSignal<ReadonlyMap<string, InteractionObservationStatus>>(
+    new Map(),
+  );
+  const forgetStatus = (key: string) =>
+    setStatuses((previous) => {
+      const next = new Map(previous);
+      next.delete(key);
+      return next;
+    });
   let feed = initialInteractionFeedState();
   let timer: ReturnType<typeof setTimeout> | null = null;
   let disposed = false;
@@ -58,6 +72,7 @@ export function createApplicationPaneActivityOwner(
     setActivity(
       feed.activity.filter(
         (receipt) =>
+          receipt.type === "interaction.evidence" ||
           receipt.operationKind === "workspace.pane.read" ||
           receipt.operationKind === "workspace.pane.send",
       ),
@@ -73,7 +88,8 @@ export function createApplicationPaneActivityOwner(
         ),
       );
   };
-  const forget = (key: string) => {
+  const forget = (key: string, retire = true) => {
+    if (retire) forgetStatus(key);
     feed = {
       ...feed,
       cursors: Object.fromEntries(Object.entries(feed.cursors).filter(([scope]) => scope !== key)),
@@ -100,6 +116,11 @@ export function createApplicationPaneActivityOwner(
     const subscription = subscribe({
       ...entry.source,
       resume: entry.cursor,
+      onStatus(status) {
+        if (disposed || entries.get(key) !== entry) return;
+        if (endpointOwnerKey(status) !== key) throw new Error("Foreign observation status");
+        setStatuses((previous) => new Map(previous).set(key, status));
+      },
       onBatch(batch, signal) {
         if (signal.aborted || disposed || entries.get(key) !== entry) return;
         // Scope is validated by transport; environment belongs to this authenticated daemon route.
@@ -110,9 +131,10 @@ export function createApplicationPaneActivityOwner(
           )
         )
           throw new Error("Foreign receipt environment");
-        if (batch.gap) forget(key);
+        if (batch.gap) forget(key, false);
         for (const receipt of batch.receipts) {
           if (
+            receipt.type === "interaction.evidence" ||
             receipt.operationKind === "workspace.pane.read" ||
             receipt.operationKind === "workspace.pane.send"
           )
@@ -126,6 +148,7 @@ export function createApplicationPaneActivityOwner(
     void subscription.done.catch((error: unknown) => {
       if (disposed || entries.get(key) !== entry) return;
       entry.cursor = subscription.getCursor();
+      forgetStatus(key);
       if (error instanceof Error && error.message === "Receipt owner retired") {
         forget(key);
         publish();
@@ -173,5 +196,9 @@ export function createApplicationPaneActivityOwner(
     entries.clear();
     if (timer !== null) clearTimeout(timer);
   });
-  return Object.assign(panes, { activity });
+  return Object.assign(panes, {
+    activity,
+    observationStatus: (endpoint: InteractionPaneEndpoint) =>
+      statuses().get(endpointOwnerKey(endpoint)) ?? null,
+  });
 }

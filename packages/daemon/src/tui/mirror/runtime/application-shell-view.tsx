@@ -7,7 +7,7 @@ import {
   ApplicationMachineSidebar,
   type ApplicationMachineSidebarModel,
 } from "./application-machine-sidebar.tsx";
-import type { InteractionReceipt } from "@tmux-ide/contracts";
+import type { InteractionJournalEntry } from "@tmux-ide/contracts";
 import type { ApplicationConnectionFeedback } from "../workspace/connection-feedback.ts";
 import { appearanceDialogLayer } from "./application-shell-overlays.tsx";
 import type { ApplicationAppearanceOwner } from "./application-appearance-owner.ts";
@@ -84,9 +84,10 @@ export interface ApplicationShellViewProps {
   readonly sidebarVisible?: boolean;
   readonly machineColor?: string;
   readonly machineLabel?: string | null;
+  readonly interactionObservation?: TerminalWorkspaceProps["interactionObservation"];
   readonly paneInteractions?: TerminalWorkspaceProps["paneInteractions"];
   readonly activityDaemonId?: () => string | null;
-  readonly recentPaneActivity?: () => readonly InteractionReceipt[];
+  readonly recentPaneActivity?: () => readonly InteractionJournalEntry[];
   readonly appearanceOwner?: ApplicationAppearanceOwner;
   readonly homeAgents?: ApplicationHomeAgentPresentation;
   readonly dimensions: Accessor<{ readonly width: number; readonly height: number }>;
@@ -517,6 +518,7 @@ export function ApplicationShellView(props: ApplicationShellViewProps): JSX.Elem
               <Show when={props.surface() !== "terminals"}>
                 <ApplicationHomeSurface
                   {...props.homeAgents}
+                  interactionObservation={props.interactionObservation}
                   paneInteractions={props.paneInteractions?.()}
                   recentPaneActivity={props.recentPaneActivity?.()}
                   activityDaemonId={props.activityDaemonId?.()}
@@ -592,6 +594,7 @@ export function ApplicationShellView(props: ApplicationShellViewProps): JSX.Elem
                       theme={appearance.theme}
                       palette={appearance.palette}
                       agentIndicators={agentIndicators}
+                      interactionObservation={props.interactionObservation}
                       paneInteractions={props.paneInteractions}
                       interactionEndpoints={interactionEndpoints}
                       onSelectPane={props.onSelectPane}

@@ -1,3 +1,5 @@
+import type { InteractionObservationStatus } from "@tmux-ide/contracts";
+import { interactionCoveragePresentation } from "./pane-interaction-presentation.ts";
 import type { PaneInteractionEndpoint } from "./pane-interaction-presentation.ts";
 /* @jsxImportSource @opentui/solid */
 import { createEffect, createSignal, onCleanup, Show } from "solid-js";
@@ -63,6 +65,7 @@ export function createPaneInteractionMarker(
 /** The same receipt vocabulary and shared animation clock in chrome and Home. */
 export function PaneInteraction(props: PaneInteractionProps) {
   const value = () => paneInteractionPresentation(props.event, props.paneName);
+
   const marker = createPaneInteractionMarker(
     () => props.event,
     () => props.theme,
@@ -100,6 +103,7 @@ export function PaneInteraction(props: PaneInteractionProps) {
 
 export function PaneInteractionDetails(
   props: PaneInteractionProps & {
+    observationStatus?: InteractionObservationStatus | null;
     viewportWidth: number;
     viewportHeight: number;
     viewportOrigin?: { x: number; y: number };
@@ -107,6 +111,7 @@ export function PaneInteractionDetails(
   },
 ) {
   const value = () => paneInteractionPresentation(props.event, props.paneName);
+  const coverage = () => interactionCoveragePresentation(props.observationStatus);
   useKeyboardRoute((event) => {
     if (event.eventType === "press" && event.name === "escape") props.onDismiss();
     return true;
@@ -136,6 +141,12 @@ export function PaneInteractionDetails(
           <text fg={props.theme.roles.text.muted}>To</text>
           <text fg={props.theme.roles.text.primary}>{value().target}</text>
           <text fg={props.theme.roles.text.secondary}>{props.event.at}</text>
+          <text fg={props.theme.roles.text.muted}>Observation</text>
+          <text fg={props.theme.roles.text.primary}>{coverage().label}</text>
+          <text fg={props.theme.roles.text.secondary}>{coverage().detail}</text>
+          <Show when={coverage().gap}>
+            {(gap) => <text fg={props.theme.roles.text.muted}>{gap()}</text>}
+          </Show>
           <TuiButton theme={props.theme} label="Close" shortcut="Esc" onPress={props.onDismiss} />
         </box>
       </scrollbox>

@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import {
   paneInteractionPresentation,
+  interactionCoveragePresentation,
   type PaneInteractionEvent,
 } from "./pane-interaction-presentation.ts";
 const endpoint = (semanticPaneId: string) => ({
@@ -103,4 +104,34 @@ it("distinguishes timeouts from rejection and delivery from understanding", () =
       name,
     ).explanation,
   ).toContain("does not mean the application processed");
+});
+
+it("separates current observation coverage from event claims", () => {
+  expect(interactionCoveragePresentation(null).label).toBe("Observation unavailable");
+  const status = {
+    schemaVersion: 1 as const,
+    environmentId: endpoint("target").environmentId,
+    serverScope: endpoint("target").serverScope,
+    method: "stock-hooks" as const,
+    capabilityVersion: 1,
+    commands: ["send-keys" as const],
+    effects: [],
+    coverage: "partial" as const,
+    cursor: null,
+    lastGap: { reason: "retention-overflow" as const, at: new Date().toISOString(), range: null },
+    droppedCount: null,
+  };
+  expect(interactionCoveragePresentation(status)).toMatchObject({
+    label: "Partial · tmux hooks",
+    gap: "Some activity may be missing.",
+  });
+  expect(interactionCoveragePresentation(status).detail).toContain("not confirmed");
+  expect(
+    interactionCoveragePresentation({
+      ...status,
+      method: "native-journal",
+      coverage: "declared-capabilities",
+      effects: ["input-enqueued"],
+    }).detail,
+  ).toContain("does not identify its caller");
 });

@@ -95,7 +95,13 @@ function rig(initial = [source()]) {
           cursor = { server: options.server, cursor: sequences.at(-1)! };
         },
       });
-      return { ready: Promise.resolve(), done, close, getCursor: () => cursor };
+      return {
+        ready: Promise.resolve(),
+        done,
+        close,
+        getObservationStatus: () => null,
+        getCursor: () => cursor,
+      };
     });
     return { activity, setSources };
   });
@@ -162,4 +168,33 @@ it("drops late batches after removal and never subscribes to legacy client opera
   f.calls[0]!.emit([1]);
   expect(f.activity.activity()).toEqual([]);
   f.dispose();
+});
+
+it("keeps coverage scoped, updates it while idle and clears disconnected ownership", async () => {
+  const a = source(),
+    b = source(1);
+  const r = rig([a, b]);
+  const status = {
+    schemaVersion: 1 as const,
+    environmentId: a.environmentId,
+    serverScope: a.server,
+    method: "stock-hooks" as const,
+    capabilityVersion: 1,
+    commands: ["send-keys" as const, "capture-pane" as const],
+    effects: [],
+    coverage: "partial" as const,
+    cursor: null,
+    lastGap: null,
+    droppedCount: "0",
+  };
+  r.calls[0]!.options.onStatus!(status);
+  expect(r.activity.observationStatus(endpoint(a))).toEqual(status);
+  expect(r.activity.observationStatus(endpoint(b))).toBeNull();
+  expect(() => r.calls[1]!.options.onStatus!(status)).toThrow("Foreign observation status");
+  r.calls[0]!.emit([3], true);
+  expect(r.activity.observationStatus(endpoint(a))).toEqual(status);
+  r.calls[0]!.fail(new Error("disconnect"));
+  await Promise.resolve();
+  expect(r.activity.observationStatus(endpoint(a))).toBeNull();
+  r.dispose();
 });
