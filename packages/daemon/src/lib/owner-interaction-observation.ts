@@ -71,6 +71,17 @@ export class OwnerInteractionObservation {
   get ownedOperationTransport(): boolean {
     return !this.#disposed && !this.#halted && this.#bindings !== null;
   }
+  failOwnedOperationObservation(): void {
+    if (this.#disposed || this.#halted) return;
+    this.#halted = true;
+    this.#retireBindings(false);
+    this.#unavailable();
+    void this.#reader?.dispose().catch(() => undefined);
+  }
+  noteOwnedOperationUncertainty(): void {
+    if (!this.#disposed && !this.#halted && this.#selection === "native")
+      this.#options.status.noteGap("uncertain-consume", 0);
+  }
   registerOwnedConnection(identity: NativeJournalIdentity, role: "viewer" | "authored") {
     return this.#withBindings((bindings) => {
       const connection = bindings.registerConnection(identity, role);

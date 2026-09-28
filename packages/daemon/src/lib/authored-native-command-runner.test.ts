@@ -22,6 +22,7 @@ function rig() {
     registerOwnedConnection: vi.fn(() => ({ bindingId: id })),
     acknowledgeOwnedOperation: vi.fn(),
     closeOwnedConnection: vi.fn(),
+    noteOwnedOperationUncertainty: vi.fn(),
   };
   const runTmux = vi.fn(() => prefix + "terminal\n\n");
   const run = createAuthoredNativeCommandRunner({
@@ -115,4 +116,19 @@ it("malformed prefixes cannot escape as snapshot text or encourage resending inp
   ).toEqual({ output: "" });
   expect(r.observer.acknowledgeOwnedOperation).not.toHaveBeenCalled();
   expect(r.runTmux).toHaveBeenCalledTimes(2);
+  expect(r.observer.noteOwnedOperationUncertainty).toHaveBeenCalledTimes(2);
+});
+
+it("reports missing failure proof without changing or replaying the original error", () => {
+  const r = rig();
+  const failure = new Error("connection lost");
+  r.runTmux.mockImplementation(() => {
+    throw failure;
+  });
+  r.observer.noteOwnedOperationUncertainty.mockImplementation(() => {
+    throw new Error("status unavailable");
+  });
+  expect(() => r.run(r.request)).toThrow(failure);
+  expect(r.runTmux).toHaveBeenCalledTimes(1);
+  expect(r.observer.noteOwnedOperationUncertainty).toHaveBeenCalledOnce();
 });

@@ -244,3 +244,19 @@ it("a publication failure during acknowledgement cannot turn a completed action 
   expect(r.dispose).toHaveBeenCalledTimes(1);
   await r.owner.dispose();
 });
+it("reports unproven operation metadata and retires staged proof on asynchronous publication failure", async () => {
+  const r = await rig();
+  r.admit();
+  r.batch();
+  r.owner.noteOwnedOperationUncertainty();
+  expect(r.status.getSnapshot().lastGap?.reason).toBe("uncertain-consume");
+  r.owner.failOwnedOperationObservation();
+  expect(r.owner.ownedOperationTransport).toBe(false);
+  expect(r.status.getSnapshot().coverage).toBe("unavailable");
+  expect(vi.getTimerCount()).toBe(0);
+  expect(r.publish).not.toHaveBeenCalled();
+  expect(r.dispose).toHaveBeenCalledTimes(1);
+  r.owner.failOwnedOperationObservation();
+  expect(r.dispose).toHaveBeenCalledTimes(1);
+  await r.owner.dispose();
+});

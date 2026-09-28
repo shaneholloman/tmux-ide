@@ -66,6 +66,13 @@ export function createAuthoredNativeCommandRunner(options: {
     });
     // No native wrapper has been dispatched; the existing stock path may proceed.
     if (!permit) return null;
+    const uncertain = () => {
+      try {
+        observer.noteOwnedOperationUncertainty();
+      } catch {
+        /* Coverage reporting cannot change a terminal operation result. */
+      }
+    };
     const expected = { serverEpoch: native.serverEpoch, operationId: request.operationId };
     const observe = (output: string) => {
       const reply = decodeNativeOperationInvocation(output, expected);
@@ -79,6 +86,7 @@ export function createAuthoredNativeCommandRunner(options: {
           }
         }
       } catch {
+        uncertain();
         /* Metadata consumers cannot invalidate an already decoded terminal result. */
       }
       return reply.output;
@@ -100,14 +108,18 @@ export function createAuthoredNativeCommandRunner(options: {
         try {
           observe(prefix);
         } catch {
+          uncertain();
           /* Partial effects remain unproven, never retried. */
         }
+      } else {
+        uncertain();
       }
       throw error;
     }
     try {
       return { output: observe(output) };
     } catch {
+      uncertain();
       // Successful input cannot become a retryable error solely because metadata
       // failed. A read must not leak undecoded private prefixes as terminal text.
       if (request.expectedKinds.includes("capture-pane"))

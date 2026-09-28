@@ -1,5 +1,5 @@
 import { createAuthoredNativeCommandRunner } from "./authored-native-command-runner.ts";
-import { consumeAuthoredNativeEvidence } from "./authored-native-receipt-enrichment.ts";
+import { AuthoredNativeReceiptEnricher } from "./authored-native-receipt-staging.ts";
 import {
   OwnerInteractionObservation,
   nativeInteractionObservationRequested,
@@ -1263,6 +1263,12 @@ async function startEmbeddedDaemonGeneration(
     let interactionObservation: InteractionObservationStatusStore | null = null;
     const nativeObservationRequested = nativeInteractionObservationRequested();
     let observationSelector: OwnerInteractionObservation | null = null;
+    const authoredReceiptEnricher = new AuthoredNativeReceiptEnricher({
+      journal: interactionReceipts,
+      publishRaw: (evidence) => interactionReceipts.appendEvidence(evidence),
+      noteGap: () => observationSelector?.noteOwnedOperationUncertainty(),
+      onFailure: () => observationSelector?.failOwnedOperationObservation(),
+    });
     let sessionRuntimeRegistry: SessionRuntimeRegistry | null = null;
     let workspaceOpenHandoff: WorkspaceOpenHandoffCoordinator | null = null;
     let terminalInventoryRuntime: WorkspaceTerminalInventoryRuntime | null = null;
@@ -1337,6 +1343,7 @@ async function startEmbeddedDaemonGeneration(
       }),
     });
     const disposeInteractionObservation = async () => {
+      authoredReceiptEnricher.dispose();
       const failures: unknown[] = [];
       try {
         await observationSelector?.dispose();
@@ -1665,8 +1672,7 @@ async function startEmbeddedDaemonGeneration(
             nativeServerIdentity: initialNativeServerIdentity,
             enabled: nativeObservationRequested,
             status: interactionObservation,
-            publishOwnedEvidence: (decision) =>
-              consumeAuthoredNativeEvidence(interactionReceipts, decision),
+            publishOwnedEvidence: (decision) => authoredReceiptEnricher.consume(decision),
             publishEvidence: (evidence) => {
               interactionReceipts.appendEvidence(evidence);
             },

@@ -1,5 +1,5 @@
 import { createAuthoredNativeCommandRunner } from "./authored-native-command-runner.ts";
-import { consumeAuthoredNativeEvidence } from "./authored-native-receipt-enrichment.ts";
+import { AuthoredNativeReceiptEnricher } from "./authored-native-receipt-staging.ts";
 import {
   OwnerInteractionObservation,
   nativeInteractionObservationRequested,
@@ -181,6 +181,12 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
     serverId: options.serverId,
     generation,
   });
+  const authoredReceiptEnricher = new AuthoredNativeReceiptEnricher({
+    journal: interactionReceipts,
+    publishRaw: (evidence) => interactionReceipts.appendEvidence(evidence),
+    noteGap: () => observationSelector.noteOwnedOperationUncertainty(),
+    onFailure: () => observationSelector.failOwnedOperationObservation(),
+  });
   const observationSelector = new OwnerInteractionObservation({
     environmentId: options.environmentId,
     serverScope: { serverId: options.serverId, generation },
@@ -188,8 +194,7 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
     nativeServerIdentity,
     enabled: nativeInteractionObservationRequested(),
     status: interactionObservation,
-    publishOwnedEvidence: (decision) =>
-      consumeAuthoredNativeEvidence(interactionReceipts, decision),
+    publishOwnedEvidence: (decision) => authoredReceiptEnricher.consume(decision),
     publishEvidence: (evidence) => {
       interactionReceipts.appendEvidence(evidence);
     },
@@ -391,6 +396,7 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
     disposed = true;
     credentialLifetime.abort();
     sourceCredentials.dispose();
+    authoredReceiptEnricher.dispose();
     const observationDisposal = observationSelector.dispose();
     disposePromise = (async () => {
       const failures: unknown[] = [];
