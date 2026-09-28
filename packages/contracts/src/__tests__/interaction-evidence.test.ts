@@ -176,3 +176,39 @@ describe("observation coverage", () => {
       );
   });
 });
+
+describe("native send-prefix evidence", () => {
+  it("preserves command kind and forbids stock claims of send-prefix coverage", () => {
+    expect(
+      InteractionEvidenceSchemaZ.safeParse({
+        ...native,
+        observation: { ...native.observation, command: "send-prefix" },
+      }).success,
+    ).toBe(true);
+    expect(
+      InteractionEvidenceSchemaZ.safeParse({
+        ...stock,
+        observation: { kind: "stock-hook", command: "send-prefix" },
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe("native orphan effects", () => {
+  it("retains direct effects without inventing a command identity", () => {
+    expect(
+      InteractionEvidenceSchemaZ.safeParse({
+        ...native,
+        observation: { ...native.observation, command: "unknown", commandId: null },
+        effect: { kind: "input-enqueued" },
+      }).success,
+    ).toBe(true);
+    expect(
+      InteractionEvidenceSchemaZ.safeParse({
+        ...native,
+        observation: { ...native.observation, command: "unknown", commandId: null },
+        effect: { kind: "snapshot-produced" },
+      }).success,
+    ).toBe(true);
+  });
+});

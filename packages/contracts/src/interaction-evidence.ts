@@ -67,7 +67,7 @@ export const NativeInteractionCursorSchemaZ = z
   .strict();
 export type NativeInteractionCursor = z.infer<typeof NativeInteractionCursorSchemaZ>;
 
-const command = z.enum(["send-keys", "paste-buffer", "capture-pane"]);
+const command = z.enum(["send-keys", "paste-buffer", "capture-pane", "send-prefix"]);
 export const InteractionObservationEvidenceSchemaZ = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("admission"), operationId: uuid }).strict(),
   z
@@ -83,9 +83,9 @@ export const InteractionObservationEvidenceSchemaZ = z.discriminatedUnion("kind"
   z
     .object({
       kind: z.literal("native-journal"),
-      command,
+      command: z.union([command, z.literal("unknown")]),
       cursor: NativeInteractionCursorSchemaZ,
-      commandId: uuid,
+      commandId: uuid.nullable(),
       parentCommandId: uuid.nullable(),
       correlatedOperationId: uuid.nullable(),
     })
@@ -185,7 +185,11 @@ export const InteractionEvidenceSchemaZ = z
         !["unknown", "snapshot-produced"].includes(effect.kind)
       )
         issue(["effect"], "capture cannot assert input effects");
-      if (observation.command !== "capture-pane" && effect.kind === "snapshot-produced")
+      if (
+        observation.command !== "capture-pane" &&
+        observation.command !== "unknown" &&
+        effect.kind === "snapshot-produced"
+      )
         issue(["effect"], "input commands cannot assert capture effects");
     }
   });
@@ -231,7 +235,7 @@ export const InteractionObservationStatusSchemaZ = z
     ...authority,
     method: z.enum(["stock-hooks", "native-journal", "unavailable"]),
     capabilityVersion: z.number().int().positive().nullable(),
-    commands: z.array(command).max(3),
+    commands: z.array(command).max(4),
     effects: z.array(z.enum(["no-input", "input-enqueued", "snapshot-produced"])).max(3),
     coverage: z.enum(["partial", "declared-capabilities", "unavailable"]),
     cursor: NativeInteractionCursorSchemaZ.nullable(),
@@ -251,7 +255,9 @@ export const InteractionObservationStatusSchemaZ = z
       issue(["method"], "only native observation advertises effects or a journal cursor");
     if (
       value.method === "stock-hooks" &&
-      (value.coverage !== "partial" || value.commands.includes("paste-buffer"))
+      (value.coverage !== "partial" ||
+        value.commands.includes("paste-buffer") ||
+        value.commands.includes("send-prefix"))
     )
       issue(["coverage"], "stock hooks have partial send-keys/capture-pane coverage");
     if (

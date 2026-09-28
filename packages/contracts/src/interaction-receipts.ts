@@ -524,6 +524,7 @@ export const InteractionReceiptV2SchemaZ = InteractionReceiptV1SchemaZ.safeExten
       : null;
   if (
     command !== null &&
+    command !== "unknown" &&
     (receipt.operationKind === "workspace.pane.read") !== (command === "capture-pane")
   )
     context.addIssue({
