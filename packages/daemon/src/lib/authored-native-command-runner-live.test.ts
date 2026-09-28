@@ -61,6 +61,7 @@ it.skipIf(!binary)(
           (_permit: unknown, _connection: unknown, _ack: NativeOperationIdentity) => {},
         ),
         closeOwnedConnection: vi.fn(),
+        noteOwnedOperationUncertainty: vi.fn(),
       };
       const runTmux = vi.fn(
         createPinnedWorkspaceTmuxRunner({
@@ -123,6 +124,24 @@ it.skipIf(!binary)(
       expect(native("save-buffer", "-b", "once", "-")).toBe(";");
       expect(observer.acknowledgeOwnedOperation).toHaveBeenCalledTimes(1);
       expect(observer.closeOwnedConnection).toHaveBeenCalledTimes(2);
+
+      // Refusal is before the supplied body, even its non-pane first command.
+      for (const mismatch of ["birth", "epoch"] as const) {
+        runTmux.mockClear();
+        observer.acknowledgeOwnedOperation.mockClear();
+        observer.nativeServerEpoch = mismatch === "epoch" ? randomUUID() : capability.serverEpoch;
+        expect(() =>
+          runner({
+            ...request,
+            targetBirthId: mismatch === "birth" ? String(BigInt(birth!) + 1n) : birth!,
+            commands: [["set-buffer", "-b", "must-not-exist", "--", "guarded-body"]],
+            expectedKinds: ["send-keys"],
+          }),
+        ).toThrow();
+        expect(runTmux).toHaveBeenCalledTimes(1);
+        expect(observer.acknowledgeOwnedOperation).not.toHaveBeenCalled();
+        expect(() => native("save-buffer", "-b", "must-not-exist", "-")).toThrow();
+      }
     } finally {
       try {
         native("kill-server");
