@@ -20,6 +20,10 @@ import { discoverLiveSessionSummaries } from "../command-center/discovery.ts";
 import { realpathSync, statSync } from "node:fs";
 
 import {
+  SESSION_RUNTIME_PANE_READ_MAX_BYTES,
+  SESSION_RUNTIME_PANE_CAPTURE_MAX_BYTES,
+  SessionRuntimePaneReadResultSchemaZ,
+  type SessionRuntimePaneReadResult,
   WorkspaceMultiplexerMutationRequestSchemaZ,
   WorkspaceMultiplexerMutationResultSchemaZ,
   type WorkspaceMultiplexerIntent,
@@ -38,6 +42,7 @@ import {
   resolveWorkspacePaneTmuxAuthority,
   semanticPaneIdForOperation,
   type WorkspacePaneTmuxAuthority,
+  type WorkspaceTmuxRunOptions,
 } from "./workspace-pane-creation.ts";
 import { prepareTmuxTruecolorEnvironment } from "./tmux-terminal-color.ts";
 import { getDefaultWorkspaceRegistry, type WorkspaceRegistry } from "./workspace-registry.ts";
@@ -302,7 +307,7 @@ function tmuxFormatLiteral(value: string): string {
 }
 
 export interface WorkspaceMultiplexerIo {
-  readonly runTmux: (args: readonly string[]) => string;
+  readonly runTmux: (args: readonly string[], options?: WorkspaceTmuxRunOptions) => string;
   readonly canonicalProjectDir: (path: string) => string;
   readonly isMissingTmuxTarget: (error: unknown) => boolean;
 }
@@ -496,12 +501,15 @@ export class WorkspaceMultiplexerAuthority {
   }
 
   /**
-   * Capture a semantically addressed pane for an authored read. The tmux
-   * after-capture hook is the completion authority; this method only performs
-   * the command-list and verifies that its semantic target survived it.
+   * Capture a semantically addressed pane once and return that bounded snapshot.
+   * Native command completion and post-capture identity checks prove the response;
+   * the separate stock after-capture hook is command-observation evidence only.
    * SessionRuntimeRegistry serializes this lane with authored sends.
    */
-  readPane(operationId: string, intent: SessionRuntimePaneReadIntent): void {
+  readPane(
+    operationId: string,
+    intent: SessionRuntimePaneReadIntent,
+  ): SessionRuntimePaneReadResult {
     if (this.#disposed) {
       throw new WorkspaceMultiplexerError("workspace_unavailable", {
         reason: "authority_disposed",
@@ -515,31 +523,46 @@ export class WorkspaceMultiplexerAuthority {
       });
     }
     const pane = resolvePaneRow(this.#panes(workspace.sessionName), intent.semanticPaneId);
+    let captured: string;
     try {
-      this.#io.runTmux([
-        "set-option",
-        "-p",
-        "-t",
-        pane.paneId,
-        INTERNAL_READ_OPERATION_OPTION,
-        internalInteractionOperationMarker(this.#daemonInstanceId, operationId),
-        ";",
-        "capture-pane",
-        "-p",
-        "-e",
-        "-J",
-        "-S",
-        "-2000",
-        "-t",
-        pane.paneId,
-      ]);
-    } catch (error) {
+      captured = this.#io.runTmux(
+        [
+          "set-option",
+          "-p",
+          "-t",
+          pane.paneId,
+          INTERNAL_READ_OPERATION_OPTION,
+          internalInteractionOperationMarker(this.#daemonInstanceId, operationId),
+          ";",
+          "capture-pane",
+          "-p",
+          "-e",
+          "-J",
+          "-S",
+          "-2000",
+          "-t",
+          pane.paneId,
+        ],
+        { preserveTrailingNewlines: true },
+      );
+    } catch {
       try {
         this.#io.runTmux(["set-option", "-pu", "-t", pane.paneId, INTERNAL_READ_OPERATION_OPTION]);
       } catch {
         // The pane may have disappeared with the failed capture.
       }
-      throw error;
+      // Child-process errors can contain private stdout/stderr; do not expose them.
+      throw new WorkspaceMultiplexerError("mutation_failed", {
+        operationId,
+        reason: "pane_capture_failed",
+      });
+    }
+    const bytes = Buffer.from(captured, "utf8");
+    if (bytes.byteLength > SESSION_RUNTIME_PANE_CAPTURE_MAX_BYTES) {
+      throw new WorkspaceMultiplexerError("mutation_failed", {
+        operationId,
+        reason: "pane_capture_output_limit",
+      });
     }
     const observed = resolvePaneRow(this.#panes(workspace.sessionName), intent.semanticPaneId);
     if (observed.paneId !== pane.paneId) {
@@ -548,6 +571,23 @@ export class WorkspaceMultiplexerAuthority {
         reason: "pane_identity_changed_during_read",
       });
     }
+    // Retain the latest output, never split a UTF-8 code point at the cut.
+    let start = Math.max(0, bytes.byteLength - SESSION_RUNTIME_PANE_READ_MAX_BYTES);
+    while (start < bytes.byteLength && (bytes[start]! & 0xc0) === 0x80) start++;
+    const text = bytes.subarray(start).toString("utf8");
+    return SessionRuntimePaneReadResultSchemaZ.parse({
+      verb: "workspace.pane.read",
+      operationId,
+      daemonInstanceId: this.#daemonInstanceId,
+      workspaceName: intent.workspaceName,
+      semanticPaneId: intent.semanticPaneId,
+      format: "ansi",
+      availability: "available",
+      text,
+      byteCount: bytes.byteLength - start,
+      capturedByteCount: bytes.byteLength,
+      truncated: start > 0,
+    });
   }
 
   dispose(): Promise<void> {

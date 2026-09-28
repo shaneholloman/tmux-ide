@@ -55,6 +55,7 @@ class FakeTmux {
   windows: FakeWindow[] = [];
   panes: FakePane[] = [];
   readonly calls: string[][] = [];
+  captureOutput = "";
   #nextPane = 0;
   #nextWindow = 0;
   /** Argv prefix → thrown error, for failure-path tests. */
@@ -245,7 +246,7 @@ class FakeTmux {
         const pane = this.#pane(args[3]!);
         pane.options.set(args[4]!, args[5]!);
         if (args.length > 6) {
-          if (args[7] === "capture-pane") return "";
+          if (args[7] === "capture-pane") return this.captureOutput;
           if (
             args[6] !== ";" ||
             args[7] !== "send-keys" ||
@@ -825,6 +826,86 @@ describe("the multiplexer authority", () => {
   });
 
   describe("session runtime read", () => {
+    const intent = {
+      verb: "workspace.pane.read" as const,
+      workspaceName: "work",
+      semanticPaneId: "pane.one",
+      origin: "sdk" as const,
+    };
+    it("returns the same single captured response including trailing blank lines", () => {
+      tmux.captureOutput = "\u001b[31mhello é\u001b[0m\n\n";
+      const result = authority.readPane(randomUUID(), intent);
+      expect(result).toMatchObject({
+        text: tmux.captureOutput,
+        byteCount: Buffer.byteLength(tmux.captureOutput),
+        capturedByteCount: Buffer.byteLength(tmux.captureOutput),
+        truncated: false,
+        format: "ansi",
+      });
+      expect(tmux.calls.filter((args) => args.includes("capture-pane"))).toHaveLength(1);
+    });
+    it("retains a UTF8-safe tail within the response byte limit", () => {
+      tmux.captureOutput = "🙂".repeat(5000) + "end";
+      const result = authority.readPane(randomUUID(), intent);
+      expect(result.byteCount).toBeLessThanOrEqual(16384);
+      expect(result.byteCount).toBe(Buffer.byteLength(result.text));
+      expect(result.capturedByteCount).toBe(20003);
+      expect(result.truncated).toBe(true);
+      expect(result.text).not.toContain("�");
+      expect(tmux.captureOutput.endsWith(result.text)).toBe(true);
+    });
+    it("fails rather than reporting a successful partial capture past the subprocess limit", () => {
+      tmux.captureOutput = "x".repeat(65537);
+      expect(() => authority.readPane(randomUUID(), intent)).toThrowError(
+        expect.objectContaining({
+          code: "mutation_failed",
+          context: expect.objectContaining({ reason: "pane_capture_output_limit" }),
+        }),
+      );
+    });
+    it("does not expose private captured bytes from subprocess failures", () => {
+      tmux.failOn = {
+        match: (args) => args.includes("capture-pane"),
+        error: new Error("stdout maxBuffer: private terminal contents"),
+      };
+      let failure: unknown;
+      try {
+        authority.readPane(randomUUID(), intent);
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toMatchObject({
+        code: "mutation_failed",
+        context: expect.objectContaining({ reason: "pane_capture_failed" }),
+      });
+      expect(JSON.stringify(failure)).not.toContain("private terminal");
+      expect((failure as Error).cause).toBeUndefined();
+      expect(tmux.calls.filter((args) => args.includes("capture-pane"))).toHaveLength(1);
+    });
+    it("refuses a semantic identity that changes during capture", () => {
+      const observed = new WorkspaceMultiplexerAuthority({
+        daemonInstanceId: DAEMON_ID,
+        registry,
+        io: {
+          runTmux: (args) => {
+            const output = tmux.run(args);
+            if (args.includes("capture-pane")) tmux.panes[0]!.id = "%99";
+            return output;
+          },
+        },
+      });
+      expect(() => observed.readPane(randomUUID(), intent)).toThrowError(
+        expect.objectContaining({ code: "mutation_unverified" }),
+      );
+    });
+    it("does not capture after authority disposal", async () => {
+      await authority.dispose();
+      expect(() => authority.readPane(randomUUID(), intent)).toThrowError(
+        expect.objectContaining({ code: "workspace_unavailable" }),
+      );
+      expect(tmux.calls.filter((args) => args.includes("capture-pane"))).toHaveLength(0);
+    });
+
     it("marks and captures one semantic pane in one tmux command-list", async () => {
       const operationId = randomUUID();
       await authority.readPane(operationId, {

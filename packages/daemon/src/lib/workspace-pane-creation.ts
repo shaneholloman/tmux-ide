@@ -270,10 +270,15 @@ export function resolveWorkspacePaneTmuxAuthority(): WorkspacePaneTmuxAuthority 
 }
 
 /** Execute mutations only through the daemon-generation-pinned tmux authority. */
+export interface WorkspaceTmuxRunOptions {
+  /** Capture responses retain tmux's exact trailing newline bytes. */
+  readonly preserveTrailingNewlines?: boolean;
+}
+
 export function createPinnedWorkspaceTmuxRunner(
   authority: WorkspacePaneTmuxAuthority,
   options: Readonly<{ timeoutMs?: number }> = {},
-): (args: readonly string[]) => string {
+): (args: readonly string[], options?: WorkspaceTmuxRunOptions) => string {
   const executablePath = realpathSync(authority.executablePath);
   accessSync(executablePath, constants.X_OK);
   if (!isAbsolute(executablePath) || !statSync(executablePath).isFile()) {
@@ -303,7 +308,7 @@ export function createPinnedWorkspaceTmuxRunner(
     authority.socketSelector.kind === "name"
       ? createNamedSocketFence(authority, executablePath, environment)
       : null;
-  return (args) => {
+  return (args, runOptions) => {
     const selector = socketIdentity
       ? ["-S", revalidateUnixSocketIdentity(socketIdentity)]
       : (namedFence?.resolve() ?? socketArgv);
@@ -317,10 +322,10 @@ export function createPinnedWorkspaceTmuxRunner(
         stdio: ["ignore", "pipe", "pipe"],
         ...(options.timeoutMs === undefined ? {} : { timeout: options.timeoutMs }),
       }),
-    ).replace(/(?:\r?\n)+$/u, "");
+    );
     // A cold named authority may create its first server with this command.
     if (namedFence && !namedFence.isPinned()) namedFence.resolve();
-    return output;
+    return runOptions?.preserveTrailingNewlines ? output : output.replace(/(?:\r?\n)+$/u, "");
   };
 }
 

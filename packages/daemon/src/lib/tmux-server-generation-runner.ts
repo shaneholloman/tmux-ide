@@ -3,6 +3,7 @@ import {
   createPinnedWorkspaceTmuxRunner,
   createPinnedWorkspaceTmuxAsyncRunner,
   type WorkspacePaneTmuxAuthority,
+  type WorkspaceTmuxRunOptions,
 } from "./workspace-pane-creation.ts";
 import { shellEscape } from "./shell.ts";
 
@@ -53,7 +54,7 @@ export function fenceNativeTmuxCommand(
 export function createServerGenerationFencedTmuxRunner(
   authority: WorkspacePaneTmuxAuthority,
   expected?: NativeTmuxServerIdentity,
-): (args: readonly string[]) => string {
+): (args: readonly string[], options?: WorkspaceTmuxRunOptions) => string {
   const run = createPinnedWorkspaceTmuxRunner(authority, { timeoutMs: 5_000 });
   const [pid, startTime] = expected
     ? [expected.pid, expected.startTime]
@@ -62,9 +63,9 @@ export function createServerGenerationFencedTmuxRunner(
   const identity = { pid, startTime };
   // Validate once before publishing an owner; each command rechecks natively.
   fenceNativeTmuxCommand(["display-message", "-p", ""], identity);
-  return (args) => {
+  return (args, runOptions) => {
     const command = fenceNativeTmuxCommand(args, identity);
-    return command.verify(run(command.argv));
+    return command.verify(run(command.argv, runOptions));
   };
 }
 

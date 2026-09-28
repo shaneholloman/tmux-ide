@@ -62,6 +62,17 @@ it.skipIf(spawnSync("tmux", ["-V"], { stdio: "ignore" }).status !== 0)(
       expect(run(["display-message", "-p", "first", ";", "display-message", "-p", "second"])).toBe(
         "first\nsecond",
       );
+      expect(run(["display-message", "-p", "snapshot\n"], { preserveTrailingNewlines: true })).toBe(
+        "snapshot\n\n",
+      );
+      // The same scoped runner enforces maxBuffer on capture output; over-limit
+      // output is a failed command, never a silently truncated successful read.
+      const huge = "x".repeat(40_000);
+      expect(() =>
+        run(["display-message", "-p", huge, ";", "display-message", "-p", huge], {
+          preserveTrailingNewlines: true,
+        }),
+      ).toThrow();
       expect(() => run(["rename-window", "-t", "missing:99", "bad"])).toThrow();
       // Baseline proof of the gap: a pinned inode check alone accepts replacement.
       const unguarded = createPinnedWorkspaceTmuxRunner(authority);
