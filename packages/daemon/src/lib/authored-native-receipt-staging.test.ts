@@ -56,6 +56,7 @@ function fixture() {
     disposition: "authored",
     reason: "matched",
     proof: {
+      authoredReceiptAdmissionSequence: 1,
       acknowledgement: {
         schemaVersion: 2,
         type: "operation-identity",
@@ -216,6 +217,36 @@ it("changed terminal lifetime falls back to raw evidence without rewriting recei
   await Promise.resolve();
   expect(r.publishRaw).toHaveBeenCalledExactlyOnceWith(r.decision.evidence);
   expect(r.journal.read(0).cursor).toBe(2);
+  expect(r.enricher.pendingCount).toBe(0);
+  r.enricher.dispose();
+});
+it("never attaches staged proof to a later admission with the same UUID and context", async () => {
+  const r = rig();
+  expect(r.enricher.consume(r.decision)).toBe(true);
+  r.journal.publish({
+    ...r.receipt,
+    phase: "accepted",
+    proof: null,
+    evidence: {
+      ...r.receipt.evidence!,
+      observation: { kind: "admission", operationId: r.receipt.operationId },
+    },
+  });
+  r.journal.publish(r.receipt);
+  await Promise.resolve();
+  expect(r.enricher.pendingCount).toBe(0);
+  expect(r.publishRaw).toHaveBeenCalledExactlyOnceWith(r.decision.evidence);
+  expect(r.journal.read(0).cursor).toBe(3);
+  expect(r.enricher.consume(r.decision)).toBe(false);
+  r.enricher.dispose();
+});
+it("flushes staged proof as raw when its admission is evicted", async () => {
+  const r = rig();
+  r.enricher.consume(r.decision);
+  for (let i = 0; i < 256; i++) r.journal.appendEvidence(r.decision.evidence);
+  r.journal.publish(r.receipt);
+  await Promise.resolve();
+  expect(r.publishRaw).toHaveBeenCalledExactlyOnceWith(r.decision.evidence);
   expect(r.enricher.pendingCount).toBe(0);
   r.enricher.dispose();
 });

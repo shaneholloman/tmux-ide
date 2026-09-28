@@ -115,6 +115,30 @@ export class InteractionReceiptJournal {
     return null;
   }
 
+  /** Exact private admission binding. Evicted history is unavailable, never guessed. */
+  latestOperationReceiptForAttempt(
+    operationId: string,
+    acceptedSequence: number | null,
+  ): InteractionReceipt | null {
+    this.#assertOpen();
+    if (
+      !Number.isSafeInteger(acceptedSequence) ||
+      acceptedSequence === null ||
+      acceptedSequence < 1
+    )
+      return null;
+    let latest: InteractionReceipt | null = null;
+    for (let index = this.#receipts.length - 1; index >= 0; index--) {
+      const entry = this.#receipts[index]!;
+      if (entry.sequence < acceptedSequence) return null;
+      if (entry.type !== "interaction.receipt" || entry.operationId !== operationId) continue;
+      latest ??= entry;
+      if (entry.phase === "accepted")
+        return entry.sequence === acceptedSequence ? structuredClone(latest) : null;
+    }
+    return null;
+  }
+
   /** Subscribe before taking the initial snapshot to avoid a readiness gap. */
   subscribe(wake: () => void): () => void {
     this.#assertOpen();

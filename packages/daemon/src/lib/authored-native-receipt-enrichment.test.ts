@@ -59,6 +59,7 @@ function fixture() {
     disposition: "authored",
     reason: "matched",
     proof: {
+      authoredReceiptAdmissionSequence: 1,
       acknowledgement: {
         schemaVersion: 2,
         type: "operation-identity",
@@ -159,14 +160,24 @@ it.each(["owner", "lifetime", "source", "issuer", "parent", "operation", "unknow
 );
 it("same journal enrichment is bounded and repeated evidence adds no receipt", () => {
   const { receipt, decision } = fixture();
-  const journal = new InteractionReceiptJournal(2);
+  const journal = new InteractionReceiptJournal(3);
+  journal.publish({
+    ...receipt,
+    phase: "accepted",
+    proof: null,
+    evidence: {
+      ...receipt.evidence!,
+      observation: { kind: "admission", operationId: receipt.operationId },
+    },
+  });
   journal.publish(receipt);
   expect(consumeAuthoredNativeEvidence(journal, decision)).toBe(true);
   expect(consumeAuthoredNativeEvidence(journal, decision)).toBe(false);
-  expect(journal.read(0).cursor).toBe(2);
+  expect(journal.read(0).cursor).toBe(3);
   const latest = journal.latestOperationReceipt(receipt.operationId)!;
   latest.phase = "rejected";
   expect(journal.latestOperationReceipt(receipt.operationId)!.phase).toBe("observed");
+  journal.appendEvidence(decision.evidence);
   journal.appendEvidence(decision.evidence);
   journal.appendEvidence(decision.evidence);
   expect(journal.latestOperationReceipt(receipt.operationId)).toBeNull();
@@ -213,4 +224,42 @@ it("preserves validated cooperative source and refuses a different binding", () 
     agentRunId: source.agentRunId,
   };
   expect(enrichAuthoredNativeReceipt(receipt, authored)).toBeNull();
+});
+it("requires a retained exact admission and rejects newer UUID reuse", () => {
+  const { receipt, decision } = fixture();
+  const journal = new InteractionReceiptJournal(4);
+  const accepted = journal.publish({
+    ...receipt,
+    phase: "accepted",
+    proof: null,
+    evidence: {
+      ...receipt.evidence!,
+      observation: { kind: "admission", operationId: receipt.operationId },
+    },
+  });
+  journal.publish(receipt);
+  expect(
+    journal.latestOperationReceiptForAttempt(receipt.operationId, accepted.sequence)?.phase,
+  ).toBe("observed");
+  expect(journal.latestOperationReceiptForAttempt(receipt.operationId, null)).toBeNull();
+  const newer = journal.publish({
+    ...receipt,
+    phase: "accepted",
+    proof: null,
+    evidence: {
+      ...receipt.evidence!,
+      observation: { kind: "admission", operationId: receipt.operationId },
+    },
+  });
+  journal.publish(receipt);
+  expect(consumeAuthoredNativeEvidence(journal, decision)).toBe(false);
+  const fresh = {
+    ...decision,
+    proof: { ...decision.proof!, authoredReceiptAdmissionSequence: newer.sequence },
+  };
+  expect(consumeAuthoredNativeEvidence(journal, fresh)).toBe(true);
+  journal.appendEvidence(decision.evidence);
+  journal.appendEvidence(decision.evidence);
+  expect(journal.latestOperationReceiptForAttempt(receipt.operationId, newer.sequence)).toBeNull();
+  expect(consumeAuthoredNativeEvidence(journal, fresh)).toBe(false);
 });

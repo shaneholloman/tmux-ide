@@ -111,7 +111,10 @@ export function consumeAuthoredNativeEvidence(
   decision: OwnedNativeInteractionDecision,
 ): boolean {
   if (decision.disposition !== "authored" || !decision.proof) return false;
-  const latest = journal.latestOperationReceipt(decision.proof.acknowledgement.operationId);
+  const latest = journal.latestOperationReceiptForAttempt(
+    decision.proof.acknowledgement.operationId,
+    decision.proof.authoredReceiptAdmissionSequence,
+  );
   if (!latest) return false;
   const draft = enrichAuthoredNativeReceipt(latest, decision);
   if (!draft) return false;

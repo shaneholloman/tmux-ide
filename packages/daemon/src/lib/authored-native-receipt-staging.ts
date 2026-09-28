@@ -60,8 +60,9 @@ export class AuthoredNativeReceiptEnricher {
       return true;
     if (consumeAuthoredNativeEvidence(this.#options.journal, decision)) return true;
     if (!decision.proof) return false;
-    const receipt = this.#options.journal.latestOperationReceipt(
+    const receipt = this.#options.journal.latestOperationReceiptForAttempt(
       decision.proof.acknowledgement.operationId,
+      decision.proof.authoredReceiptAdmissionSequence,
     );
     if (!receipt || !canStageAuthoredNativeEvidence(receipt, decision)) return false;
     if (this.#pending.length >= this.#limit) {
@@ -88,8 +89,9 @@ export class AuthoredNativeReceiptEnricher {
     const now = this.#now();
     for (let index = 0; index < this.#pending.length; ) {
       const pending = this.#pending[index]!;
-      const receipt = this.#options.journal.latestOperationReceipt(
+      const receipt = this.#options.journal.latestOperationReceiptForAttempt(
         pending.decision.proof!.acknowledgement.operationId,
+        pending.decision.proof!.authoredReceiptAdmissionSequence,
       );
       if (
         receipt?.phase === "accepted" &&
