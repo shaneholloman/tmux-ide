@@ -222,15 +222,23 @@ export class NativeTmuxInteractionObserver {
         this.#capability?.readerTransport === "sessionless-control-v1";
       let output: string;
       if (persistent) {
+        const opening = this.#control === null;
         const control = (this.#control ??= new NativeJournalControlConnection(
           this.#options.tmuxAuthority,
           this.#capability!.serverEpoch,
         ));
         try {
-          // Bound the handshake independently of the longer idle read lease.
-          await control.start(
-            AbortSignal.any([request.signal, AbortSignal.timeout(this.#commandMs)]),
-          );
+          if (opening) {
+            // Only opening a peer needs a handshake deadline. A timeout signal on
+            // every read leaves uncancellable timers firing after completed work.
+            const handshake = new AbortController();
+            const timer = setTimeout(() => handshake.abort(), this.#commandMs);
+            try {
+              await control.start(AbortSignal.any([request.signal, handshake.signal]));
+            } finally {
+              clearTimeout(timer);
+            }
+          }
           output = await control.read(this.#cursor!, request.signal);
         } catch (error) {
           try {
