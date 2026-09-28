@@ -2,10 +2,12 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
+import { retirePrivateTmux } from "./comparative-terminal-support.mjs";
 import {
   notMeasuredEvidence,
   qualifyCoherentTerminalEvidence,
@@ -24,11 +26,11 @@ const output = resolve(
   root,
   process.env.TMUX_IDE_PORTABLE_EVIDENCE_REPORT ?? "artifacts/performance-portable-evidence.json",
 );
-const uid = process.getuid?.() ?? process.pid;
-const socket = `tmux-ide-testdrive-${uid}`;
 const target = `performance-evidence-${process.pid}`;
-const lifecyclePath = resolve(root, ".tasks/tui-testdrive/performance.jsonl");
-const compiledTui = resolve(root, "packages/daemon/dist/tui/tmux-ide-tui");
+const compiledTui = resolve(
+  process.env.TMUX_IDE_TESTDRIVE_TUI_BIN?.trim() ||
+    resolve(root, "packages/daemon/dist/tui/tmux-ide-tui"),
+);
 const startupSamples = Number(process.env.TMUX_IDE_PORTABLE_STARTUP_SAMPLES ?? 3);
 const memorySamples = Number(process.env.TMUX_IDE_PORTABLE_MEMORY_SAMPLES ?? 16);
 if (!Number.isSafeInteger(startupSamples) || startupSamples < 3)
@@ -38,8 +40,18 @@ if (!Number.isSafeInteger(memorySamples) || memorySamples < 4)
 if (!existsSync(compiledTui))
   throw new Error("portable startup evidence requires `pnpm build:tui`");
 
+const privateRoot = mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "tmi-pe-"));
+const socketPath = join(privateRoot, "tmux.sock");
+const runtimeDir = join(privateRoot, "tui");
+const lifecyclePath = join(runtimeDir, "performance.jsonl");
+process.stderr.write(`Portable evidence fixture (retained): ${privateRoot}\n`);
+
 const tmux = (args, stdio = "ignore") =>
-  spawnSync("tmux", ["-L", socket, ...args], { cwd: root, stdio });
+  spawnSync("tmux", ["-S", socketPath, "-f", "/dev/null", ...args], {
+    cwd: root,
+    stdio,
+    env: { ...process.env, TMUX: "", TMUX_TMPDIR: "" },
+  });
 const run = (command, args, env = process.env) => {
   const result = spawnSync(command, args, { cwd: root, env, encoding: "utf8", stdio: "pipe" });
   if (result.status !== 0)
@@ -53,11 +65,15 @@ let startup;
 const resizeSamples = [];
 const captureSamples = [];
 let testdriveEnv = null;
+let serverStarted = false;
+let serverPid;
 try {
   // RuntimeNamespace performance/testdrive uses this owned non-default socket;
   // no command in this runner addresses the user's canonical tmux server.
-  tmux(["kill-server"]);
-  tmux(["new-session", "-d", "-s", target, "/bin/sh"]);
+  const started = tmux(["new-session", "-d", "-s", target, "/bin/sh"], "pipe");
+  if (started.status !== 0) throw new Error(`Private tmux startup failed: ${started.stderr}`);
+  serverStarted = true;
+  serverPid = Number(tmux(["display-message", "-p", "#{pid}"], "pipe").stdout?.toString().trim());
   const privateSocketPath = tmux(["display-message", "-p", "#{socket_path}"], "pipe")
     .stdout?.toString()
     .trim();
@@ -66,7 +82,11 @@ try {
   // exactly like ProductTestRig. No default/canonical tmux server is touched.
   testdriveEnv = {
     ...process.env,
-    TMUX_IDE_TESTDRIVE_TARGET_SOCKET_NAME: socket,
+    TMUX_IDE_TESTDRIVE_TARGET_SOCKET_NAME: "",
+    TMUX_IDE_TMUX_SOCKET_PATH: socketPath,
+    TMUX_IDE_TESTDRIVE_RUNTIME_DIR: runtimeDir,
+    TMUX_IDE_TESTDRIVE_DAEMON_INFO_DIR: join(runtimeDir, "home"),
+    TMUX_IDE_TESTDRIVE_USE_CANONICAL_DAEMON: "0",
     TMUX_IDE_TESTDRIVE_HOST_SOCKET_PATH: privateSocketPath,
     TMUX_IDE_TESTDRIVE_HOST_SESSION: `_tmux-ide-performance-${process.pid}`,
   };
@@ -164,7 +184,16 @@ try {
       env: testdriveEnv,
       stdio: "ignore",
     });
-  tmux(["kill-server"]);
+  if (serverStarted)
+    await retirePrivateTmux(
+      async (...args) => {
+        const result = tmux(args, "pipe");
+        if (result.status !== 0) throw new Error(`Private tmux cleanup failed: ${result.stderr}`);
+        return result.stdout.toString();
+      },
+      serverPid,
+      target,
+    );
 }
 
 const resizeResponsiveness = qualifyLatencyEvidence(resizeSamples, budgets.resizeResponsiveness);
@@ -230,6 +259,7 @@ const report = {
     runtimeMode: "performance",
     stateHome: "ephemeral",
     tmuxSocket: "owned-non-default",
+    retainedFixtureRoot: privateRoot,
   },
   measurements: {
     startup,
