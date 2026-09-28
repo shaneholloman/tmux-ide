@@ -61,6 +61,8 @@ const terminalFirstResource = ApplicationShellProjectionInputV2SchemaZ.parse({
         kind: "terminal",
         active: true,
         attachability: { status: "available", semanticPaneId: "pane.worker" },
+        interactionEndpoint: null,
+        nativeIdentity: null,
       },
     ],
   },
