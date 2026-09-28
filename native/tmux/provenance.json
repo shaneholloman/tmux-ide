@@ -13,7 +13,7 @@
     },
     {
       "patch": "interaction-journal-v1.patch",
-      "patchSha256": "355eca0c4bb8880def24d1433e5caa7ab69f1307bf0253a02510834e64b1450b"
+      "patchSha256": "d775707e6157d6b818adc1d4f57f624eade03631d5a0897bbcab4bb4054dcef9"
     }
   ],
   "experimentalExtensions": [

@@ -100,7 +100,7 @@ index 7233b7d..6487b7d 100644
  		paste_free(pb);
  
 diff --git a/cmd-queue.c b/cmd-queue.c
-index 2a22151..453432a 100644
+index 2a22151..3369baf 100644
 --- a/cmd-queue.c
 +++ b/cmd-queue.c
 @@ -39,6 +39,10 @@ enum cmdq_type {
@@ -253,11 +253,30 @@ index 2a22151..453432a 100644
  	if (cfg_finished)
  		cmdq_add_message(item);
  	if (log_get_level() > 1) {
-@@ -646,7 +708,16 @@ cmdq_fire_command(struct cmdq_item *item)
+@@ -646,7 +708,35 @@ cmdq_fire_command(struct cmdq_item *item)
  	if (retval == CMD_RETURN_ERROR)
  		goto out;
  
 -	retval = entry->exec(cmd, item);
++	/* Guard only direct children of the strict owned wrapper. Hook and
++	 * background descendants retain ordinary tmux semantics. No yield occurs
++	 * between this check and the command's synchronous execution. */
++	if (item->origin.guard_wrapper_id != 0 &&
++	    item->origin.parent_id == item->origin.guard_wrapper_id) {
++		struct window_pane *guard_pane =
++		    window_pane_find_by_id(item->origin.guard_pane_id);
++		if (!guard_pane || guard_pane->tmux_ide_birth_id !=
++		    item->origin.guard_birth_id ||
++		    (entry->target.flag && entry->target.type == CMD_FIND_PANE &&
++		    item->target.wp != guard_pane) ||
++		    (strcmp(entry->name, "send-keys") == 0 &&
++		    (args_has(args, 'K') || args_has(args, 'M')))) {
++			cmdq_error(item, "operation pane lifetime or target mismatch");
++			retval = CMD_RETURN_ERROR;
++			goto out;
++		}
++	}
++
 +	if (strcmp(entry->name, "send-keys") == 0 ||
 +	    strcmp(entry->name, "capture-pane") == 0 ||
 +	    strcmp(entry->name, "paste-buffer") == 0 ||
@@ -271,7 +290,7 @@ index 2a22151..453432a 100644
  	if (retval == CMD_RETURN_ERROR)
  		goto out;
  
-@@ -663,6 +734,43 @@ cmdq_fire_command(struct cmdq_item *item)
+@@ -663,6 +753,43 @@ cmdq_fire_command(struct cmdq_item *item)
  	}
  
  out:
@@ -315,7 +334,7 @@ index 2a22151..453432a 100644
  	item->client = saved;
  	if (retval == CMD_RETURN_ERROR) {
  		fsp = NULL;
-@@ -672,10 +780,12 @@ out:
+@@ -672,10 +799,12 @@ out:
  			fsp = &item->state->current;
  		else if (cmd_find_from_client(&fs, item->client, 0) == 0)
  			fsp = &fs;
@@ -809,10 +828,10 @@ index 49cac8b..d592a11 100644
  		return (0);
 diff --git a/tmux-ide-journal.c b/tmux-ide-journal.c
 new file mode 100644
-index 0000000..8ab466e
+index 0000000..517fc31
 --- /dev/null
 +++ b/tmux-ide-journal.c
-@@ -0,0 +1,672 @@
+@@ -0,0 +1,695 @@
 +/*
 + * Copyright (c) 2026 wavyrai
 + *
@@ -1140,7 +1159,7 @@ index 0000000..8ab466e
 +	    "\"coverage\":[\"command-outcome-v1\",\"pty-enqueue-v1\",\"capture-"
 +	    "produced-v1\",\"cooperative-operation-v1\",\"pane-identity-v1\"],\"capacity\":%u,"
 +	    "\"maxBatch\":%u,\"maxWaiters\":%u,\"waitingReaders\":%u,"
-+	    "\"degraded\":%u,\"readerTransport\":\"sessionless-control-v1\",\"ownedOperationTransport\":\"direct-wrapper-v1\",\"ownedOperationEpochGuard\":\"server-epoch-v1\"}",
++	    "\"degraded\":%u,\"readerTransport\":\"sessionless-control-v1\",\"ownedOperationTransport\":\"direct-wrapper-v1\",\"ownedOperationEpochGuard\":\"server-epoch-v1\",\"ownedOperationPaneGuard\":\"direct-pane-v1\"}",
 +	    ti_server_epoch, ti_journal_epoch, ti_journal ? "true" : "false",
 +	    TI_CAPACITY, TI_MAX_BATCH, TI_MAX_WAITERS, waiting, ti_degraded);
 +}
@@ -1423,6 +1442,10 @@ index 0000000..8ab466e
 +	struct args *args = cmd_get_args(self);
 +	const char *operation = args_get(args, 'O');
 +	const char *expected_epoch = args_get(args, 'E');
++	const char *expected_pane = args_get(args, 't');
++	const char *expected_birth = args_get(args, 'B');
++	uint64_t pane_id, birth_id;
++	struct window_pane *guard_pane;
 +	struct cmd_list *commands;
 +	struct cmd_parse_result *parsed;
 +	struct cmd_parse_input parse = { .flags = CMD_PARSE_NOALIAS | CMD_PARSE_PARSEONLY };
@@ -1439,6 +1462,25 @@ index 0000000..8ab466e
 +	if (!ti_operation_uuid(operation)) {
 +		cmdq_error(item, "operation must be a canonical UUID");
 +		return CMD_RETURN_ERROR;
++	}
++	if (expected_pane || expected_birth) {
++		if (!args_has(args, 'I') || !expected_epoch ||
++		    !expected_pane || expected_pane[0] != '%' ||
++		    !ti_decimal(expected_pane + 1, &pane_id) ||
++		    (expected_pane[1] == '0' && expected_pane[2] != '\0') ||
++		    pane_id > UINT32_MAX || !ti_decimal(expected_birth, &birth_id) ||
++		    !birth_id || expected_birth[0] == '0') {
++			cmdq_error(item, "invalid operation pane guard");
++			return CMD_RETURN_ERROR;
++		}
++		guard_pane = window_pane_find_by_id((u_int)pane_id);
++		if (!guard_pane || guard_pane->tmux_ide_birth_id != birth_id) {
++			cmdq_error(item, "operation pane lifetime mismatch");
++			return CMD_RETURN_ERROR;
++		}
++		origin.guard_wrapper_id = origin.parent_id;
++		origin.guard_pane_id = (uint32_t)pane_id;
++		origin.guard_birth_id = birth_id;
 +	}
 +	if (args_has(args, 'I') && (!ti_journal || !origin.parent_id ||
 +	    !origin.issuer_id || !client ||
@@ -1481,16 +1523,16 @@ index 0000000..8ab466e
 +const struct cmd_entry cmd_tmux_ide_run_entry = {
 +    .name = "tmux-ide-run",
 +    .alias = NULL,
-+    .args = {"E:IO:", 1, 1, ti_run_parse},
-+    .usage = "[-I [-E server-epoch]] -O operation-uuid { commands }",
++    .args = {"B:E:IO:t:", 1, 1, ti_run_parse},
++    .usage = "[-I [-E server-epoch [-t pane-id -B birth-id]]] -O operation-uuid { commands }",
 +    .flags = 0,
 +    .exec = ti_run_exec};
 diff --git a/tmux-ide-journal.h b/tmux-ide-journal.h
 new file mode 100644
-index 0000000..2c8e446
+index 0000000..5fd589b
 --- /dev/null
 +++ b/tmux-ide-journal.h
-@@ -0,0 +1,73 @@
+@@ -0,0 +1,75 @@
 +/*
 + * Copyright (c) 2026 wavyrai
 + *
@@ -1522,6 +1564,8 @@ index 0000000..2c8e446
 +enum ti_derivation { TI_DIRECT, TI_CHILD, TI_HOOK, TI_BACKGROUND };
 +struct ti_origin {
 +	uint64_t issuer_id, request_id, parent_id;
++	uint64_t guard_wrapper_id, guard_birth_id;
++	uint32_t guard_pane_id;
 +	uint32_t transport, derivation;
 +	char correlation[37];
 +};

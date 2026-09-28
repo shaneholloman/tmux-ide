@@ -228,3 +228,28 @@ extension without an ordinary `if-shell` command around the operation. It must
 require this capability before dispatch. Existing wrapper forms, schemas, and
 ordinary command aliases remain unchanged. Server lifetime validation does not
 by itself guard pane lifetime between individual child commands.
+
+### Direct-child pane lifetime guard
+
+The optional capability `ownedOperationPaneGuard: "direct-pane-v1"` adds paired
+`-t %RAW_PANE_ID -B POSITIVE_BIRTH_ID` arguments to the strict `-I -E` wrapper.
+Both are required together. The wrapper validates the physical pane before
+parsing its body, then copies the expected ID, birth, and wrapper command ID
+into immutable child origin metadata. Immediately before each direct child
+executes, tmux verifies that physical pane still exists with that birth. For
+commands whose declared target is a pane, the resolved target must be that
+same pane. Guarded `send-keys -K` and `-M` are refused because they can redirect
+input beyond that target contract. Failure stops the remaining command group.
+
+This check is repeated after a preceding child hook yields. It also precedes
+non-pane children such as set-buffer. No event-loop yield occurs between the
+check and synchronous command execution. Moving or linking the same physical
+pane preserves birth and is permitted; semantic workspace membership is not
+part of this native guarantee. Hook and background descendants have different
+immediate parents and retain ordinary tmux behavior. Nested commands are not
+silently claimed to be direct guarded children.
+
+Synchronization can enqueue input to multiple panes inside one send command.
+The guard applies to its direct resolved target; every resulting physical
+PTY effect remains separately observed. Owned attribution must match the exact
+expected birth; other synchronized targets remain independent evidence.
