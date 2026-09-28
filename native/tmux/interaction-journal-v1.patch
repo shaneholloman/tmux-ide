@@ -84,7 +84,7 @@ index 7233b7d..6487b7d 100644
  		paste_free(pb);
  
 diff --git a/cmd-queue.c b/cmd-queue.c
-index 2a22151..5308660 100644
+index 2a22151..453432a 100644
 --- a/cmd-queue.c
 +++ b/cmd-queue.c
 @@ -39,6 +39,10 @@ enum cmdq_type {
@@ -299,6 +299,22 @@ index 2a22151..5308660 100644
  	item->client = saved;
  	if (retval == CMD_RETURN_ERROR) {
  		fsp = NULL;
+@@ -672,10 +780,12 @@ out:
+ 			fsp = &item->state->current;
+ 		else if (cmd_find_from_client(&fs, item->client, 0) == 0)
+ 			fsp = &fs;
+-		cmdq_insert_hook(fsp != NULL ? fsp->s : NULL, item, fsp,
+-		    "command-error");
++		if (saved == NULL || !(saved->flags & CLIENT_JOURNAL_READER))
++			cmdq_insert_hook(fsp != NULL ? fsp->s : NULL, item, fsp,
++			    "command-error");
+ 		cmdq_guard(item, "error", flags);
+-	} else
++	} else if (!(retval == CMD_RETURN_WAIT && saved != NULL &&
++	    (saved->flags & CLIENT_JOURNAL_READER)))
+ 		cmdq_guard(item, "end", flags);
+ 	return (retval);
+ }
 diff --git a/cmd-run-shell.c b/cmd-run-shell.c
 index 6114f68..0caa94f 100644
 --- a/cmd-run-shell.c
@@ -349,11 +365,185 @@ index 6916da7..9619bf2 100644
  	NULL
  };
  
+diff --git a/control-notify.c b/control-notify.c
+index 151f959..8524b3f 100644
+--- a/control-notify.c
++++ b/control-notify.c
+@@ -25,7 +25,7 @@
+ 
+ #define CONTROL_SHOULD_NOTIFY_CLIENT(c) \
+ 	((c) != NULL && ((c)->flags & CLIENT_CONTROL) && \
+-	 (c)->control_state != NULL)
++	 (c)->control_state != NULL && !((c)->flags & CLIENT_JOURNAL_READER))
+ 
+ void
+ control_notify_pane_mode_changed(int pane)
 diff --git a/control.c b/control.c
-index b88072d..2974180 100644
+index b88072d..d586a4c 100644
 --- a/control.c
 +++ b/control.c
-@@ -571,6 +571,7 @@ control_read_callback(__unused struct bufferevent *bufev, void *data)
+@@ -113,6 +113,7 @@ RB_HEAD(control_subs, control_sub);
+ 
+ /* Control client state. */
+ struct control_state {
++	int journal_busy;
+ 	struct control_panes		 panes;
+ 
+ 	TAILQ_HEAD(, control_pane)	 pending_list;
+@@ -390,6 +391,8 @@ control_pause_pane(struct client *c, struct window_pane *wp)
+ 	}
+ }
+ 
++static void control_journal_close(struct client *);
++
+ /* Write a line. */
+ static void printflike(2, 0)
+ control_vwrite(struct client *c, const char *fmt, va_list ap)
+@@ -398,6 +401,12 @@ control_vwrite(struct client *c, const char *fmt, va_list ap)
+ 	char			*s;
+ 
+ 	xvasprintf(&s, fmt, ap);
++	if ((c->flags & CLIENT_JOURNAL_READER) &&
++	    EVBUFFER_LENGTH(cs->write_event->output) + strlen(s) + 1 > 65536) {
++		free(s);
++		control_journal_close(c);
++		return;
++	}
+ 	log_debug("%s: %s: writing line: %s", __func__, c->name, s);
+ 
+ 	bufferevent_write(cs->write_event, s, strlen(s));
+@@ -539,13 +548,117 @@ control_error(struct cmdq_item *item, void *data)
+ }
+ 
+ /* Control client error callback. */
++static void
++control_journal_close(struct client *c)
++{
++	struct control_state *cs = c->control_state;
++	c->flags |= CLIENT_EXIT;
++	tmux_ide_interaction_client_lost(c);
++	evbuffer_drain(cs->write_event->output, EVBUFFER_LENGTH(cs->write_event->output));
++	bufferevent_disable(cs->read_event, EV_READ);
++}
++
+ static void
+ control_error_callback(__unused struct bufferevent *bufev,
+     __unused short what, void *data)
+ {
+ 	struct client	*c = data;
+ 
+-	c->flags |= CLIENT_EXIT;
++	if (c->flags & CLIENT_JOURNAL_READER)
++		control_journal_close(c);
++	else
++		c->flags |= CLIENT_EXIT;
++}
++
++/* Closed reader grammar; caller text never reaches the general parser. */
++static enum cmd_retval
++control_journal_done(struct cmdq_item *item, __unused void *data)
++{
++	struct client *c = cmdq_get_client(item);
++	c->control_state->journal_busy = 0;
++	control_journal_ready(c);
++	return (CMD_RETURN_NORMAL);
++}
++
++void
++control_journal_ready(struct client *c)
++{
++	struct control_state *cs = c->control_state;
++	if (c->flags & (CLIENT_EXIT|CLIENT_DEAD))
++		return;
++	bufferevent_setwatermark(cs->read_event, EV_READ, 0, 128);
++	bufferevent_setwatermark(cs->write_event, EV_WRITE, 0, 0);
++	if (cs->journal_busy || EVBUFFER_LENGTH(cs->write_event->output) == 0)
++		bufferevent_enable(cs->read_event, EV_READ);
++	else
++		bufferevent_disable(cs->read_event, EV_READ);
++}
++
++static void
++control_journal_read(struct client *c)
++{
++	struct control_state *cs = c->control_state;
++	struct evbuffer *buffer = cs->read_event->input;
++	struct cmdq_state *state;
++	struct cmd_parse_input parse = { .flags = CMD_PARSE_NOALIAS };
++	char *line, *error, epoch[37], cursor[21], limit[3], wait[2];
++	char command[160], extra;
++	size_t i, line_length, length = EVBUFFER_LENGTH(buffer);
++	unsigned long long after;
++	unsigned n;
++	int fields;
++
++	if (length >= 128) {
++		control_journal_close(c);
++		return;
++	}
++	line = evbuffer_readln(buffer, &line_length, EVBUFFER_EOL_LF);
++	if (line == NULL) {
++		if (cs->journal_busy && length)
++			control_journal_close(c);
++		return;
++	}
++	if (strlen(line) != line_length || !*line || cs->journal_busy ||
++	    EVBUFFER_LENGTH(cs->write_event->output) != 0 ||
++	    EVBUFFER_LENGTH(buffer) != 0)
++		goto invalid;
++	fields = sscanf(line, "read %36s %20s %2s %1s %c", epoch, cursor, limit, wait, &extra);
++	if (fields != 4 || strlen(epoch) != 36 || strlen(wait) != 1 ||
++	    (*wait != '0' && *wait != '1'))
++		goto invalid;
++	for (i = 0; i < 36; i++) {
++		if (i == 8 || i == 13 || i == 18 || i == 23) {
++			if (epoch[i] != '-') goto invalid;
++		} else if (!((epoch[i] >= '0' && epoch[i] <= '9') ||
++		    (epoch[i] >= 'a' && epoch[i] <= 'f'))) goto invalid;
++	}
++	if (!*cursor || (cursor[0] == '0' && cursor[1])) goto invalid;
++	for (i = 0; cursor[i]; i++) if (cursor[i] < '0' || cursor[i] > '9') goto invalid;
++	errno = 0;
++	after = strtoull(cursor, NULL, 10);
++	if (errno) goto invalid;
++	if (!*limit || limit[0] == '0') goto invalid;
++	for (i = 0; limit[i]; i++) if (limit[i] < '0' || limit[i] > '9') goto invalid;
++	n = strtoul(limit, NULL, 10);
++	if (n < 1 || n > 64) goto invalid;
++	snprintf(command, sizeof command, "read %s %llu %u %c", epoch, after, n, *wait);
++	if (strcmp(command, line) != 0) goto invalid;
++	snprintf(command, sizeof command, "tmux-ide-events -r %s -E %s -a %llu -n %u",
++	    *wait == '1' ? "-w" : "", epoch, after, n);
++	free(line);
++	cs->journal_busy = 1;
++	state = cmdq_new_state(NULL, NULL, CMDQ_STATE_CONTROL);
++	cmdq_set_state_origin_client(state, c, TI_TRANSPORT_CONTROL);
++	if (cmd_parse_and_append(command, &parse, c, state, &error) == CMD_PARSE_ERROR) {
++		free(error);
++		control_journal_close(c);
++	} else
++		cmdq_append(c, cmdq_get_callback(control_journal_done, NULL));
++	cmdq_free_state(state);
++	return;
++invalid:
++	free(line);
++	control_journal_close(c);
+ }
+ 
+ /* Control client input callback. Read lines and fire commands. */
+@@ -559,6 +672,11 @@ control_read_callback(__unused struct bufferevent *bufev, void *data)
+ 	struct cmdq_state	*state;
+ 	enum cmd_parse_status	 status;
+ 
++	if (c->flags & CLIENT_JOURNAL_READER) {
++		control_journal_read(c);
++		return;
++	}
++
+ 	for (;;) {
+ 		line = evbuffer_readln(buffer, NULL, EVBUFFER_EOL_LF);
+ 		if (line == NULL)
+@@ -571,6 +689,7 @@ control_read_callback(__unused struct bufferevent *bufev, void *data)
  		}
  
  		state = cmdq_new_state(NULL, NULL, CMDQ_STATE_CONTROL);
@@ -361,6 +551,19 @@ index b88072d..2974180 100644
  		status = cmd_parse_and_append(line, NULL, c, state, &error);
  		if (status == CMD_PARSE_ERROR)
  			cmdq_append(c, cmdq_get_callback(control_error, error));
+@@ -739,6 +858,12 @@ control_write_callback(__unused struct bufferevent *bufev, void *data)
+ 	struct evbuffer		*evb = cs->write_event->output;
+ 	size_t			 space, limit;
+ 
++	if (c->flags & CLIENT_JOURNAL_READER) {
++		control_journal_ready(c);
++		if (EVBUFFER_LENGTH(evb) == 0)
++			bufferevent_disable(cs->write_event, EV_WRITE);
++		return;
++	}
+ 	control_flush_all_blocks(c);
+ 
+ 	while (EVBUFFER_LENGTH(evb) < CONTROL_BUFFER_HIGH) {
 diff --git a/format.c b/format.c
 index 1a6d73a..8835742 100644
 --- a/format.c
@@ -475,7 +678,7 @@ index 8605601..b1edb72 100644
  		}
  	}
 diff --git a/server-client.c b/server-client.c
-index 52886f0..e3bdbd6 100644
+index 52886f0..4890dff 100644
 --- a/server-client.c
 +++ b/server-client.c
 @@ -292,6 +292,7 @@ server_client_create(int fd)
@@ -494,7 +697,51 @@ index 52886f0..e3bdbd6 100644
  
  	server_client_clear_overlay(c);
  	status_prompt_clear(c);
-@@ -2412,6 +2414,7 @@ server_client_dispatch_command(struct client *c, struct imsg *imsg)
+@@ -2347,7 +2349,9 @@ server_client_command_done(struct cmdq_item *item, __unused void *data)
+ {
+ 	struct client	*c = cmdq_get_client(item);
+ 
+-	if (~c->flags & CLIENT_ATTACHED)
++	if (c->flags & CLIENT_JOURNAL_READER)
++		control_journal_ready(c);
++	else if (~c->flags & CLIENT_ATTACHED)
+ 		c->flags |= CLIENT_EXIT;
+ 	else if (~c->flags & CLIENT_EXIT) {
+ 		if (c->flags & CLIENT_CONTROL)
+@@ -2367,10 +2371,11 @@ server_client_dispatch_command(struct client *c, struct imsg *imsg)
+ 	int			  argc = 0;
+ 	char			**argv, *cause;
+ 	struct cmd_parse_result	 *pr;
++	struct cmd_parse_input journal_parse = { .flags = CMD_PARSE_NOALIAS };
+ 	struct args_value	 *values;
+ 	struct cmdq_item	 *new_item;
+ 
+-	if (c->flags & CLIENT_EXIT)
++	if (c->flags & (CLIENT_EXIT|CLIENT_JOURNAL_READER))
+ 		return (0);
+ 
+ 	if (imsg->hdr.len - IMSG_HEADER_SIZE < sizeof data)
+@@ -2388,12 +2393,18 @@ server_client_dispatch_command(struct client *c, struct imsg *imsg)
+ 	}
+ 
+ 	argc = data.argc;
++	/* Only this exact initial command may become a closed reader. */
++	if (argc == 2 && strcmp(argv[0], "tmux-ide-events") == 0 &&
++	    strcmp(argv[1], "-P") == 0 && (c->flags & CLIENT_CONTROL) &&
++	    !(c->flags & CLIENT_CONTROLCONTROL) && c->session == NULL)
++		c->flags |= CLIENT_JOURNAL_READER;
+ 	if (argc == 0) {
+ 		new_item = cmdq_get_callback(server_client_default_command,
+ 		    NULL);
+ 	} else {
+ 		values = args_from_vector(argc, argv);
+-		pr = cmd_parse_from_arguments(values, argc, NULL);
++		pr = cmd_parse_from_arguments(values, argc,
++		    (c->flags & CLIENT_JOURNAL_READER) ? &journal_parse : NULL);
+ 		switch (pr->status) {
+ 		case CMD_PARSE_ERROR:
+ 			cause = pr->error;
+@@ -2412,6 +2423,7 @@ server_client_dispatch_command(struct client *c, struct imsg *imsg)
  			new_item = cmdq_get_command(pr->cmdlist, NULL);
  		cmd_list_free(pr->cmdlist);
  	}
@@ -502,8 +749,25 @@ index 52886f0..e3bdbd6 100644
  	cmdq_append(c, new_item);
  	cmdq_append(c, cmdq_get_callback(server_client_command_done, NULL));
  
+@@ -2456,14 +2468,14 @@ server_client_dispatch_identify(struct client *c, struct imsg *imsg)
+ 		if (datalen != sizeof flags)
+ 			return (-1);
+ 		memcpy(&flags, data, sizeof flags);
+-		c->flags |= flags;
++		c->flags |= (uint64_t)flags & ~CLIENT_JOURNAL_READER;
+ 		log_debug("client %p IDENTIFY_FLAGS %#x", c, flags);
+ 		break;
+ 	case MSG_IDENTIFY_LONGFLAGS:
+ 		if (datalen != sizeof longflags)
+ 			return (-1);
+ 		memcpy(&longflags, data, sizeof longflags);
+-		c->flags |= longflags;
++		c->flags |= longflags & ~CLIENT_JOURNAL_READER;
+ 		log_debug("client %p IDENTIFY_LONGFLAGS %#llx", c,
+ 		    (unsigned long long)longflags);
+ 		break;
 diff --git a/server.c b/server.c
-index 49cac8b..3517036 100644
+index 49cac8b..d592a11 100644
 --- a/server.c
 +++ b/server.c
 @@ -252,6 +252,7 @@ server_start(struct tmuxproc *client, uint64_t flags, struct event_base *base,
@@ -514,12 +778,25 @@ index 49cac8b..3517036 100644
  
  	job_kill_all();
  	status_prompt_save_history();
+@@ -296,8 +297,10 @@ server_loop(void)
+ 	 * clients but don't actually exit until they've gone.
+ 	 */
+ 	cmd_wait_for_flush();
+-	if (!TAILQ_EMPTY(&clients))
+-		return (0);
++	TAILQ_FOREACH(c, &clients, entry) {
++		if (!(c->flags & CLIENT_JOURNAL_READER))
++			return (0);
++	}
+ 
+ 	if (job_still_running())
+ 		return (0);
 diff --git a/tmux-ide-journal.c b/tmux-ide-journal.c
 new file mode 100644
-index 0000000..19f45e7
+index 0000000..1a3113b
 --- /dev/null
 +++ b/tmux-ide-journal.c
-@@ -0,0 +1,608 @@
+@@ -0,0 +1,632 @@
 +/*
 + * Copyright (c) 2026 wavyrai
 + *
@@ -568,9 +845,9 @@ index 0000000..19f45e7
 +    .name = "tmux-ide-events",
 +    .alias = NULL,
 +#ifdef TMUX_IDE_JOURNAL_TEST
-+    .args = {"VeirwE:a:n:TFXWDB", 0, 0, NULL},
++    .args = {"VPeirwE:a:n:TFXWDB", 0, 0, NULL},
 +#else
-+    .args = {"VeirwE:a:n:", 0, 0, NULL},
++    .args = {"VPeirwE:a:n:", 0, 0, NULL},
 +#endif
 +    .usage = "-V | -e | -i | -r [-w] -E epoch -a cursor [-n limit]",
 +    .flags = 0,
@@ -847,7 +1124,7 @@ index 0000000..19f45e7
 +	    "\"coverage\":[\"command-outcome-v1\",\"pty-enqueue-v1\",\"capture-"
 +	    "produced-v1\",\"cooperative-operation-v1\",\"pane-identity-v1\"],\"capacity\":%u,"
 +	    "\"maxBatch\":%u,\"maxWaiters\":%u,\"waitingReaders\":%u,"
-+	    "\"degraded\":%u}",
++	    "\"degraded\":%u,\"readerTransport\":\"sessionless-control-v1\"}",
 +	    ti_server_epoch, ti_journal_epoch, ti_journal ? "true" : "false",
 +	    TI_CAPACITY, TI_MAX_BATCH, TI_MAX_WAITERS, waiting, ti_degraded);
 +}
@@ -952,9 +1229,12 @@ index 0000000..19f45e7
 +			continue;
 +		waiter = ti_waiters[i];
 +		memset(&ti_waiters[i], 0, sizeof ti_waiters[i]);
-+		if (!(waiter.client->flags & CLIENT_DEAD))
++		if (!(waiter.client->flags & CLIENT_DEAD)) {
 +			ti_read(waiter.item, waiter.epoch, waiter.after,
 +				waiter.limit);
++			if (waiter.client->flags & CLIENT_JOURNAL_READER)
++				cmdq_guard(waiter.item, "end", 1);
++		}
 +		cmdq_continue(waiter.item);
 +	}
 +}
@@ -966,7 +1246,7 @@ index 0000000..19f45e7
 +	uint64_t after, limit = TI_MAX_BATCH;
 +	const char *epoch;
 +	unsigned i;
-+	int modes = args_has(args, 'V') + args_has(args, 'e') +
++	int modes = args_has(args, 'P') + args_has(args, 'V') + args_has(args, 'e') +
 +		    args_has(args, 'i') + args_has(args, 'r');
 +	ti_initialize();
 +#ifdef TMUX_IDE_JOURNAL_TEST
@@ -1025,6 +1305,27 @@ index 0000000..19f45e7
 +					 "terminal operation unaffected");
 +			return CMD_RETURN_ERROR;
 +		}
++	}
++	if (args_has(args, 'P')) {
++		struct client *other;
++		unsigned readers = 0;
++		TAILQ_FOREACH(other, &clients, entry)
++			if (other->flags & CLIENT_JOURNAL_READER)
++				readers++;
++		if (!client || !(client->flags & CLIENT_JOURNAL_READER) ||
++		    client->session || !client->tmux_ide_connection_id ||
++		    !ti_journal || readers > TI_MAX_WAITERS) {
++			if (client && (client->flags & CLIENT_JOURNAL_READER)) {
++				client->flags |= CLIENT_EXIT;
++			}
++			cmdq_error(item, "sessionless journal reader unavailable");
++			return CMD_RETURN_ERROR;
++		}
++		ti_capability(item);
++		cmdq_print(item, "{\"schemaVersion\":2,\"type\":\"identity\","
++		    "\"serverEpoch\":\"%s\",\"connectionId\":\"%" PRIu64 "\"}",
++		    ti_server_epoch, client->tmux_ide_connection_id);
++		return CMD_RETURN_NORMAL;
 +	}
 +	if (args_has(args, 'V') || args_has(args, 'e')) {
 +		ti_capability(item);
@@ -1208,7 +1509,7 @@ index 0000000..2c8e446
 +}
 +#endif
 diff --git a/tmux.h b/tmux.h
-index c9f8a32..a16c3bd 100644
+index c9f8a32..b5cefe8 100644
 --- a/tmux.h
 +++ b/tmux.h
 @@ -1249,6 +1249,7 @@ struct visible_ranges {
@@ -1227,7 +1528,15 @@ index c9f8a32..a16c3bd 100644
  	const char		*name;
  	struct tmuxpeer		*peer;
  	const char		*user;
-@@ -2935,6 +2937,30 @@ struct cmd_parse_result *cmd_parse_from_buffer(const void *, size_t,
+@@ -2126,6 +2128,7 @@ struct client {
+ #define CLIENT_ASSUMEPASTING 0x2000000000ULL
+ #define CLIENT_REDRAWSCROLLBARS 0x4000000000ULL
+ #define CLIENT_NO_DETACH_ON_DESTROY 0x8000000000ULL
++#define CLIENT_JOURNAL_READER 0x10000000000ULL
+ #define CLIENT_ALLREDRAWFLAGS		\
+ 	(CLIENT_REDRAWWINDOW|		\
+ 	 CLIENT_REDRAWSTATUS|		\
+@@ -2935,6 +2938,30 @@ struct cmd_parse_result *cmd_parse_from_buffer(const void *, size_t,
  struct cmd_parse_result *cmd_parse_from_arguments(struct args_value *, u_int,
  		     struct cmd_parse_input *);
  
@@ -1258,6 +1567,14 @@ index c9f8a32..a16c3bd 100644
  /* cmd-queue.c */
  struct cmdq_state *cmdq_new_state(struct cmd_find_state *, struct key_event *,
  		     int);
+@@ -3649,6 +3676,7 @@ char	*parse_window_name(const char *);
+ void	control_discard(struct client *);
+ void	control_start(struct client *);
+ void	control_ready(struct client *);
++void control_journal_ready(struct client *);
+ void	control_stop(struct client *);
+ void	control_set_pane_on(struct client *, struct window_pane *);
+ void	control_set_pane_off(struct client *, struct window_pane *);
 diff --git a/window.c b/window.c
 index 87d6df4..749b7eb 100644
 --- a/window.c

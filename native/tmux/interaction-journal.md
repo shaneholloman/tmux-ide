@@ -124,3 +124,48 @@ forces exhaustion and is absent from production builds.
 The fixed record gains one uint64 scalar (128bytes,524296byte ring); synchronous
 64target aggregation additionally retains each actual pane birth identity. No
 per-event allocation or content logging is introduced.
+
+## Optional sessionless control reader
+
+Capability optionally advertises `readerTransport: "sessionless-control-v1"`.
+The daemon may then launch `tmux -N -C -S SOCKET tmux-ide-events -P` after a
+same-live-server capability probe/explicit enable. Only that exact initial argv
+pair on ordinary `-C` can park; `-CC`, disabled journals and unavailable connection
+identity cannot. No `MSG_READY` or terminal attachment occurs. At most4parked
+readers exist, independently of the existing4waiter slots.
+
+The initial normal control `%begin`/`%end` frame contains exactly two JSON lines:
+capability followed by the existing wire2 identity response. Both share the live
+serverEpoch; connectionId is the actual original connection. Later input is only
+`read JOURNAL_UUID UINT64_CURSOR LIMIT WAIT\n`, where LIMIT is1..64 and WAIT0or1.
+Tokens are canonical lowercase UUID/decimal strings with exactly single spaces.
+Each accepted request has one normal control response frame. Repeated parking,
+ordinary tmux commands, separators, expansions and pipelining are rejected before
+caller text can reach the general command parser. The implementation constructs
+only a fixed journal-read command from validated scalar tokens.
+
+Input has a128byte high watermark; one request may be in flight. During a wait,
+readability is solely a bounded cancellation/violation detector: empty line/EOF
+closes, any second request closes. Completed responses disable reading until the
+actual output buffer drains; the write callback rearms it. Output has a64KiB hard
+ceiling, batches at most64records, and no global control notifications or pane
+output are emitted to the parked reader. Closing cancels its waiter; a stopped
+consumer cannot accumulate a command queue. Killing the helper remains the
+bounded cancellation fallback when output backpressure has disabled stdin reads.
+
+Parked readers do not keep an otherwise empty/exiting server alive. They have no
+session, attached-client count or resize participation. The internal reader flag
+cannot be claimed via client identification flags. This mode is a journal reader,
+not a general control transport or authenticated agent identity.
+
+Both the initial `-P` parse and translated reads explicitly disable tmux command
+aliases. Parked read errors do not run user `command-error` hooks. A waiting read
+keeps its `%begin` frame open; the native wake callback emits JSON then `%end`,
+so no delayed record escapes its request frame. Embedded NUL bytes are rejected
+using the actual input-line byte length.
+
+Before the initial command establishes the reader flag, ordinary tmux control
+identification may race an unrelated global notification. Consumers must reject
+unexpected handshake traffic and retry with bounded backoff; this is not valid
+journal evidence. After parking, notifications are suppressed. This limitation
+avoids changing startup behavior for ordinary control clients.
