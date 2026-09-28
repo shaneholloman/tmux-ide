@@ -41,6 +41,23 @@ export function paneInteractionPresentation(
   const target = name(event.destinationPaneId) ?? "Pane";
   const pending = event.phase === "accepted";
   const failed = event.phase === "rejected" || event.phase === "timed-out";
+  // Stock after-command hooks do not prove application input or that a
+  // caller consumed captured output. Keep that limit visible on every surface.
+  if (event.origin === "external" && event.phase === "observed") {
+    return {
+      label: read ? "Read command · reader unknown" : "Send command · sender unknown",
+      compactLabel: read ? "Read command" : "Send command",
+      source: "Unknown",
+      target,
+      pending,
+      failed,
+      commandOnly: true,
+      explanation: read
+        ? "tmux ran a pane capture command. This does not prove that an agent received or read the output."
+        : "tmux ran a send-keys command. It may affect copy mode or send no input; application delivery is not confirmed.",
+      phase: "Command observed",
+    };
+  }
   const label = failed
     ? `${read ? "Read" : "Send"} ${event.phase === "timed-out" ? "timed out" : "failed"}`
     : pending
@@ -70,6 +87,7 @@ export function paneInteractionPresentation(
     target,
     pending,
     failed,
+    commandOnly: false,
     explanation: failed
       ? "The operation did not complete successfully."
       : pending

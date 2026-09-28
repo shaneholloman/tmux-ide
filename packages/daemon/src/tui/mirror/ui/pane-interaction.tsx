@@ -47,7 +47,15 @@ export function createPaneInteractionMarker(
     const current = event();
     if (!current) return "";
     const value = paneInteractionPresentation(current);
-    return value.failed ? "!" : value.pending ? (animate() ? marker() : "↳") : "✓";
+    return value.failed
+      ? "!"
+      : value.pending
+        ? animate()
+          ? marker()
+          : "↳"
+        : value.commandOnly
+          ? "·"
+          : "✓";
   };
 }
 
@@ -66,7 +74,15 @@ export function PaneInteraction(props: PaneInteractionProps) {
         width={Math.max(1, props.width - detailsWidth())}
         label={value().label}
         marker={marker()}
-        tone={value().failed ? "warning" : value().pending ? "accent" : "done"}
+        tone={
+          value().failed
+            ? "warning"
+            : value().pending
+              ? "accent"
+              : value().commandOnly
+                ? "neutral"
+                : "done"
+        }
       />
       <Show when={detailsWidth()}>
         <TuiButton

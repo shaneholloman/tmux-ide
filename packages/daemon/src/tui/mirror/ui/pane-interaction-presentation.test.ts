@@ -44,7 +44,22 @@ it("never invents an actor for external reads or sends", () => {
       },
       name,
     ).label,
-  ).toBe("Input observed · sender unknown");
+  ).toBe("Send command · sender unknown");
+});
+it("keeps stock-hook command evidence distinct from delivery and reader attribution", () => {
+  for (const operationKind of ["workspace.pane.read", "workspace.pane.send"] as const) {
+    const value = paneInteractionPresentation(
+      { ...event, phase: "observed", origin: "external", operationKind },
+      name,
+    );
+    expect(value.source).toBe("Unknown");
+    expect(value.phase).toBe("Command observed");
+    expect(value.commandOnly).toBe(true);
+    expect(value.label).not.toContain("Codex");
+    expect(value.explanation).toContain(
+      operationKind === "workspace.pane.read" ? "does not prove" : "not confirmed",
+    );
+  }
 });
 it("distinguishes timeouts from rejection and delivery from understanding", () => {
   expect(paneInteractionPresentation({ ...event, phase: "timed-out" }, name).label).toBe(

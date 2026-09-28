@@ -17,6 +17,28 @@ const base: PaneInteractionEvent = {
   at: new Date().toISOString(),
 };
 const name = (id: string) => (id === "source" ? "Codex" : "Tests");
+it("external command observations do not display a delivery success marker", async () => {
+  const setup = await renderForTest(
+    () => (
+      <PaneInteraction
+        theme={createSemanticThemeSnapshot({ mode: "dark" })}
+        event={{
+          ...base,
+          phase: "observed",
+          origin: "external",
+          sourcePaneId: null,
+          operationKind: "workspace.pane.send",
+        }}
+        width={70}
+      />
+    ),
+    { width: 70, height: 1 },
+  );
+  await setup.renderOnce();
+  const frame = setup.captureCharFrame();
+  expect(frame).toContain("· Send command · sender unknown");
+  expect(frame).not.toContain("✓");
+});
 for (const mode of ["light", "dark"] as const)
   it(`${mode}: compact row and full interaction agree, keeping context and click isolation`, async () => {
     const theme = createSemanticThemeSnapshot({ mode });
