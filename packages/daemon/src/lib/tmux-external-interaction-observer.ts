@@ -134,15 +134,30 @@ function socketArguments(authority: WorkspacePaneTmuxAuthority): readonly string
     : ["-L", authority.socketSelector.name];
 }
 
+/**
+ * Check unread state and register a waiter in the same non-yielding tmux queue.
+ * `if-shell -F` inserts its branch immediately (cmd-if-shell.c); cmdq_next
+ * executes that branch before servicing other clients (cmd-queue.c). Thus an
+ * append is either visible to this check or happens after wait-for registers.
+ * Signals alone are insufficient: two signals without a waiter cancel tmux's
+ * latched wakeup. A stale latch can cause one empty drain, never a lost batch.
+ */
+export function tmuxInteractionWaitCommand(bufferName: string, channel: string): readonly string[] {
+  const option = tmuxInteractionOption(bufferName);
+  if (!/^[A-Za-z0-9._-]{1,300}$/u.test(channel)) throw new TypeError("Invalid observer channel");
+  return ["if-shell", "-F", `#{==:#{${option}},}`, `wait-for '${channel}'`];
+}
+
 function defaultWaiter(
   authority: WorkspacePaneTmuxAuthority,
+  bufferName: string,
 ): ExternalTmuxInteractionObserverIo["waitForSignal"] {
   const prefix = socketArguments(authority);
   return (channel, signal) =>
     new Promise<void>((resolve, reject) => {
       execFile(
         authority.executablePath,
-        [...prefix, "wait-for", channel],
+        [...prefix, ...tmuxInteractionWaitCommand(bufferName, channel)],
         { signal, encoding: "utf8", windowsHide: true },
         (error) => {
           if (!error) resolve();
@@ -307,7 +322,8 @@ export class TmuxExternalInteractionObserver {
     this.#diagnostics = options.diagnostics ?? null;
     this.#io = {
       runTmux: options.io?.runTmux ?? createPinnedWorkspaceTmuxAsyncRunner(options.tmuxAuthority),
-      waitForSignal: options.io?.waitForSignal ?? defaultWaiter(options.tmuxAuthority),
+      waitForSignal:
+        options.io?.waitForSignal ?? defaultWaiter(options.tmuxAuthority, this.#bufferName),
       delay: options.io?.delay ?? abortableDelay,
     };
   }
@@ -597,8 +613,8 @@ export class TmuxExternalInteractionObserver {
     while (this.#active && !this.#abort.signal.aborted) {
       try {
         if (!this.#installed) await this.install();
-        // A signal sent before this waiter starts is latched by tmux, so hook
-        // installation and process scheduling cannot lose the first event.
+        // The native waiter checks unread retention before blocking. Treat
+        // wait-for signals as hints, not a counted or reliably latched queue.
         await this.#io.waitForSignal(this.#signalChannel, this.#abort.signal);
         if (!this.#active || this.#abort.signal.aborted) break;
         await this.drain();

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { WorkspaceRegistry } from "./workspace-registry.ts";
 import {
   DEFAULT_HOOK_HEALTHCHECK_SCHEDULE,
+  tmuxInteractionWaitCommand,
   TmuxExternalInteractionObserver,
   internalInteractionOperationMarker,
   nextHookHealthcheckDelay,
@@ -895,5 +896,20 @@ describe("tmux external interaction observer", () => {
       await observer.dispose();
       vi.useRealTimers();
     }
+  });
+});
+
+describe("unread-aware native wait command", () => {
+  it("registers a waiter only when retained work is empty, without a shell or yield", () => {
+    expect(tmuxInteractionWaitCommand("observer", "observer-ready")).toEqual([
+      "if-shell",
+      "-F",
+      "#{==:#{@observer},}",
+      "wait-for 'observer-ready'",
+    ]);
+  });
+  it("rejects command injection through either identifier", () => {
+    expect(() => tmuxInteractionWaitCommand("bad;name", "ready")).toThrow();
+    expect(() => tmuxInteractionWaitCommand("observer", "bad'channel")).toThrow();
   });
 });

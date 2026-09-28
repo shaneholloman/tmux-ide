@@ -4,14 +4,17 @@ import {
   TMUX_INTERACTION_MAX_DRAIN_BYTES,
 } from "./tmux-interaction-retention.ts";
 import { createPinnedWorkspaceTmuxAsyncRunner } from "./workspace-pane-creation.ts";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { TmuxExternalInteractionObserver } from "./tmux-external-interaction-observer.ts";
+import {
+  tmuxInteractionWaitCommand,
+  TmuxExternalInteractionObserver,
+} from "./tmux-external-interaction-observer.ts";
 import type { WorkspaceRegistry } from "./workspace-registry.ts";
 import { MirrorControlChannel } from "../terminal/mirror/control-channel.ts";
 
@@ -41,6 +44,130 @@ describe.skipIf(!hasTmux).sequential("tmux external interaction observer live", 
       }
     }
     if (failures.length) throw new AggregateError(failures, "Observer fixture cleanup failed");
+  });
+
+  it("checks unread state despite cancelled wakeups and arms an empty queue atomically", async () => {
+    const root = mkdtempSync("/tmp/tmux-ide-unread-wait-");
+    roots.push(root);
+    const socketPath = join(root, "tmux.sock");
+    const run = (args: readonly string[]) =>
+      execFileSync("tmux", ["-S", socketPath, ...args], { encoding: "utf8" }).trim();
+    run(["-f", "/dev/null", "new-session", "-d", "-s", "project", "cat"]);
+    const buffer = "tmux-ide-unread-regression";
+    const option = tmuxInteractionOption(buffer);
+    const channel = `${buffer}-ready`;
+    const wait = (signal: AbortSignal) =>
+      new Promise<void>((resolve, reject) => {
+        execFile(
+          "tmux",
+          ["-S", socketPath, ...tmuxInteractionWaitCommand(buffer, channel)],
+          { signal },
+          (error) => (error ? reject(error) : resolve()),
+        );
+      });
+    // Reproduce cmd-wait-for's even-signal cancellation before registration.
+    // Retained work must still make the production wait command return.
+    for (const count of [2, 4]) {
+      run(["set-option", "-g", option, "unread"]);
+      for (let i = 0; i < count; i += 1) run(["wait-for", "-S", channel]);
+      await wait(AbortSignal.timeout(1_000));
+    }
+    // No periodic fallback: a genuinely empty queue remains blocked until a
+    // producer appends and signals. This also exercises the rearm boundary.
+    run(["set-option", "-g", option, ""]);
+    const controller = new AbortController();
+    let settled = false;
+    const pending = wait(controller.signal).finally(() => {
+      settled = true;
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(settled).toBe(false);
+      run(["set-option", "-g", option, "next", ";", "wait-for", "-S", channel]);
+      await pending;
+    } finally {
+      controller.abort();
+      await pending.catch(() => undefined);
+    }
+  });
+
+  it("automatically drains an even burst arriving while the previous batch is detached", async () => {
+    const root = mkdtempSync("/tmp/tmux-ide-drain-rearm-");
+    roots.push(root);
+    const socketPath = join(root, "tmux.sock");
+    const executablePath = realpathSync(
+      execFileSync("which", ["tmux"], { encoding: "utf8" }).trim(),
+    );
+    const run = (args: readonly string[]) =>
+      execFileSync(executablePath, ["-S", socketPath, ...args], { encoding: "utf8" }).trim();
+    run(["-f", "/dev/null", "new-session", "-d", "-s", "project", "cat"]);
+    const pane = run(["display-message", "-p", "-t", "project", "#{pane_id}"]);
+    run(["set-option", "-p", "-t", pane, "@tmux_ide_pane_id", "pane.editor"]);
+    const authority = {
+      executablePath,
+      socketSelector: { kind: "path" as const, path: socketPath },
+    };
+    const runner = createPinnedWorkspaceTmuxAsyncRunner(authority);
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let detached = false;
+    let blockOnce = true;
+    const observed: string[] = [];
+    const observer = new TmuxExternalInteractionObserver({
+      daemonInstanceId: randomUUID(),
+      tmuxAuthority: authority,
+      healthcheck: { baseMs: 30_000, maxMs: 30_000 },
+      registry: {
+        list: () => [{ name: "workspace.project", sessionName: "project", projectDir: root }],
+      } as unknown as WorkspaceRegistry,
+      io: {
+        runTmux: async (args, signal) => {
+          const output = await runner(args, signal);
+          if (
+            blockOnce &&
+            args[0] === "set-option" &&
+            args[1] === "-gF" &&
+            args[2]?.endsWith("-drain")
+          ) {
+            blockOnce = false;
+            detached = true;
+            await barrier;
+          }
+          return output;
+        },
+      },
+      onObserved: (interaction) => {
+        observed.push(interaction.semanticPaneId);
+        return false;
+      },
+    });
+    observers.push(observer);
+    try {
+      await observer.start();
+      run(["send-keys", "-t", pane, "-l", "first"]);
+      await vi.waitFor(() => expect(detached).toBe(true));
+      run(["send-keys", "-t", pane, "-l", "second"]);
+      run(["send-keys", "-t", pane, "-l", "third"]);
+      // Force a server round trip after both background hook publications.
+      // The buffer check confirms both records exist before rearming.
+      await vi.waitFor(() => {
+        const options = run(["show-options", "-g"]);
+        const retained = options
+          .split("\n")
+          .find(
+            (line) =>
+              line.startsWith("@tmux-ide-interaction-v3-") &&
+              !line.split(" ")[0]!.endsWith("-drain"),
+          );
+        expect(retained?.match(/workspace.pane.send/g)).toHaveLength(2);
+      });
+      release();
+      await vi.waitFor(() => expect(observed).toHaveLength(3));
+    } finally {
+      release();
+    }
   });
 
   it("publishes ordered markers without a child client and preserves user hooks", async () => {
