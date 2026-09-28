@@ -215,6 +215,16 @@ export function ApplicationShellView(props: ApplicationShellViewProps): JSX.Elem
     },
   };
   const projectionOwner = createMemo(() => (projection() ? appearance : null));
+  const nativePaneIdentities = createMemo(
+    () =>
+      new Map(
+        (props.semantic()?.terminalInventory?.resources ?? []).flatMap((resource) =>
+          resource.attachability.status === "available" && resource.nativeIdentity
+            ? [[resource.attachability.semanticPaneId, resource.nativeIdentity] as const]
+            : [],
+        ),
+      ),
+  );
   const interactionEndpoints = createMemo(
     () =>
       new Map(
@@ -482,6 +492,7 @@ export function ApplicationShellView(props: ApplicationShellViewProps): JSX.Elem
                         interactionForCurrentPane(
                           props.paneInteractions?.(),
                           agent.interactionEndpoint,
+                          agent.nativeIdentity,
                         )
                       }
                       onHelp={(source) => {
@@ -597,6 +608,7 @@ export function ApplicationShellView(props: ApplicationShellViewProps): JSX.Elem
                       interactionObservation={props.interactionObservation}
                       paneInteractions={props.paneInteractions}
                       interactionEndpoints={interactionEndpoints}
+                      nativePaneIdentities={nativePaneIdentities}
                       onSelectPane={props.onSelectPane}
                       onSelectWindowLink={props.onSelectWindowLink}
                       onUnlinkWindowLink={props.onUnlinkWindowLink}

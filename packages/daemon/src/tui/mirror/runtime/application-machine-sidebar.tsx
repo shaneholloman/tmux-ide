@@ -1,3 +1,4 @@
+import type { NativePaneIdentity } from "@tmux-ide/contracts";
 import type { PaneInteractionEndpoint } from "../ui/pane-interaction-presentation.ts";
 import type { InteractionPaneEndpoint } from "@tmux-ide/contracts";
 import type { PaneInteractionEvent } from "../ui/pane-interaction-presentation.ts";
@@ -30,6 +31,7 @@ import { Surface } from "../ui/surface.tsx";
 import { useKeyboardRoute } from "../ui/keyboard-router.tsx";
 
 export interface ApplicationMachineAgent {
+  readonly nativeIdentity: NativePaneIdentity | null;
   readonly interactionEndpoint: Extract<InteractionPaneEndpoint, { kind: "pane" }> | null;
   readonly daemonInstanceId?: string;
   readonly server?: TmuxServerScope;

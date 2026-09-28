@@ -1,9 +1,10 @@
-import type { InteractionObservationStatus } from "@tmux-ide/contracts";
+import type { InteractionObservationStatus, NativePaneIdentity } from "@tmux-ide/contracts";
 import type { InteractionJournalEntry, InteractionPaneEndpoint } from "@tmux-ide/contracts";
 import {
   interactionActivityAt,
   interactionActivityOperationKind,
   interactionPaneEndpointKey,
+  interactionNativePaneEndpointKey,
   type PaneInteractionProjection,
 } from "@tmux-ide/core";
 
@@ -18,29 +19,87 @@ export type PaneInteractionEvent = Pick<
   | "destinationPaneId"
   | "sourceEndpoint"
   | "destinationEndpoint"
+  | "displayDestinationEndpoint"
   | "effect"
   | "at"
 > & { direction?: "incoming" | "outgoing" };
+export function interactionTargetsPane(
+  receipt: InteractionJournalEntry,
+  endpoint: PaneInteractionEndpoint | null | undefined,
+  nativeIdentity?: NativePaneIdentity | null,
+): boolean {
+  if (!endpoint) return false;
+  return [receipt.evidence?.endpoints.destination, receipt.evidence?.endpoints.source].some(
+    (candidate) => {
+      if (candidate?.kind === "pane")
+        return interactionPaneEndpointKey(candidate) === interactionPaneEndpointKey(endpoint);
+      if (candidate?.kind === "native-pane" && nativeIdentity)
+        return (
+          interactionNativePaneEndpointKey(candidate) ===
+          interactionNativePaneEndpointKey({
+            kind: "native-pane",
+            environmentId: endpoint.environmentId,
+            serverScope: endpoint.serverScope,
+            ...nativeIdentity,
+          })
+        );
+      return false;
+    },
+  );
+}
+export function paneInteractionDisplayDestination(
+  event: PaneInteractionEvent,
+): PaneInteractionEndpoint | null {
+  return (
+    event.displayDestinationEndpoint ??
+    (event.destinationEndpoint.kind === "pane" ? event.destinationEndpoint : null)
+  );
+}
 export function receiptPaneInteraction(
   receipt: InteractionJournalEntry,
   viewingEndpoint?: PaneInteractionEndpoint | null,
+  nativeIdentity?: NativePaneIdentity | null,
 ): PaneInteractionEvent | null {
   const evidence = receipt.evidence;
   const operationKind = interactionActivityOperationKind(receipt);
   const destination = evidence?.endpoints.destination;
   if (
     !evidence ||
-    destination?.kind !== "pane" ||
+    (destination?.kind !== "pane" && destination?.kind !== "native-pane") ||
     (operationKind !== "workspace.pane.read" && operationKind !== "workspace.pane.send")
   )
     return null;
+  if (
+    destination.kind === "native-pane" &&
+    !interactionTargetsPane(receipt, viewingEndpoint, nativeIdentity)
+  )
+    return null;
+  const destinationMatchesCurrent =
+    destination.kind === "native-pane" &&
+    viewingEndpoint &&
+    nativeIdentity &&
+    interactionNativePaneEndpointKey(destination) ===
+      interactionNativePaneEndpointKey({
+        kind: "native-pane",
+        environmentId: viewingEndpoint.environmentId,
+        serverScope: viewingEndpoint.serverScope,
+        ...nativeIdentity,
+      });
+  const displayDestinationEndpoint =
+    destination.kind === "pane"
+      ? destination
+      : destinationMatchesCurrent
+        ? viewingEndpoint
+        : undefined;
   const source = evidence.endpoints.source?.kind === "pane" ? evidence.endpoints.source : null;
   return {
     direction:
       viewingEndpoint &&
       source &&
       interactionPaneEndpointKey(source) === interactionPaneEndpointKey(viewingEndpoint) &&
-      interactionPaneEndpointKey(source) !== interactionPaneEndpointKey(destination)
+      (!displayDestinationEndpoint ||
+        interactionPaneEndpointKey(source) !==
+          interactionPaneEndpointKey(displayDestinationEndpoint))
         ? "outgoing"
         : "incoming",
     operationId:
@@ -49,7 +108,8 @@ export function receiptPaneInteraction(
     phase: receipt.type === "interaction.evidence" ? "observed" : receipt.phase,
     origin: receipt.type === "interaction.evidence" ? "external" : receipt.origin,
     sourcePaneId: source?.semanticPaneId ?? null,
-    destinationPaneId: destination.semanticPaneId,
+    destinationPaneId: displayDestinationEndpoint?.semanticPaneId ?? "",
+    displayDestinationEndpoint,
     sourceEndpoint: source,
     destinationEndpoint: destination,
     effect: evidence.effect,
@@ -64,7 +124,8 @@ export function paneInteractionPresentation(
   // An accepted request is not an authenticated actor or proof of delivery.
   const source =
     event.phase === "observed" && event.sourceEndpoint ? name(event.sourceEndpoint) : undefined;
-  const target = name(event.destinationEndpoint) ?? "Pane";
+  const displayDestination = paneInteractionDisplayDestination(event);
+  const target = displayDestination ? (name(displayDestination) ?? "Pane") : "Native pane";
   const pending = event.phase === "accepted";
   const failed = event.phase === "rejected" || event.phase === "timed-out";
   // Stock after-command hooks do not prove application input or that a

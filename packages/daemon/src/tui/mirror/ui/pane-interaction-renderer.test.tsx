@@ -161,3 +161,37 @@ it("urgent lifecycle state wins over a compact receipt", async () => {
   expect(setup.captureCharFrame()).toContain("Needs input");
   expect(setup.captureCharFrame()).not.toContain("Read by");
 });
+
+it("names a current alias while retaining native provenance and unknown caller", async () => {
+  const event: PaneInteractionEvent = {
+    ...base,
+    phase: "observed",
+    origin: "external",
+    sourceEndpoint: null,
+    sourcePaneId: null,
+    destinationEndpoint: {
+      kind: "native-pane",
+      environmentId: endpoint("target").environmentId,
+      serverScope: endpoint("target").serverScope,
+      serverEpoch: "00000000-0000-4000-8000-000000000001",
+      paneBirthId: "7",
+    },
+    displayDestinationEndpoint: endpoint("target"),
+    effect: { kind: "snapshot-produced" },
+  };
+  const setup = await renderForTest(
+    () => (
+      <PaneInteraction
+        theme={createSemanticThemeSnapshot({ mode: "dark" })}
+        event={event}
+        paneName={name}
+        width={70}
+      />
+    ),
+    { width: 70, height: 1 },
+  );
+  await setup.renderOnce();
+  expect(setup.captureCharFrame()).toContain("Pane read · reader unknown");
+  expect(event.destinationEndpoint.kind).toBe("native-pane");
+  setup.renderer.destroy();
+});

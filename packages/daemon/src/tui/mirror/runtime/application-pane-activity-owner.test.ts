@@ -1,3 +1,5 @@
+import { InteractionEvidenceRecordSchemaZ } from "@tmux-ide/contracts";
+import { interactionForCurrentPane } from "./application-pane-interaction-identity.ts";
 import { createRoot, createSignal } from "solid-js";
 import { afterEach, expect, it, vi } from "vitest";
 import { InteractionReceiptSchemaZ, type TmuxInteractionCursor } from "@tmux-ide/contracts";
@@ -196,5 +198,78 @@ it("keeps coverage scoped, updates it while idle and clears disconnected ownersh
   r.calls[0]!.fail(new Error("disconnect"));
   await Promise.resolve();
   expect(r.activity.observationStatus(endpoint(a))).toBeNull();
+  r.dispose();
+});
+
+it("joins physical activity only through current birth metadata and expires aliases without losing provenance", async () => {
+  vi.useFakeTimers();
+  const scope = source(),
+    r = rig([scope]);
+  const alias = endpoint(scope),
+    nativeIdentity = { serverEpoch: uuid, paneBirthId: "7" };
+  const physical = {
+    kind: "native-pane" as const,
+    environmentId: uuid,
+    serverScope: scope.server,
+    ...nativeIdentity,
+  };
+  const entry = InteractionEvidenceRecordSchemaZ.parse({
+    type: "interaction.evidence",
+    sequence: 1,
+    evidence: {
+      schemaVersion: 1,
+      interactionId: uuid,
+      revision: 0,
+      endpoints: { source: null, destination: physical },
+      actor: { kind: "unknown", reason: "unavailable" },
+      observation: {
+        kind: "native-journal",
+        serverEpoch: uuid,
+        command: "send-keys",
+        cursor: { epoch: uuid, sequence: "1" },
+        commandId: null,
+        parentCommandId: null,
+        correlatedOperationId: null,
+      },
+      effect: { kind: "input-enqueued" },
+      occurredAt: null,
+      timeBasis: "unknown",
+      receivedAt: new Date().toISOString(),
+    },
+  });
+  await r.calls[0]!.options.onBatch(
+    {
+      version: 1,
+      type: "batch",
+      server: scope.server,
+      after: 0,
+      cursor: 1,
+      gap: null,
+      receipts: [entry],
+    },
+    new AbortController().signal,
+  );
+  for (const current of [
+    alias,
+    { ...alias, workspaceName: "linked", semanticPaneId: "pane.linked" },
+  ]) {
+    const found = interactionForCurrentPane(r.activity(), current, nativeIdentity);
+    expect(found?.destinationEndpoint).toEqual(physical);
+    expect(found?.displayDestinationEndpoint).toEqual(current);
+  }
+  expect(interactionForCurrentPane(r.activity(), alias)).toBeUndefined();
+  expect(
+    interactionForCurrentPane(r.activity(), alias, { ...nativeIdentity, paneBirthId: "8" }),
+  ).toBeUndefined();
+  expect(
+    interactionForCurrentPane(
+      r.activity(),
+      { ...alias, environmentId: "00000000-0000-4000-8000-000000000002" },
+      nativeIdentity,
+    ),
+  ).toBeUndefined();
+  await vi.advanceTimersByTimeAsync(3201);
+  expect(interactionForCurrentPane(r.activity(), alias, nativeIdentity)).toBeUndefined();
+  expect(r.activity.activity()[0]!.evidence?.endpoints.destination).toEqual(physical);
   r.dispose();
 });

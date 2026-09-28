@@ -1,11 +1,21 @@
-import type { InteractionPaneEndpoint } from "@tmux-ide/contracts";
+import type { InteractionPaneEndpoint, NativePaneIdentity } from "@tmux-ide/contracts";
 import { interactionPaneEndpointKey } from "@tmux-ide/core";
+export interface CurrentPaneInteractionMap<T> extends ReadonlyMap<string, T> {
+  readonly forPane?: (
+    endpoint: Extract<InteractionPaneEndpoint, { kind: "pane" }>,
+    nativeIdentity?: NativePaneIdentity | null,
+  ) => T | undefined;
+}
 /** Current metadata is authority; even one matching semantic ID is insufficient. */
 export function interactionForCurrentPane<T>(
-  interactions: ReadonlyMap<string, T> | undefined,
+  interactions: CurrentPaneInteractionMap<T> | undefined,
   endpoint: Extract<InteractionPaneEndpoint, { kind: "pane" }> | null | undefined,
+  nativeIdentity?: NativePaneIdentity | null,
 ): T | undefined {
-  return endpoint ? interactions?.get(interactionPaneEndpointKey(endpoint)) : undefined;
+  if (!endpoint) return undefined;
+  return interactions?.forPane
+    ? interactions.forPane(endpoint, nativeIdentity)
+    : interactions?.get(interactionPaneEndpointKey(endpoint));
 }
 
 export function nameForCurrentEndpoint(

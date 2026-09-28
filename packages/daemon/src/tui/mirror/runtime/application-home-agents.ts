@@ -1,3 +1,4 @@
+import type { NativePaneIdentity } from "@tmux-ide/contracts";
 import type {
   AgentActivity,
   InteractionPaneEndpoint,
@@ -9,6 +10,7 @@ import type { ApplicationHomeCatalogSession } from "./application-home-catalog.t
 import { terminalAgentStatusLabel } from "./application-terminal-workspace-policy.ts";
 
 export interface HomeAgentRow {
+  readonly nativeIdentity: NativePaneIdentity | null;
   readonly interactionEndpoint: Extract<InteractionPaneEndpoint, { kind: "pane" }> | null;
   readonly key: string;
   readonly machineId?: string;
@@ -76,6 +78,12 @@ export function projectHomeAgentRows(
     daemonInstanceId: session.server?.generation ?? shell.daemon.instanceId,
     agentId: agent.id,
     paneId: agent.paneId,
+    nativeIdentity:
+      shell.resource.terminalInventory?.resources.find(
+        (resource) =>
+          resource.attachability.status === "available" &&
+          resource.attachability.semanticPaneId === agent.paneId,
+      )?.nativeIdentity ?? null,
     interactionEndpoint:
       shell.resource.terminalInventory?.resources.find(
         (resource) =>

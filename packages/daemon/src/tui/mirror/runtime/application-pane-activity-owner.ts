@@ -1,5 +1,6 @@
 import type {
   InteractionJournalEntry,
+  NativePaneIdentity,
   InteractionPaneEndpoint,
   InteractionObservationStatus,
   TmuxServerScope,
@@ -12,6 +13,8 @@ import {
 } from "@tmux-ide/daemon-client/tmux-server-interaction-events";
 import {
   INTERACTION_PRESENCE_MS,
+  interactionForPane,
+  interactionActivityAt,
   initialInteractionFeedState,
   interactionPresenceIsFresh,
   reduceInteractionReceipt,
@@ -68,7 +71,18 @@ export function createApplicationPaneActivityOwner(
       .filter(([, value]) => interactionPresenceIsFresh(value, now))
       .slice(-128);
     feed = { ...feed, panes: Object.fromEntries(current) };
-    setPanes(new Map(current));
+    const snapshot = feed;
+    setPanes(
+      Object.assign(new Map(current), {
+        forPane: (
+          endpoint: Extract<InteractionPaneEndpoint, { kind: "pane" }>,
+          nativeIdentity?: NativePaneIdentity | null,
+        ) => {
+          const value = interactionForPane(snapshot, endpoint, nativeIdentity);
+          return value && interactionPresenceIsFresh(value, Date.now()) ? value : undefined;
+        },
+      }),
+    );
     setActivity(
       feed.activity.filter(
         (receipt) =>
@@ -77,16 +91,14 @@ export function createApplicationPaneActivityOwner(
           receipt.operationKind === "workspace.pane.send",
       ),
     );
-    if (current.length)
-      timer = setTimeout(
-        publish,
-        Math.max(
-          1,
-          Math.min(...current.map(([, value]) => Date.parse(value.at) + INTERACTION_PRESENCE_MS)) -
-            now +
-            1,
-        ),
-      );
+    const deadlines = [
+      ...current.map(([, value]) => Date.parse(value.at) + INTERACTION_PRESENCE_MS),
+      ...feed.activity
+        .filter((entry) => entry.type === "interaction.evidence")
+        .map((entry) => Date.parse(interactionActivityAt(entry)) + INTERACTION_PRESENCE_MS),
+    ].filter((deadline) => deadline >= now && deadline <= now + INTERACTION_PRESENCE_MS);
+    if (deadlines.length)
+      timer = setTimeout(publish, Math.max(1, Math.min(...deadlines) - now + 1));
   };
   const forget = (key: string, retire = true) => {
     if (retire) forgetStatus(key);

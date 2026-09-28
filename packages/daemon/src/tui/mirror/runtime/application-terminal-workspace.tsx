@@ -1,4 +1,5 @@
-import type { InteractionObservationStatus } from "@tmux-ide/contracts";
+import { paneInteractionDisplayDestination } from "../ui/pane-interaction-presentation.ts";
+import type { InteractionObservationStatus, NativePaneIdentity } from "@tmux-ide/contracts";
 import { interactionPaneEndpointKey } from "@tmux-ide/core";
 import type { PaneInteractionEndpoint } from "../ui/pane-interaction-presentation.ts";
 import type { InteractionPaneEndpoint } from "@tmux-ide/contracts";
@@ -155,13 +156,14 @@ export function beginApplicationMouseIngress(
 }
 
 export interface ApplicationTerminalWorkspaceProps {
+  readonly nativePaneIdentities?: Accessor<ReadonlyMap<string, NativePaneIdentity>>;
   readonly interactionEndpoints?: Accessor<
     ReadonlyMap<string, Extract<InteractionPaneEndpoint, { kind: "pane" }>>
   >;
   readonly connectionStatus?: string;
   readonly onScrollbackChange?: (active: boolean) => void;
   readonly interactionObservation?: (
-    endpoint: PaneInteractionEndpoint,
+    endpoint: InteractionPaneEndpoint,
   ) => InteractionObservationStatus | null;
   readonly paneInteractions?: Accessor<ReadonlyMap<string, PaneInteractionProjection>>;
   readonly layout: Accessor<OpenTuiWorkspaceLayoutSnapshot>;
@@ -537,11 +539,12 @@ export function ApplicationTerminalWorkspace(props: ApplicationTerminalWorkspace
     const event = interactionForCurrentPane(
       props.paneInteractions?.(),
       props.interactionEndpoints?.().get(paneId),
+      props.nativePaneIdentities?.().get(paneId),
     );
     if (!event) return;
     paneMenu.dismiss();
     const names = new Map<string, string>();
-    for (const endpoint of [event.sourceEndpoint, event.destinationEndpoint]) {
+    for (const endpoint of [event.sourceEndpoint, paneInteractionDisplayDestination(event)]) {
       if (!endpoint) continue;
       const name = paneName(endpoint);
       if (name) names.set(interactionPaneEndpointKey(endpoint), name);
@@ -1857,6 +1860,7 @@ export function ApplicationTerminalWorkspace(props: ApplicationTerminalWorkspace
                 interaction={interactionForCurrentPane(
                   props.paneInteractions?.(),
                   props.interactionEndpoints?.().get(frame().paneId),
+                  props.nativePaneIdentities?.().get(frame().paneId),
                 )}
                 paneName={paneName}
                 onInteractionDetails={() => inspectInteraction(frame().paneId)}

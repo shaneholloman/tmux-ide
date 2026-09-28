@@ -1,4 +1,5 @@
-import type { InteractionObservationStatus } from "@tmux-ide/contracts";
+import { paneInteractionDisplayDestination } from "../ui/pane-interaction-presentation.ts";
+import type { InteractionObservationStatus, InteractionPaneEndpoint } from "@tmux-ide/contracts";
 import { interactionActivityAt, interactionPaneEndpointKey } from "@tmux-ide/core";
 import type { PaneInteractionEndpoint } from "../ui/pane-interaction-presentation.ts";
 import {
@@ -19,6 +20,7 @@ import { CHROME_ACTIONS, HOME_ACTIONS } from "../workspace/application-action-de
 import { PaneInteraction, PaneInteractionDetails } from "../ui/pane-interaction.tsx";
 import {
   receiptPaneInteraction,
+  interactionTargetsPane,
   type PaneInteractionEvent,
 } from "../ui/pane-interaction-presentation.ts";
 import { TuiButton } from "../ui/button.tsx";
@@ -67,7 +69,7 @@ export interface ApplicationHomeSurfaceProps {
   readonly agentRoster?: HomeAgentSnapshot;
   readonly activityDaemonId?: string | null;
   readonly interactionObservation?: (
-    endpoint: PaneInteractionEndpoint,
+    endpoint: InteractionPaneEndpoint,
   ) => InteractionObservationStatus | null;
   readonly paneInteractions?: ReadonlyMap<string, PaneInteractionEvent>;
   readonly recentPaneActivity?: readonly InteractionJournalEntry[];
@@ -155,11 +157,8 @@ export function ApplicationHomeSurface(props: ApplicationHomeSurfaceProps): JSX.
   const selectedActivity = () => {
     const endpoint = selectedAgent()?.interactionEndpoint;
     if (!endpoint) return [];
-    const key = interactionPaneEndpointKey(endpoint);
     return (props.recentPaneActivity ?? []).filter((receipt) =>
-      [receipt.evidence?.endpoints.destination, receipt.evidence?.endpoints.source].some(
-        (candidate) => candidate?.kind === "pane" && interactionPaneEndpointKey(candidate) === key,
-      ),
+      interactionTargetsPane(receipt, endpoint, selectedAgent()?.nativeIdentity),
     );
   };
   const recentActivity = () =>
@@ -194,7 +193,7 @@ export function ApplicationHomeSurface(props: ApplicationHomeSurfaceProps): JSX.
   };
   const inspect = (event: PaneInteractionEvent) => {
     const names = new Map<string, string>();
-    for (const endpoint of [event.sourceEndpoint, event.destinationEndpoint]) {
+    for (const endpoint of [event.sourceEndpoint, paneInteractionDisplayDestination(event)]) {
       if (!endpoint) continue;
       const name = paneLabel(endpoint);
       if (name) names.set(interactionPaneEndpointKey(endpoint), name);
@@ -295,7 +294,11 @@ export function ApplicationHomeSurface(props: ApplicationHomeSurfaceProps): JSX.
               height={rosterHeight()}
               paneName={paneLabel}
               interactionForAgent={(row) =>
-                interactionForCurrentPane(props.paneInteractions, row.interactionEndpoint)
+                interactionForCurrentPane(
+                  props.paneInteractions,
+                  row.interactionEndpoint,
+                  row.nativeIdentity,
+                )
               }
               snapshot={snapshot()}
               selection={props.agentSelection ?? { selectedKey: null, scrollOffset: 0 }}
@@ -324,7 +327,11 @@ export function ApplicationHomeSurface(props: ApplicationHomeSurfaceProps): JSX.
               {(receipt) => (
                 <box height={activityRows()} width={bodyWidth()} flexDirection="column">
                   <Show
-                    when={receiptPaneInteraction(receipt, selectedAgent()?.interactionEndpoint)}
+                    when={receiptPaneInteraction(
+                      receipt,
+                      selectedAgent()?.interactionEndpoint,
+                      selectedAgent()?.nativeIdentity,
+                    )}
                     keyed
                   >
                     {(event) => (
