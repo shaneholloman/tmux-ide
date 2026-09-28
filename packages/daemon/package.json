@@ -53,6 +53,7 @@
   "dependencies": {
     "@hono/node-server": "^2.1.0",
     "@hono/zod-validator": "^0.7.6",
+    "@modelcontextprotocol/server": "2.1.0",
     "@opentui/core": "^0.5.1",
     "@opentui/solid": "^0.5.1",
     "@parcel/watcher": "^2.5.6",

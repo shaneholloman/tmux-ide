@@ -143,6 +143,8 @@ const knownCommands = new Set([
   "config",
   "setup",
   "send",
+  "automation",
+  "mcp",
   "settings",
   "team",
   "app",
@@ -293,6 +295,8 @@ ${bold("Pane Messaging:")}
   ${cyan("tmux-ide send")} <target> <message>     ${dim("Send message to a pane")}
   ${cyan("tmux-ide send")} --to <name> <message>   ${dim("Target by name, title, role, or ID")}
   ${cyan("tmux-ide send")} <target> --no-enter msg  ${dim("Send text without pressing Enter")}
+  ${cyan("tmux-ide automation")} <command> --json  ${dim("Scoped pane discovery, reads, sends, status and events")}
+  ${cyan("tmux-ide mcp")}                         ${dim("Serve scoped automation tools over MCP stdio")}
 
 ${bold("Server:")}
   ${cyan("tmux-ide serve")} [socket-path]         ${dim("Foreground owner-only local NDJSON control socket")}
@@ -1041,6 +1045,14 @@ try {
       break;
     }
 
+    case "automation":
+      await (
+        await import("../packages/daemon/src/automation.ts")
+      ).runAutomationCli(process.argv.slice(3));
+      break;
+    case "mcp":
+      await (await import("../packages/daemon/src/mcp.ts")).runMcp();
+      break;
     case "send": {
       const target = values.to ?? positionals[1];
       const messageStart = values.to ? 1 : 2;

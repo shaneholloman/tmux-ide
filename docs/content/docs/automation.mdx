@@ -1,0 +1,117 @@
+---
+title: Agent automation
+description: Scoped pane reads and sends through the development CLI, MCP server, and SDK
+---
+
+These interfaces are in development and are not included in `2.9.0-beta.45`.
+They require a matching running daemon. The CLI, MCP server, and SDK use the
+same operation API and do not fall back to raw tmux when a request fails.
+
+## Discover the target
+
+```bash
+tmux-ide automation panes --json
+```
+
+Each result includes a display title, session name, and an `endpoint`. Copy the
+endpoint unchanged into your request. It identifies the machine, tmux server
+generation, workspace, and pane lifetime. Pane numbers and titles alone are
+not unique across servers. Rediscover after a server or pane is replaced.
+
+A read intent is `{ "kind": "read", "source": null, "target": endpoint }`.
+A send intent also includes `"text"` and `"enter"`, with `"kind": "send"`.
+`enter: true` presses Enter after the text and can execute a shell command.
+Input is limited to 16 KiB of UTF-8 text and cannot contain NUL.
+
+## Prepare, execute, and recover
+
+Save your intent as `intent.json`, then reserve an operation before executing it:
+
+```bash
+tmux-ide automation reserve --json < intent.json > reservation.json
+jq -n --slurpfile r reservation.json --slurpfile i intent.json \
+  '{version:1,handle:$r[0].handle,intent:$i[0]}' > execution.json
+tmux-ide automation execute --json < execution.json
+```
+
+Reservation does not send input or capture a pane. Keep the returned handle
+and the unchanged intent until you know the result. On a timeout or lost
+response, check the handle:
+
+```bash
+tmux-ide automation status GENERATION OPERATION_ID --json
+```
+
+You may retry the same `execution.json`. Do not reserve a new operation to
+retry an uncertain send. `outcome-unknown` can mean the daemon restarted or
+retention expired; it does not prove that nothing happened. A completed send
+means the tmux command completed, not that the recipient consumed the input.
+
+`tmux-ide automation send --json` and `tmux-ide automation read --json` accept
+an intent on stdin and combine reservation with execution. Use the explicit
+two-step flow when the caller must persist the handle before an effect.
+
+Read text is returned only with the first execution response, up to 16 KiB.
+Check the byte counts and `truncated` flag. Status and replay responses retain
+metadata only; a replay reports `replay-unavailable` and does not capture again.
+
+## Attribute a source
+
+Use `source: null` when the caller has no verified pane identity. To claim a
+source, supply its discovered endpoint and a valid credential for that exact
+pane lifetime. The CLI and MCP process attempt to read the invoking pane's
+credential using its actual `TMUX` socket and `TMUX_PANE`; the daemon validates
+it separately from the target. A title, native pane number, or matching text
+does not establish the sender's identity.
+
+Source and target may belong to different registered servers on the same
+daemon. Invalid or stale source claims are rejected rather than reassigned.
+
+## MCP
+
+Configure your harness to launch this stdio server:
+
+```json
+{ "command": "tmux-ide", "args": ["mcp"] }
+```
+
+The exact surrounding configuration depends on your harness. The server offers:
+
+| Tool                    | Purpose                                        |
+| ----------------------- | ---------------------------------------------- |
+| `tmux_panes`            | Discover current endpoint identities           |
+| `tmux_prepare`          | Reserve a read or send without executing it    |
+| `tmux_execute`          | Execute the saved handle and unchanged intent  |
+| `tmux_operation_status` | Check an operation without repeating it        |
+| `tmux_interactions`     | Read one bounded batch of interaction metadata |
+
+The event tool accepts a server-scoped resume cursor and waits up to 30 seconds.
+Carry the returned cursor forward. A gap explicitly indicates missing history.
+Events contain no terminal contents. The server does not expose an arbitrary
+shell runner or HTTP proxy.
+
+## SDK
+
+The workspace package `@tmux-ide/sdk` exports the same automation client:
+
+```ts
+import { createTmuxIdeAutomationSdk } from "@tmux-ide/sdk";
+
+const client = createTmuxIdeAutomationSdk({
+  baseUrl,
+  ownerToken,
+  // sourceCredential: verified credential, when claiming a source
+});
+const { panes } = await client.discover();
+const target = panes.find((pane) => pane.title === "Tests")?.endpoint;
+if (!target) throw new Error("Select a current target pane first");
+const intent = { kind: "read" as const, target, source: null };
+const { handle } = await client.reserve(intent);
+// Persist handle + intent before calling execute when recovery matters.
+const response = await client.execute(handle, intent);
+```
+
+Use `AutomationInvocationError.handle` for recovery after an uncertain request.
+The SDK also provides `status(handle)` and a scoped `subscribe` method. Protect
+the daemon owner token as a local automation credential; it grants authority
+to send input to managed panes.
