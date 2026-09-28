@@ -54,6 +54,27 @@ describe.skipIf(!hasTmux).sequential("independent native tmux server owners", ()
     }
     expect(owners[0]!.sessionRuntimeRegistry.sessionCount()).toBe(0);
     expect(owners[1]!.sessionRuntimeRegistry.sessionCount()).toBe(0);
+    // Raw traffic must be visible before the first product mutation and must
+    // stay in its owner despite colliding session and semantic pane names.
+    const beforeA = owners[0]!.interactionReceipts.read(0).cursor;
+    const beforeB = owners[1]!.interactionReceipts.read(0).cursor;
+    run(sockets[0]!, ["send-keys", "-t", "shared:0.0", "-l", "raw-before-mutation"]);
+    run(sockets[0]!, ["capture-pane", "-p", "-t", "shared:0.0"]);
+    await vi.waitFor(() => {
+      const receipts = owners[0]!.interactionReceipts.read(beforeA).receipts;
+      expect(receipts.some((receipt) => receipt.operationKind === "workspace.pane.send")).toBe(
+        true,
+      );
+      expect(receipts.some((receipt) => receipt.operationKind === "workspace.pane.read")).toBe(
+        true,
+      );
+      expect(
+        receipts.every(
+          (receipt) => receipt.origin === "external" && receipt.sourceSemanticPaneId === null,
+        ),
+      ).toBe(true);
+    });
+    expect(owners[1]!.interactionReceipts.read(beforeB).receipts).toEqual([]);
     expect((await owners[0]!.catalog())[0]!.sessionName).toBe("shared");
     expect((await owners[1]!.catalog())[0]!.sessionName).toBe("shared");
     expect(owners[0]!.sessionRuntimeRegistry).not.toBe(owners[1]!.sessionRuntimeRegistry);
@@ -102,6 +123,7 @@ describe.skipIf(!hasTmux).sequential("independent native tmux server owners", ()
     );
     await rename(owners[1]!, "beta");
     await owners[0]!.dispose();
+    expect(() => owners[0]!.interactionReceipts.read(beforeA)).toThrow("retired");
     await expect(owners[0]!.catalog()).rejects.toThrow("retired");
     await expect(rename(owners[0]!, "bad")).rejects.toThrow("retired");
     expect((await owners[1]!.catalog())[0]!.paneCount).toBe(1);

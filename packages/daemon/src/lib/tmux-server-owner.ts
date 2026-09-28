@@ -14,6 +14,11 @@ import { liveSessionIdForNativeIdentity } from "../terminal/protocol/live-sessio
 import { SessionRuntimeRegistry } from "../terminal/session-runtime/registry.ts";
 import { createSessionRuntimeMultiplexerBackend } from "../terminal/session-runtime/multiplexer-backend.ts";
 import { TmuxExternalInteractionObserver } from "./tmux-external-interaction-observer.ts";
+import { InteractionReceiptJournal } from "./interaction-receipt-journal.ts";
+import {
+  createTmuxInteractionObservationHandler,
+  externalTmuxInteractionDraft,
+} from "./tmux-interaction-observation-handler.ts";
 import { WorkspaceMultiplexerAuthority } from "./workspace-multiplexer-verbs.ts";
 import {
   WorkspacePaneCreationAuthority,
@@ -144,7 +149,7 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
   let disposed = false;
   let disposePromise: Promise<void> | null = null;
   let observerStarted: Promise<void> | null = null;
-  let receiptSequence = 0;
+  const interactionReceipts = new InteractionReceiptJournal();
   const assertOpen = () => {
     if (disposed) throw new Error("Tmux server owner is retired");
   };
@@ -179,11 +184,7 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
           timing,
         );
       },
-      publishReceipt: (receipt) => ({
-        ...receipt,
-        type: "interaction.receipt",
-        sequence: ++receiptSequence,
-      }),
+      publishReceipt: (receipt) => interactionReceipts.publish(receipt),
       traceAuthority: { generation, incarnation: null },
     },
     mirror: {
@@ -210,14 +211,20 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
     tmuxAuthority: authority,
     io: { runTmux: generationRunAsync },
     onGap: () => terminalInventoryRuntime.invalidate(),
-    onObserved: ({ workspaceName, semanticPaneId, operationKind, operationId }) =>
-      operationId !== null &&
-      sessionRuntimeRegistry.observeTmuxInteraction({
-        workspaceName,
-        semanticPaneId,
-        operationKind,
-        operationId,
-      }),
+    onObserved: createTmuxInteractionObservationHandler({
+      invalidateInventory: () => terminalInventoryRuntime.invalidate(),
+      consumeAuthored: (observation) =>
+        sessionRuntimeRegistry.observeTmuxInteraction({
+          ...observation,
+          operationId: observation.operationId!,
+        }),
+      publishExternal: (observation) => {
+        interactionReceipts.publish(externalTmuxInteractionDraft(observation));
+      },
+      reportPublicationFailure: () => {
+        terminalInventoryRuntime.invalidate();
+      },
+    }),
   });
   const paneStreamRuntime = createPaneStreamRuntime({
     daemonInstanceId: generation,
@@ -277,7 +284,11 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
           try {
             await multiplexer.dispose();
           } finally {
-            await sessionRuntimeRegistry.dispose();
+            try {
+              await sessionRuntimeRegistry.dispose();
+            } finally {
+              interactionReceipts.dispose();
+            }
           }
         }
       }
@@ -287,6 +298,8 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
   try {
     await terminalInventoryRuntime.whenReady();
     await catalog();
+    observerStarted ??= observer.start();
+    await observerStarted;
   } catch (error) {
     await dispose();
     throw error;
@@ -334,6 +347,7 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
       });
     },
     workspaceRegistry,
+    interactionReceipts,
     multiplexerBackend,
     sessionRuntimeRegistry,
     terminalInventoryRuntime,

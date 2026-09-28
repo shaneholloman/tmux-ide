@@ -96,7 +96,11 @@ import { FleetLifecycleAuthority } from "./fleet-lifecycle-authority.ts";
 import { AppWindowMutationAuthority } from "./app-window-mutation.ts";
 import { WorkspaceMultiplexerAuthority } from "./workspace-multiplexer-verbs.ts";
 import { TmuxExternalInteractionObserver } from "./tmux-external-interaction-observer.ts";
-import { createTmuxInteractionObservationHandler } from "./tmux-interaction-observation-handler.ts";
+import {
+  createTmuxInteractionObservationHandler,
+  externalTmuxInteractionDraft,
+} from "./tmux-interaction-observation-handler.ts";
+import { InteractionReceiptJournal } from "./interaction-receipt-journal.ts";
 import {
   createNativeTerminalAttachmentRuntime,
   type NativeTerminalAttachmentRuntime,
@@ -1243,6 +1247,7 @@ async function startEmbeddedDaemonGeneration(
           }
         : {}),
     });
+    const interactionReceipts = new InteractionReceiptJournal();
     let sessionRuntimeRegistry: SessionRuntimeRegistry | null = null;
     let workspaceOpenHandoff: WorkspaceOpenHandoffCoordinator | null = null;
     let terminalInventoryRuntime: WorkspaceTerminalInventoryRuntime | null = null;
@@ -1263,23 +1268,10 @@ async function startEmbeddedDaemonGeneration(
             ...observation,
             operationId: observation.operationId!,
           }) ?? false,
-        publishExternal: ({ workspaceName, semanticPaneId, operationKind }) => {
-          broadcastInteractionReceipt(
-            {
-              operationId: randomUUID(),
-              origin: "external",
-              workspaceName,
-              target: { kind: "pane", semanticPaneId },
-              operationKind,
-              phase: "observed",
-              summary:
-                operationKind === "workspace.pane.read"
-                  ? { operationKind, observedOnly: true }
-                  : { operationKind, observedOnly: true },
-              proof: { operationKind, observed: true, semanticPaneId },
-            },
-            instanceId,
-          );
+        publishExternal: (observation) => {
+          const draft = externalTmuxInteractionDraft(observation);
+          interactionReceipts.publish(draft);
+          broadcastInteractionReceipt(draft, instanceId);
         },
         reportPublicationFailure: (error) => {
           if (!opts.silent) console.error("[daemon] External interaction receipt failed:", error);
@@ -1411,7 +1403,10 @@ async function startEmbeddedDaemonGeneration(
             workspaceRegistry.get(workspaceName)?.sessionName ?? null,
           execute: executeRuntimeIntent,
           traceAuthority: { generation: instanceId, incarnation: null },
-          publishReceipt: (receipt) => broadcastInteractionReceipt(receipt, instanceId),
+          publishReceipt: (receipt) => {
+            interactionReceipts.publish(receipt);
+            return broadcastInteractionReceipt(receipt, instanceId);
+          },
           publishResourceChange: (change) => broadcastResourceChanged(change, instanceId),
         },
         mirror: {
@@ -1553,6 +1548,7 @@ async function startEmbeddedDaemonGeneration(
         stateDirectory: resolveRuntimeNamespace().runtimeDir,
         webSocketBaseUrl: canonicalDaemonUrl("ws", bindHostname, port),
         defaultOwner: {
+          interactionReceipts,
           catalog: createNativeTmuxServerCatalog(workspaceRegistry, fleetFactsTmuxRunner),
           openSession: async (liveSessionId) => {
             await createNativeTmuxServerCatalog(workspaceRegistry, fleetFactsTmuxRunner)();
@@ -1621,7 +1617,11 @@ async function startEmbeddedDaemonGeneration(
               Promise.resolve().then(() => workspaceMultiplexer.dispose()),
               Promise.resolve().then(() => externalInteractionObserver.dispose()),
             ]);
-            await sessionRuntimeRegistry!.dispose();
+            try {
+              await sessionRuntimeRegistry!.dispose();
+            } finally {
+              interactionReceipts.dispose();
+            }
             const failures = [...transportResults, ...authorityResults].flatMap((result) =>
               result.status === "rejected" ? [result.reason] : [],
             );

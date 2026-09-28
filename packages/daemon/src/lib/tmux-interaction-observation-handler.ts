@@ -1,4 +1,28 @@
 import type { ExternalTmuxInteraction } from "./tmux-external-interaction-observer.ts";
+import { randomUUID } from "node:crypto";
+import type { InteractionReceiptDraft } from "./interaction-receipt-journal.ts";
+
+export function externalTmuxInteractionDraft(
+  observation: ExternalTmuxInteraction,
+): InteractionReceiptDraft {
+  const { workspaceName, semanticPaneId, operationKind } = observation;
+  return {
+    operationId: randomUUID(),
+    origin: "external",
+    workspaceName,
+    sourceSemanticPaneId: null,
+    target: { kind: "pane", semanticPaneId },
+    operationKind,
+    phase: "observed",
+    summary:
+      operationKind === "workspace.pane.read"
+        ? { operationKind, observedOnly: true }
+        : { operationKind, observedOnly: true },
+    proof: { operationKind, observed: true, semanticPaneId },
+    at: new Date().toISOString(),
+    resourceRevision: null,
+  };
+}
 
 export interface TmuxInteractionObservationPolicy {
   /** The owner must validate the operation in its own generation and scope. */
