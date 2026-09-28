@@ -61,7 +61,10 @@ capability consumed by canonical terminal capture. The
 patch identity. The second patch,
 [interaction-journal-v1.patch](../native/tmux/interaction-journal-v1.patch), adds an
 experimental bounded metadata journal foundation. It ships disabled and currently
-advertises no command/effect coverage; enabling it does not instrument input yet.
+advertises `command-outcome-v1` for send-keys, capture-pane, paste-buffer and
+send-prefix. Command completion is not evidence of delivered input or application
+consumption; actual input effects are not instrumented yet. Origin metadata is
+immutable across hooks and native delayed commands. Unknown issuers remain zero.
 It must not be treated as evidence of agent attribution. Its ISC notice is included
 in native bundles. Run `node scripts/test-tmux-interaction-native.mjs --source
 /path/to/pinned/tmux` for the ASan/UBSan ring and disposable-server lifecycle gate.

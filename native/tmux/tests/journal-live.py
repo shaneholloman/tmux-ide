@@ -23,7 +23,7 @@ def reader(after):
  return p
 try:
  call('-f','/dev/null','new-session','-d','-s','probe','cat')
- caps=event('-V'); assert caps['enabled'] is False and caps['coverage']==[]
+ caps=event('-V'); assert caps['enabled'] is False and caps['coverage']==['command-outcome-v1']
  uuid.UUID(caps['serverEpoch']); uuid.UUID(caps['journalEpoch'])
  call('tmux-ide-events','-r','-E',caps['journalEpoch'],'-a','0',ok=False)
  call('send-keys','-t','probe','-l','input-still-works')
@@ -68,6 +68,19 @@ try:
  following=event('-r','-E',epoch,'-a',cursor,'-n','1')
  assert int(following['records'][0]['sequence'])==int(cursor)+1
  latest=event('-r','-E',epoch,'-a',batch['newest']); assert latest['records']==[]
+ # All metadata fields at maximum width must fit bounded response buffers.
+ for _ in range(2):
+  args=[]
+  for i in range(128):
+   if i: args.append(';')
+   args.extend(['tmux-ide-events','-W'])
+  call(*args)
+ raw=call('tmux-ide-events','-r','-E',epoch,'-a',batch['newest'],'-n','256')
+ wide=json.loads(raw); assert len(wide['records'])==256 and len(raw.encode())<131072
+ assert wide['records'][0]['requestId']=='18446744073709551615'
+ small=call('tmux-ide-events','-r','-E',epoch,'-a',batch['newest'],'-n','64')
+ assert len(json.loads(small)['records'])==64 and len(small.encode())<65536
+ batch=wide
  reset_waiter=reader(int(batch['newest'])); until(lambda:event('-V')['waitingReaders']==1)
  call('tmux-ide-events','-X')
  reset=json.loads(reset_waiter.communicate(timeout=3)[0]); assert reset['type']=='reset' and reset['journalEpoch']!=epoch
