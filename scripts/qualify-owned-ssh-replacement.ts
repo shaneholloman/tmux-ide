@@ -22,7 +22,10 @@ import {
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readDevelopmentIdentity } from "../packages/daemon/src/lib/development-state.ts";
+import {
+  readDevelopmentIdentity,
+  readPrivateDevelopmentFile,
+} from "../packages/daemon/src/lib/development-state.ts";
 import { readDevelopmentBuild } from "../packages/daemon/src/lib/development-build.ts";
 import { resolveDevelopmentInstance } from "../packages/daemon/src/lib/development-instance.ts";
 import {
@@ -981,6 +984,25 @@ if (args[0] === "--client") {
       detail: errorCategory(error),
       category: cancellation.signal.aborted ? "cancelled" : "native-ssh-recovery-refused",
     };
+    const retainedLogs: Record<string, unknown>[] = [];
+    for (const [role, instance] of Object.entries(instances)) {
+      try {
+        const log = readPrivateDevelopmentFile(join(instance.root, "logs/owner.log"));
+        if (log) {
+          const destination = join(dirname(descriptorPath), role + "-private-owner.log");
+          writeFileSync(destination, log.bytes, { flag: "wx", mode: 0o600 });
+          retainedLogs.push({
+            role,
+            file: destination,
+            bytes: log.bytes.length,
+            sha256: hash(log.bytes),
+          });
+        }
+      } catch {
+        retainedLogs.push({ role, unavailable: true });
+      }
+    }
+    receipts.privateFailureLogs = retainedLogs;
     for (const [side, c] of Object.entries(clients))
       save(side + "-failure-frame.json", { frame: c.frame(), exited: c.exited });
   } finally {
