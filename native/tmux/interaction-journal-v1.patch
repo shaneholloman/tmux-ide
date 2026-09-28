@@ -13,7 +13,7 @@ index ba9142f..e56a4fc 100644
  	cmd-rename-session.c \
  	cmd-rename-window.c \
 diff --git a/cmd-capture-pane.c b/cmd-capture-pane.c
-index ee91f05..7f8262a 100644
+index ee91f05..e2bd33e 100644
 --- a/cmd-capture-pane.c
 +++ b/cmd-capture-pane.c
 @@ -22,6 +22,7 @@
@@ -29,7 +29,7 @@ index ee91f05..7f8262a 100644
  	.alias = "capturep",
  
 -	.args = { "ab:CeE:FHJLMNpPqRS:Tt:V", 0, 0, NULL },
-+	.args = { "ab:CeE:FHJLMNpPqQRS:Tt:U:V", 0, 0, NULL },
++	.args = { "ab:CDeE:FHJLMNpPqQRS:Tt:U:V", 0, 0, NULL },
  	.usage = "[-aCeFHJLMNpPqT] " CMD_BUFFER_USAGE " [-E end-line] "
  		 "[-S start-line] " CMD_TARGET_PANE_USAGE,
  
@@ -158,10 +158,118 @@ index ee91f05..7f8262a 100644
  
  	join_lines = args_has(args, 'J');
  	if (args_has(args, 'e'))
-@@ -350,6 +382,129 @@ cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
+@@ -350,6 +382,253 @@ cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
  	return (buf);
  }
  
++/* v2 counts every JSON record, excluding the final control continuation. */
++#define TI_SNAPSHOT_RECORD_MAX 100000
++#define TI_SNAPSHOT_ANSI_CHUNK 4096
++
++struct ti_snapshot_ansi {
++	struct ti_snapshot_buffer *buffer;
++	unsigned char pending[TI_SNAPSHOT_ANSI_CHUNK];
++	size_t used, bytes, chunks, records;
++};
++
++static int
++cmd_capture_ansi_flush(struct ti_snapshot_ansi *ansi)
++{
++	static const char digits[] = "0123456789abcdef";
++	char hex[TI_SNAPSHOT_ANSI_CHUNK * 2];
++	size_t i;
++
++	if (ansi->used == 0)
++		return (0);
++	if (ansi->records >= TI_SNAPSHOT_RECORD_MAX)
++		return (-1);
++	for (i = 0; i < ansi->used; i++) {
++		hex[i * 2] = digits[ansi->pending[i] >> 4];
++		hex[i * 2 + 1] = digits[ansi->pending[i] & 15];
++	}
++	if (ti_snapshot_append(ansi->buffer, "{\"ansiHex\":\"", 12) != 0 ||
++	    ti_snapshot_append(ansi->buffer, hex, ansi->used * 2) != 0 ||
++	    ti_snapshot_append(ansi->buffer, "\"}\n", 3) != 0)
++		return (-1);
++	ansi->records++;
++	ansi->chunks++;
++	ansi->used = 0;
++	return (0);
++}
++
++static int
++cmd_capture_ansi_append(struct ti_snapshot_ansi *ansi, const char *data,
++    size_t length)
++{
++	size_t n;
++
++	while (length != 0) {
++		n = sizeof ansi->pending - ansi->used;
++		if (n > length)
++			n = length;
++		memcpy(ansi->pending + ansi->used, data, n);
++		ansi->used += n;
++		ansi->bytes += n;
++		data += n;
++		length -= n;
++		if (ansi->used == sizeof ansi->pending &&
++		    cmd_capture_ansi_flush(ansi) != 0)
++			return (-1);
++	}
++	return (0);
++}
++
++/* Reuse the stock -e -J traversal and last-cell continuity. One row is
++ * bounded before allocation, then encoded in fixed chunks; there is never
++ * an unbounded or full raw-ANSI intermediate. */
++static char *
++cmd_capture_pane_dual(char *native, size_t *length, size_t limit,
++    struct screen *screen, struct grid *gd, u_int top, u_int bottom)
++{
++	struct ti_snapshot_buffer buffer = {
++	    .data = native, .length = *length, .capacity = *length + 1,
++	    .limit = limit
++	};
++	struct ti_snapshot_ansi ansi = { .buffer = &buffer,
++	    .records = (size_t)bottom - top + 3 };
++	struct grid_cell last = grid_default_cell, *gc = &last;
++	const struct grid_line *gl;
++	char *line, end[128];
++	u_int y;
++	int n;
++
++	for (y = top; y <= bottom; y++) {
++		line = grid_string_cells_bounded(gd, 0, y, gd->sx, &gc,
++		    GRID_STRING_WITH_SEQUENCES, screen,
++		    (buffer.limit - buffer.length) / 2);
++		if (line == NULL)
++			goto fail;
++		n = cmd_capture_ansi_append(&ansi, line, strlen(line));
++		free(line);
++		if (n != 0)
++			goto fail;
++		gl = grid_peek_line(gd, y);
++		if (!(gl->flags & GRID_LINE_WRAPPED) &&
++		    cmd_capture_ansi_append(&ansi, "\n", 1) != 0)
++			goto fail;
++	}
++	if (cmd_capture_ansi_flush(&ansi) != 0 ||
++	    ansi.records >= TI_SNAPSHOT_RECORD_MAX)
++		goto fail;
++	n = snprintf(end, sizeof end,
++	    "{\"ansiEnd\":true,\"bytes\":%zu,\"chunks\":%zu}\n",
++	    ansi.bytes, ansi.chunks);
++	if (n < 0 || (size_t)n >= sizeof end ||
++	    ti_snapshot_append(&buffer, end, (size_t)n) != 0)
++		goto fail;
++	*length = buffer.length;
++	return (buffer.data);
++
++fail:
++	free(buffer.data);
++	return (NULL);
++}
++
 +/* No caller-provided format or script is evaluated by atomic recovery. */
 +static const char *cmd_capture_snapshot_modes =
 +	"#{?#{==:#{cursor_x},},unknown,#{cursor_x}}"
@@ -217,14 +325,14 @@ index ee91f05..7f8262a 100644
 +	struct format_tree *ft;
 +	struct grid *gd = wp->base.grid;
 +	const char *history = args_get(args, 'S'), *p;
-+	char *modes, *snapshot, header[1536];
++	char *modes, *snapshot, header[1536], continued[64];
 +	size_t limit = 16 * 1024 * 1024, lines = 0, length;
 +	u_int top, bottom;
 +	u_char flag;
-+	int n;
++	int n, dual = args_has(args, 'D');
 +
 +	for (flag = args_first(args, &entry); flag; flag = args_next(&entry)) {
-+		if (strchr("pRQUSt", flag) == NULL || args_has(args, flag) != 1)
++		if (strchr("pRQUDSt", flag) == NULL || args_has(args, flag) != 1)
 +			goto invalid;
 +	}
 +	if (!args_has(args, 'p') || !args_has(args, 'R') ||
@@ -257,9 +365,10 @@ index ee91f05..7f8262a 100644
 +		}
 +	}
 +	n = snprintf(header, sizeof header,
-+	    "{\"snapshotVersion\":1,\"serverEpoch\":\"%s\","
++	    "{\"snapshotVersion\":%d,%s\"serverEpoch\":\"%s\","
 +	    "\"paneId\":\"%%%u\",\"paneBirthId\":\"%llu\","
 +	    "\"cursor\":\"%s\",\"resumed\":true}\n",
++	    dual ? 2 : 1, dual ? "\"representation\":\"dual\"," : "",
 +	    tmux_ide_server_epoch(), wp->id,
 +	    (unsigned long long)wp->tmux_ide_birth_id, modes);
 +	free(modes);
@@ -267,10 +376,25 @@ index ee91f05..7f8262a 100644
 +		goto invalid;
 +	top = history[1] == '\0' || lines > gd->hsize ? 0 : gd->hsize - lines;
 +	bottom = gd->hsize + gd->sy - 1;
++	if (dual) {
++		n = snprintf(continued, sizeof continued, "%%continue %%%u\n", wp->id);
++		if (n < 0 || (size_t)n >= sizeof continued || (size_t)n >= limit ||
++		    (size_t)bottom - top + 4 > TI_SNAPSHOT_RECORD_MAX)
++			goto invalid;
++		limit -= (size_t)n;
++	}
 +	snapshot = cmd_capture_pane_native(item, wp, &wp->base, gd, top,
 +	    bottom, limit, header, &length);
 +	if (snapshot == NULL)
 +		return (CMD_RETURN_ERROR);
++	if (dual) {
++		snapshot = cmd_capture_pane_dual(snapshot, &length, limit,
++		    &wp->base, gd, top, bottom);
++		if (snapshot == NULL) {
++			cmdq_error(item, "dual snapshot exceeds budget or allocation failed");
++			return (CMD_RETURN_ERROR);
++		}
++	}
 +	if (control_snapshot_commit(c, wp, snapshot, length) != 0) {
 +		free(snapshot);
 +		cmdq_error(item, "atomic snapshot output budget unavailable");
@@ -288,21 +412,21 @@ index ee91f05..7f8262a 100644
  static enum cmd_retval
  cmd_capture_pane_exec(struct cmd *self, struct cmdq_item *item)
  {
-@@ -360,6 +515,13 @@ cmd_capture_pane_exec(struct cmd *self, struct cmdq_item *item)
+@@ -360,6 +639,13 @@ cmd_capture_pane_exec(struct cmd *self, struct cmdq_item *item)
  	const char		*bufname;
  	size_t			 len;
  
 +	if (args_has(args, 'Q'))
 +		return (cmd_capture_pane_snapshot(args, item, wp));
-+	if (args_has(args, 'U')) {
-+		cmdq_error(item, "-U requires atomic snapshot mode");
++	if (args_has(args, 'U') || args_has(args, 'D')) {
++		cmdq_error(item, "-U and -D require atomic snapshot mode");
 +		return (CMD_RETURN_ERROR);
 +	}
 +
  	if (cmd_get_entry(self) == &cmd_clear_history_entry) {
  		window_pane_reset_mode_all(wp);
  		grid_clear_history(wp->base.grid);
-@@ -404,5 +566,6 @@ cmd_capture_pane_exec(struct cmd *self, struct cmdq_item *item)
+@@ -404,5 +690,6 @@ cmd_capture_pane_exec(struct cmd *self, struct cmdq_item *item)
  		}
  	}
  
@@ -1055,6 +1179,144 @@ index 1a6d73a..8835742 100644
  	{ "pane_bottom", FORMAT_TABLE_STRING,
  	  format_cb_pane_bottom
  	},
+diff --git a/grid.c b/grid.c
+index 36c9918..2ed73c5 100644
+--- a/grid.c
++++ b/grid.c
+@@ -22,6 +22,7 @@
+ #include <string.h>
+ 
+ #include "tmux.h"
++#include "tmux-ide-snapshot-buffer.h"
+ 
+ /*
+  * Grid data. This is the basic data structure that represents what is shown on
+@@ -1080,10 +1081,12 @@ grid_string_cells_code(const struct grid_cell *lastgc,
+ }
+ 
+ /* Convert cells into a string. */
+-char *
+-grid_string_cells(struct grid *gd, u_int px, u_int py, u_int nx,
+-    struct grid_cell **lastgc, int flags, struct screen *s)
++static char *
++grid_string_cells_impl(struct grid *gd, u_int px, u_int py, u_int nx,
++    struct grid_cell **lastgc, int flags, struct screen *s, int bounded,
++    size_t limit)
+ {
++	struct ti_snapshot_buffer bounded_buf = { .limit = limit };
+ 	struct grid_cell	 gc;
+ 	static struct grid_cell	 lastgc1;
+ 	const char		*data;
+@@ -1099,11 +1102,15 @@ grid_string_cells(struct grid *gd, u_int px, u_int py, u_int nx,
+ 	}
+ 
+ 	len = 128;
+-	buf = xmalloc(len);
++	buf = bounded ? NULL : xmalloc(len);
+ 	off = 0;
+ 
+ 	gl = grid_peek_line(gd, py);
+ 	if (gl == NULL) {
++		if (bounded && ti_snapshot_append(&bounded_buf, "", 0) != 0)
++			return (NULL);
++		if (bounded)
++			buf = bounded_buf.data;
+ 		buf[0] = '\0';
+ 		return (buf);
+ 	}
+@@ -1140,31 +1147,51 @@ grid_string_cells(struct grid *gd, u_int px, u_int py, u_int nx,
+ 			}
+ 		}
+ 
+-		while (len < off + size + codelen + 1) {
+-			buf = xreallocarray(buf, 2, len);
+-			len *= 2;
+-		}
++		if (bounded) {
++			if (ti_snapshot_append(&bounded_buf, code, codelen) != 0 ||
++			    ti_snapshot_append(&bounded_buf, data, size) != 0)
++				goto fail;
++			buf = bounded_buf.data;
++			off = bounded_buf.length;
++		} else {
++			while (len < off + size + codelen + 1) {
++				buf = xreallocarray(buf, 2, len);
++				len *= 2;
++			}
+ 
+-		if (codelen != 0) {
+-			memcpy(buf + off, code, codelen);
+-			off += codelen;
++			if (codelen != 0) {
++				memcpy(buf + off, code, codelen);
++				off += codelen;
++			}
++			memcpy(buf + off, data, size);
++			off += size;
+ 		}
+-		memcpy(buf + off, data, size);
+-		off += size;
+ 	}
+ 
+ 	if (has_link) {
+ 		grid_string_cells_add_hyperlink(code, sizeof code, "", "",
+ 		    flags);
+ 		codelen = strlen(code);
+-		while (len < off + size + codelen + 1) {
+-			buf = xreallocarray(buf, 2, len);
+-			len *= 2;
++		if (bounded) {
++			if (ti_snapshot_append(&bounded_buf, code, codelen) != 0)
++				goto fail;
++			buf = bounded_buf.data;
++			off = bounded_buf.length;
++		} else {
++			while (len < off + size + codelen + 1) {
++				buf = xreallocarray(buf, 2, len);
++				len *= 2;
++			}
++			memcpy(buf + off, code, codelen);
++			off += codelen;
+ 		}
+-		memcpy(buf + off, code, codelen);
+-		off += codelen;
+ 	}
+ 
++	if (bounded && buf == NULL) {
++		if (ti_snapshot_append(&bounded_buf, "", 0) != 0)
++			goto fail;
++		buf = bounded_buf.data;
++	}
+ 	if (flags & GRID_STRING_TRIM_SPACES) {
+ 		while (off > 0 && buf[off - 1] == ' ')
+ 			off--;
+@@ -1172,6 +1199,26 @@ grid_string_cells(struct grid *gd, u_int px, u_int py, u_int nx,
+ 	buf[off] = '\0';
+ 
+ 	return (buf);
++
++fail:
++	free(bounded_buf.data);
++	return (NULL);
++}
++
++/* Ordinary callers retain the stock allocation policy and formatting. */
++char *
++grid_string_cells(struct grid *gd, u_int px, u_int py, u_int nx,
++    struct grid_cell **lastgc, int flags, struct screen *s)
++{
++	return (grid_string_cells_impl(gd, px, py, nx, lastgc, flags, s, 0, 0));
++}
++
++/* Recovery owns lastgc locally and treats allocation/budget failure as retry. */
++char *
++grid_string_cells_bounded(struct grid *gd, u_int px, u_int py, u_int nx,
++    struct grid_cell **lastgc, int flags, struct screen *s, size_t limit)
++{
++	return (grid_string_cells_impl(gd, px, py, nx, lastgc, flags, s, 1, limit));
+ }
+ 
+ /*
 diff --git a/input-keys.c b/input-keys.c
 index fdce540..6aeb4c8 100644
 --- a/input-keys.c
@@ -1273,7 +1535,7 @@ index 49cac8b..d592a11 100644
  		return (0);
 diff --git a/tmux-ide-journal.c b/tmux-ide-journal.c
 new file mode 100644
-index 0000000..c318e73
+index 0000000..80f57dc
 --- /dev/null
 +++ b/tmux-ide-journal.c
 @@ -0,0 +1,746 @@
@@ -1610,7 +1872,7 @@ index 0000000..c318e73
 +	    "\"coverage\":[\"command-outcome-v1\",\"pty-enqueue-v1\",\"capture-"
 +	    "produced-v1\",\"cooperative-operation-v1\",\"pane-identity-v1\"],\"capacity\":%u,"
 +	    "\"maxBatch\":%u,\"maxWaiters\":%u,\"waitingReaders\":%u,"
-+	    "\"degraded\":%u,\"readerTransport\":\"sessionless-control-v1\",\"ownedOperationTransport\":\"direct-wrapper-v1\",\"ownedOperationEpochGuard\":\"server-epoch-v1\",\"ownedOperationPaneGuard\":\"direct-pane-v1\",\"ownedOperationSessionGuard\":\"direct-session-v1\",\"atomicPaneSnapshot\":\"capture-resume-v1\"}",
++	    "\"degraded\":%u,\"readerTransport\":\"sessionless-control-v1\",\"ownedOperationTransport\":\"direct-wrapper-v1\",\"ownedOperationEpochGuard\":\"server-epoch-v1\",\"ownedOperationPaneGuard\":\"direct-pane-v1\",\"ownedOperationSessionGuard\":\"direct-session-v1\",\"atomicPaneSnapshot\":\"capture-resume-v1\",\"atomicPaneSnapshotDual\":\"capture-resume-dual-v2\"}",
 +	    ti_server_epoch, ti_journal_epoch, ti_journal ? "true" : "false",
 +	    TI_CAPACITY, TI_MAX_BATCH, TI_MAX_WAITERS, waiting, ti_degraded);
 +}
@@ -2180,7 +2442,7 @@ index 0000000..bc05baa
 +
 +#endif
 diff --git a/tmux.h b/tmux.h
-index c9f8a32..68dbecb 100644
+index c9f8a32..5b03e85 100644
 --- a/tmux.h
 +++ b/tmux.h
 @@ -1249,6 +1249,7 @@ struct visible_ranges {
@@ -2242,7 +2504,16 @@ index c9f8a32..68dbecb 100644
  /* cmd-queue.c */
  struct cmdq_state *cmdq_new_state(struct cmd_find_state *, struct key_event *,
  		     int);
-@@ -3649,10 +3680,16 @@ char	*parse_window_name(const char *);
+@@ -3234,6 +3265,8 @@ void	 grid_move_lines(struct grid *, u_int, u_int, u_int, u_int);
+ void	 grid_move_cells(struct grid *, u_int, u_int, u_int, u_int, u_int);
+ char	*grid_string_cells(struct grid *, u_int, u_int, u_int,
+ 	     struct grid_cell **, int, struct screen *);
++char	*grid_string_cells_bounded(struct grid *, u_int, u_int, u_int,
++	    struct grid_cell **, int, struct screen *, size_t);
+ void	 grid_duplicate_lines(struct grid *, u_int, struct grid *, u_int,
+ 	     u_int);
+ void	 grid_reflow(struct grid *, u_int);
+@@ -3649,10 +3682,16 @@ char	*parse_window_name(const char *);
  void	control_discard(struct client *);
  void	control_start(struct client *);
  void	control_ready(struct client *);

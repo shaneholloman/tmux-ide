@@ -140,6 +140,48 @@ try:
   while 'STATE-READY-'+stage not in call('capture-pane','-p','-t',pane):
    assert time.monotonic()<deadline;time.sleep(.001)
   assert snapshot(capture(a))['resumed']
+ # Dual representation is generated at the same commit, using exact stock
+ # -e -J bytes, including control-line normalization and trailing wrapped rows.
+ assert cap['atomicPaneSnapshotDual']=='capture-resume-dual-v2'
+ samples=[b'', b'one\r\n\r\ntrailing   ',
+  (b'wrapped-'+b'x'*210+b'\r\n')*35,
+  'wide: 界🙂 é\r\n'.encode()+b'\x1b[38;2;12;34;56mRGB\x1b[48;5;42mBG\x1b[4:3mUL\x1b[0m\tTAB\r\n'+
+  b'\x1b]8;;https://example.test/a\x1b\\'+b'LINK'*65+b'\x1b]8;;\x1b\\\r\n'+
+  b'%end 1 2 3\r\n%continue %0\r\n{"ansiEnd":true}']
+ for sample_no,payload in enumerate(samples):
+  script=pathlib.Path(root)/('dual-'+str(sample_no)+'.py')
+  script.write_text('import os,time\nos.write(1,'+repr(payload)+')\ntime.sleep(60)\n')
+  pane,birth=call('new-window','-d','-P','-F','#{pane_id}\t#{pane_birth_id}','-t','proof',shlex.join([sys.executable,str(script)])).strip().split('\t')
+  time.sleep(.08)
+  a.pause();lines=capture(a,'-D');meta=snapshot(lines)
+  assert meta['snapshotVersion']==2 and meta['representation']=='dual'
+  records=[json.loads(l) for l in lines if l.startswith('{')]
+  chunks=[r['ansiHex'] for r in records if 'ansiHex' in r]
+  assert all(0<len(h)<=8192 and re.fullmatch('[0-9a-f]+',h) for h in chunks)
+  assert all(len(h)==8192 for h in chunks[:-1])
+  ansi=bytes.fromhex(''.join(chunks));end=next(r for r in records if 'ansiEnd' in r)
+  assert end=={'ansiEnd':True,'bytes':len(ansi),'chunks':len(chunks)},end
+  stock=subprocess.run([binary,'-S',socket,'capture-pane','-p','-e','-J','-S','-','-t',pane],env=env,capture_output=True,check=True).stdout
+  assert ansi==stock,(sample_no,ansi,stock)
+  # Actual control reply frames remove exactly one capture terminal newline,
+  # then one trailing CR from each line. Plain seed bytes use CRLF joins.
+  stock_lines=a.execute('capture-pane -p -e -J -S - -t '+pane)
+  begin=next(i for i,l in enumerate(stock_lines) if l.startswith('%begin '))
+  finish=next(i for i in range(begin+1,len(stock_lines)) if stock_lines[i]=='%end '+stock_lines[begin][7:])
+  # Sentinel-looking terminal bytes are raw in stock capture; our data fixture
+  # deliberately uses a non-matching literal frame number for the continuation.
+  body=ansi[:-1] if ansi.endswith(b'\n') else ansi
+  decoded_seed=b'\r\n'.join(l[:-1] if l.endswith(b'\r') else l for l in body.split(b'\n'))
+  actual_seed=b'\r\n'.join(l.removesuffix('\r').encode(errors='surrogateescape') for l in stock_lines[begin+1:finish])
+  assert decoded_seed==actual_seed,(sample_no,decoded_seed,actual_seed)
+  wire=sum(len((l+'\n').encode()) for l in lines if l.startswith('{"snapshotVersion":') or l.startswith('{"version":') or l.startswith('{"row":') or l.startswith('{"ansi'))+len(('%continue '+pane+'\n').encode())
+  a.pause();failed=capture(a,'-D -U '+str(wire-1),False)
+  assert '%continue '+pane not in failed
+  assert not any(l.startswith('{"snapshotVersion":') for l in failed)
+  assert snapshot(capture(a,'-D -U '+str(wire)))['resumed']
+  a.pause();assert snapshot(capture(a))['snapshotVersion']==1
+  assert any(l.startswith('%error ') for l in a.execute('capture-pane -p -D -t '+pane))
+ print('dual snapshot: stock ANSI parity, control seed normalization, hex/chunk framing, exact combined budget, v1 compatibility passed')
  assert not list(pathlib.Path(root).glob('asan.*')) and not list(pathlib.Path(root).glob('ubsan.*'))
  print('atomic snapshot: strict origin/guards/flags/bounds, issuer-only resume, exact grid/modes, hook lineage/framing, cap edge/backlog, continuous output, parser boundary passed')
 finally:
