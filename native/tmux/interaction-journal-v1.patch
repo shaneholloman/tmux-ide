@@ -100,21 +100,31 @@ index 7233b7d..6487b7d 100644
  		paste_free(pb);
  
 diff --git a/cmd-queue.c b/cmd-queue.c
-index 2a22151..3369baf 100644
+index 2a22151..a65da99 100644
 --- a/cmd-queue.c
 +++ b/cmd-queue.c
-@@ -39,6 +39,10 @@ enum cmdq_type {
+@@ -38,7 +38,20 @@ enum cmdq_type {
+ };
  
  /* Command queue item. */
++/* A single immutable, bounded name snapshot shared only by direct children. */
++struct ti_session_guard {
++	unsigned references;
++	u_int id;
++	uint64_t created;
++	char name[];
++};
++
  struct cmdq_item {
 +	struct client *origin_client;
 +	struct ti_origin origin;
 +	int origin_fixed;
 +	uint64_t interaction_command_id;
++	struct ti_session_guard *session_guard;
  	char			*name;
  	struct cmdq_list	*queue;
  	struct cmdq_item	*next;
-@@ -76,6 +80,7 @@ TAILQ_HEAD(cmdq_item_list, cmdq_item);
+@@ -76,6 +89,7 @@ TAILQ_HEAD(cmdq_item_list, cmdq_item);
   * default target.
   */
  struct cmdq_state {
@@ -122,7 +132,7 @@ index 2a22151..3369baf 100644
  	int			 references;
  	int			 flags;
  
-@@ -155,6 +160,11 @@ cmdq_get_client(struct cmdq_item *item)
+@@ -155,6 +169,11 @@ cmdq_get_client(struct cmdq_item *item)
  }
  
  /* Get item target client. */
@@ -134,10 +144,55 @@ index 2a22151..3369baf 100644
  struct client *
  cmdq_get_target_client(struct cmdq_item *item)
  {
-@@ -226,6 +236,46 @@ cmdq_new_state(struct cmd_find_state *current, struct key_event *event,
+@@ -226,6 +245,91 @@ cmdq_new_state(struct cmd_find_state *current, struct key_event *event,
  	return (state);
  }
  
++static int
++cmdq_session_guard_valid(const struct ti_session_guard *guard)
++{
++	struct session *session = session_find(guard->name);
++	return session && session->id == guard->id &&
++	    session->creation_time.tv_sec >= 0 &&
++	    (uint64_t)session->creation_time.tv_sec == guard->created;
++}
++
++struct ti_session_guard *
++cmdq_session_guard_new(const char *name, u_int id, uint64_t created)
++{
++	struct ti_session_guard *guard;
++	size_t length = strlen(name);
++	if (!length || length > 4096)
++		return NULL;
++	guard = calloc(1, sizeof *guard + length + 1);
++	if (!guard)
++		return NULL;
++	guard->references = 1;
++	guard->id = id;
++	guard->created = created;
++	memcpy(guard->name, name, length + 1);
++	return guard;
++}
++
++void
++cmdq_session_guard_free(struct ti_session_guard *guard)
++{
++	if (guard && --guard->references == 0)
++		free(guard);
++}
++
++void
++cmdq_set_session_guard(struct cmdq_item *item, struct ti_session_guard *guard)
++{
++	if (!guard)
++		return;
++	/* Caller bounds the original direct command chain to at most 64 items. */
++	for (; item != NULL; item = item->next) {
++		item->session_guard = guard;
++		guard->references++;
++	}
++}
++
 +/* Immutable observation context: deliberately independent of target state. */
 +void cmdq_set_origin(struct cmdq_item *item, const struct ti_origin *origin)
 +{
@@ -181,7 +236,7 @@ index 2a22151..3369baf 100644
  /* Add a reference to a state. */
  struct cmdq_state *
  cmdq_link_state(struct cmdq_state *state)
-@@ -238,9 +288,11 @@ cmdq_link_state(struct cmdq_state *state)
+@@ -238,9 +342,11 @@ cmdq_link_state(struct cmdq_state *state)
  struct cmdq_state *
  cmdq_copy_state(struct cmdq_state *state, struct cmd_find_state *current)
  {
@@ -196,7 +251,7 @@ index 2a22151..3369baf 100644
  }
  
  /* Free a state. */
-@@ -324,11 +376,14 @@ cmdq_append(struct client *c, struct cmdq_item *item)
+@@ -324,11 +430,14 @@ cmdq_append(struct client *c, struct cmdq_item *item)
  struct cmdq_item *
  cmdq_insert_after(struct cmdq_item *after, struct cmdq_item *item)
  {
@@ -211,7 +266,7 @@ index 2a22151..3369baf 100644
  		next = item->next;
  		item->next = after->next;
  		after->next = item;
-@@ -353,6 +408,7 @@ void
+@@ -353,6 +462,7 @@ void
  cmdq_insert_hook(struct session *s, struct cmdq_item *item,
      struct cmd_find_state *current, const char *fmt, ...)
  {
@@ -219,7 +274,7 @@ index 2a22151..3369baf 100644
  	struct cmdq_state		*state = item->state;
  	struct cmd			*cmd = item->cmd;
  	struct args			*args = cmd_get_args(cmd);
-@@ -430,6 +486,7 @@ cmdq_insert_hook(struct session *s, struct cmdq_item *item,
+@@ -430,6 +540,7 @@ cmdq_insert_hook(struct session *s, struct cmdq_item *item,
  		cmdlist = options_array_item_value(a)->cmdlist;
  		if (cmdlist != NULL) {
  			new_item = cmdq_get_command(cmdlist, new_state);
@@ -227,15 +282,16 @@ index 2a22151..3369baf 100644
  			if (item != NULL)
  				item = cmdq_insert_after(item, new_item);
  			else
-@@ -453,6 +510,7 @@ cmdq_continue(struct cmdq_item *item)
+@@ -453,6 +564,8 @@ cmdq_continue(struct cmdq_item *item)
  static void
  cmdq_remove(struct cmdq_item *item)
  {
++	cmdq_session_guard_free(item->session_guard);
 +	tmux_ide_interaction_forget(item);
  	if (item->client != NULL)
  		server_client_unref(item->client);
  	if (item->cmdlist != NULL)
-@@ -515,6 +573,7 @@ cmdq_get_command(struct cmd_list *cmdlist, struct cmdq_state *state)
+@@ -515,6 +628,7 @@ cmdq_get_command(struct cmd_list *cmdlist, struct cmdq_state *state)
  
  		item->group = cmd_get_group(cmd);
  		item->state = cmdq_link_state(state);
@@ -243,7 +299,7 @@ index 2a22151..3369baf 100644
  
  		item->cmdlist = cmdlist;
  		item->cmd = cmd;
-@@ -607,6 +666,9 @@ cmdq_fire_command(struct cmdq_item *item)
+@@ -607,6 +721,9 @@ cmdq_fire_command(struct cmdq_item *item)
  	int			 flags, quiet = 0;
  	char			*tmp;
  
@@ -253,11 +309,17 @@ index 2a22151..3369baf 100644
  	if (cfg_finished)
  		cmdq_add_message(item);
  	if (log_get_level() > 1) {
-@@ -646,7 +708,35 @@ cmdq_fire_command(struct cmdq_item *item)
+@@ -646,7 +763,41 @@ cmdq_fire_command(struct cmdq_item *item)
  	if (retval == CMD_RETURN_ERROR)
  		goto out;
  
 -	retval = entry->exec(cmd, item);
++	if (item->session_guard && !cmdq_session_guard_valid(item->session_guard)) {
++		cmdq_error(item, "operation session lifetime mismatch");
++		retval = CMD_RETURN_ERROR;
++		goto out;
++	}
++
 +	/* Guard only direct children of the strict owned wrapper. Hook and
 +	 * background descendants retain ordinary tmux semantics. No yield occurs
 +	 * between this check and the command's synchronous execution. */
@@ -290,7 +352,7 @@ index 2a22151..3369baf 100644
  	if (retval == CMD_RETURN_ERROR)
  		goto out;
  
-@@ -663,6 +753,43 @@ cmdq_fire_command(struct cmdq_item *item)
+@@ -663,6 +814,43 @@ cmdq_fire_command(struct cmdq_item *item)
  	}
  
  out:
@@ -334,7 +396,7 @@ index 2a22151..3369baf 100644
  	item->client = saved;
  	if (retval == CMD_RETURN_ERROR) {
  		fsp = NULL;
-@@ -672,10 +799,12 @@ out:
+@@ -672,10 +860,12 @@ out:
  			fsp = &item->state->current;
  		else if (cmd_find_from_client(&fs, item->client, 0) == 0)
  			fsp = &fs;
@@ -828,10 +890,10 @@ index 49cac8b..d592a11 100644
  		return (0);
 diff --git a/tmux-ide-journal.c b/tmux-ide-journal.c
 new file mode 100644
-index 0000000..517fc31
+index 0000000..1365bd2
 --- /dev/null
 +++ b/tmux-ide-journal.c
-@@ -0,0 +1,695 @@
+@@ -0,0 +1,740 @@
 +/*
 + * Copyright (c) 2026 wavyrai
 + *
@@ -1159,7 +1221,7 @@ index 0000000..517fc31
 +	    "\"coverage\":[\"command-outcome-v1\",\"pty-enqueue-v1\",\"capture-"
 +	    "produced-v1\",\"cooperative-operation-v1\",\"pane-identity-v1\"],\"capacity\":%u,"
 +	    "\"maxBatch\":%u,\"maxWaiters\":%u,\"waitingReaders\":%u,"
-+	    "\"degraded\":%u,\"readerTransport\":\"sessionless-control-v1\",\"ownedOperationTransport\":\"direct-wrapper-v1\",\"ownedOperationEpochGuard\":\"server-epoch-v1\",\"ownedOperationPaneGuard\":\"direct-pane-v1\"}",
++	    "\"degraded\":%u,\"readerTransport\":\"sessionless-control-v1\",\"ownedOperationTransport\":\"direct-wrapper-v1\",\"ownedOperationEpochGuard\":\"server-epoch-v1\",\"ownedOperationPaneGuard\":\"direct-pane-v1\",\"ownedOperationSessionGuard\":\"direct-session-v1\"}",
 +	    ti_server_epoch, ti_journal_epoch, ti_journal ? "true" : "false",
 +	    TI_CAPACITY, TI_MAX_BATCH, TI_MAX_WAITERS, waiting, ti_degraded);
 +}
@@ -1444,6 +1506,14 @@ index 0000000..517fc31
 +	const char *expected_epoch = args_get(args, 'E');
 +	const char *expected_pane = args_get(args, 't');
 +	const char *expected_birth = args_get(args, 'B');
++	const char *expected_name = args_get(args, 's');
++	const char *expected_session = args_get(args, 'S');
++	const char *expected_created = args_get(args, 'C');
++	uint64_t session_id = 0, session_created = 0;
++	struct session *guard_session;
++	struct ti_session_guard *session_guard = NULL;
++	struct cmd *check_command;
++	unsigned command_count = 0;
 +	uint64_t pane_id, birth_id;
 +	struct window_pane *guard_pane;
 +	struct cmd_list *commands;
@@ -1482,6 +1552,26 @@ index 0000000..517fc31
 +		origin.guard_pane_id = (uint32_t)pane_id;
 +		origin.guard_birth_id = birth_id;
 +	}
++	if (expected_name || expected_session || expected_created) {
++		if (!args_has(args, 'I') || !expected_epoch || !expected_name ||
++		    !*expected_name || strlen(expected_name) > 4096 ||
++		    !expected_session || expected_session[0] != '$' ||
++		    !ti_decimal(expected_session + 1, &session_id) ||
++		    (expected_session[1] == '0' && expected_session[2] != '\0') ||
++		    session_id > UINT32_MAX ||
++		    !ti_decimal(expected_created, &session_created) ||
++		    (expected_created[0] == '0' && expected_created[1] != '\0')) {
++			cmdq_error(item, "invalid operation session guard");
++			return CMD_RETURN_ERROR;
++		}
++		guard_session = session_find(expected_name);
++		if (!guard_session || guard_session->id != (u_int)session_id ||
++		    guard_session->creation_time.tv_sec < 0 ||
++		    (uint64_t)guard_session->creation_time.tv_sec != session_created) {
++			cmdq_error(item, "operation session lifetime mismatch");
++			return CMD_RETURN_ERROR;
++		}
++	}
 +	if (args_has(args, 'I') && (!ti_journal || !origin.parent_id ||
 +	    !origin.issuer_id || !client ||
 +	    client->tmux_ide_connection_id != origin.issuer_id)) {
@@ -1507,6 +1597,21 @@ index 0000000..517fc31
 +		if (!commands)
 +			return CMD_RETURN_ERROR;
 +	}
++	if (expected_name) {
++		for (check_command = cmd_list_first(commands); check_command;
++		    check_command = cmd_list_next(check_command)) {
++			if (++command_count > 64)
++				break;
++		}
++		if (command_count <= 64)
++			session_guard = cmdq_session_guard_new(expected_name,
++			    (u_int)session_id, session_created);
++		if (!session_guard) {
++			cmd_list_free(commands);
++			cmdq_error(item, "operation session guard unavailable");
++			return CMD_RETURN_ERROR;
++		}
++	}
 +	if (args_has(args, 'I'))
 +		cmdq_print(item, "{\"schemaVersion\":2,\"type\":\"operation-identity\","
 +		    "\"serverEpoch\":\"%s\",\"connectionId\":\"%" PRIu64
@@ -1517,14 +1622,16 @@ index 0000000..517fc31
 +	if (args_has(args, 'I'))
 +		cmd_list_free(commands);
 +	cmdq_set_origin(child, &origin);
++	cmdq_set_session_guard(child, session_guard);
++	cmdq_session_guard_free(session_guard);
 +	cmdq_insert_after(item, child);
 +	return CMD_RETURN_NORMAL;
 +}
 +const struct cmd_entry cmd_tmux_ide_run_entry = {
 +    .name = "tmux-ide-run",
 +    .alias = NULL,
-+    .args = {"B:E:IO:t:", 1, 1, ti_run_parse},
-+    .usage = "[-I [-E server-epoch [-t pane-id -B birth-id]]] -O operation-uuid { commands }",
++    .args = {"B:C:E:IO:S:s:t:", 1, 1, ti_run_parse},
++    .usage = "[-I [-E server-epoch [-t pane-id -B birth-id] [-s session-name -S session-id -C created]]] -O operation-uuid { commands }",
 +    .flags = 0,
 +    .exec = ti_run_exec};
 diff --git a/tmux-ide-journal.h b/tmux-ide-journal.h
@@ -1609,7 +1716,7 @@ index 0000000..5fd589b
 +}
 +#endif
 diff --git a/tmux.h b/tmux.h
-index c9f8a32..b5cefe8 100644
+index c9f8a32..cd281b9 100644
 --- a/tmux.h
 +++ b/tmux.h
 @@ -1249,6 +1249,7 @@ struct visible_ranges {
@@ -1636,7 +1743,7 @@ index c9f8a32..b5cefe8 100644
  #define CLIENT_ALLREDRAWFLAGS		\
  	(CLIENT_REDRAWWINDOW|		\
  	 CLIENT_REDRAWSTATUS|		\
-@@ -2935,6 +2938,30 @@ struct cmd_parse_result *cmd_parse_from_buffer(const void *, size_t,
+@@ -2935,6 +2938,34 @@ struct cmd_parse_result *cmd_parse_from_buffer(const void *, size_t,
  struct cmd_parse_result *cmd_parse_from_arguments(struct args_value *, u_int,
  		     struct cmd_parse_input *);
  
@@ -1652,6 +1759,10 @@ index c9f8a32..b5cefe8 100644
 +void tmux_ide_interaction_effect(unsigned, uint64_t, unsigned, uint64_t);
 +void tmux_ide_interaction_done(uint64_t, const struct ti_origin *, unsigned,
 +			       unsigned, unsigned, uint64_t, unsigned);
++struct ti_session_guard;
++struct ti_session_guard *cmdq_session_guard_new(const char *, u_int, uint64_t);
++void cmdq_session_guard_free(struct ti_session_guard *);
++void cmdq_set_session_guard(struct cmdq_item *, struct ti_session_guard *);
 +void cmdq_set_origin(struct cmdq_item *, const struct ti_origin *);
 +void cmdq_set_origin_client(struct cmdq_item *, struct client *, unsigned);
 +void cmdq_set_state_origin_client(struct cmdq_state *, struct client *,
@@ -1667,7 +1778,7 @@ index c9f8a32..b5cefe8 100644
  /* cmd-queue.c */
  struct cmdq_state *cmdq_new_state(struct cmd_find_state *, struct key_event *,
  		     int);
-@@ -3649,6 +3676,7 @@ char	*parse_window_name(const char *);
+@@ -3649,6 +3680,7 @@ char	*parse_window_name(const char *);
  void	control_discard(struct client *);
  void	control_start(struct client *);
  void	control_ready(struct client *);

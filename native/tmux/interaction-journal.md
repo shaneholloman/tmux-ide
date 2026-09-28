@@ -253,3 +253,28 @@ Synchronization can enqueue input to multiple panes inside one send command.
 The guard applies to its direct resolved target; every resulting physical
 PTY effect remains separately observed. Owned attribution must match the exact
 expected birth; other synchronized targets remain independent evidence.
+
+### Direct-child selected-session guard
+
+The optional capability `ownedOperationSessionGuard: "direct-session-v1"` adds
+an all-or-none `-s EXACT_NAME -S '$SESSION_ID' -C CREATED_SECONDS` trio to the
+strict `-I -E` wrapper. The tuple comes from the daemon's existing captured
+session mutation context; it does not require another query per input. Session
+names are matched byte-for-byte with tmux's exact-name lookup, IDs are uint32,
+and creation time uses `creation_time.tv_sec`, matching `#{session_created}`.
+No pane-to-session membership restriction is added.
+
+The selected session is checked before body parsing and again immediately before
+each direct child executes. Rename or name reuse during a preceding hook/WAIT
+therefore stops subsequent direct commands. Renaming away and back before the
+next check is allowed if the same tuple is restored. Unrelated hook and nested
+command items do not receive the guard.
+
+This capability supports nonempty names of at most 4096 UTF-8 bytes and at most
+64 direct body commands. The daemon must fall back before native dispatch for
+unsupported name lengths. One nonfatal allocation copies the name into an
+immutable guard, with references attached only to the original direct command
+items. Normal completion, command-group error removal, and client/queue cleanup
+release those references. An allocation failure refuses before acknowledgement
+or child effects. There is no pointer to a mutable or freed session name and no
+new per-event allocation or journal payload.
