@@ -13,7 +13,7 @@ index ba9142f..e56a4fc 100644
  	cmd-rename-session.c \
  	cmd-rename-window.c \
 diff --git a/cmd-capture-pane.c b/cmd-capture-pane.c
-index ee91f05..d87f162 100644
+index ee91f05..7f8262a 100644
 --- a/cmd-capture-pane.c
 +++ b/cmd-capture-pane.c
 @@ -22,6 +22,7 @@
@@ -158,7 +158,7 @@ index ee91f05..d87f162 100644
  
  	join_lines = args_has(args, 'J');
  	if (args_has(args, 'e'))
-@@ -350,6 +382,128 @@ cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
+@@ -350,6 +382,129 @@ cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
  	return (buf);
  }
  
@@ -218,7 +218,7 @@ index ee91f05..d87f162 100644
 +	struct grid *gd = wp->base.grid;
 +	const char *history = args_get(args, 'S'), *p;
 +	char *modes, *snapshot, header[1536];
-+	size_t limit = 16 * 1024 * 1024, lines, length;
++	size_t limit = 16 * 1024 * 1024, lines = 0, length;
 +	u_int top, bottom;
 +	u_char flag;
 +	int n;
@@ -229,7 +229,8 @@ index ee91f05..d87f162 100644
 +	}
 +	if (!args_has(args, 'p') || !args_has(args, 'R') ||
 +	    !args_has(args, 't') || history == NULL || *history != '-' ||
-+	    !cmd_capture_snapshot_decimal(history + 1, 1000000, &lines) ||
++	    (history[1] != '\0' &&
++	    !cmd_capture_snapshot_decimal(history + 1, 1000000, &lines)) ||
 +	    (args_has(args, 'U') &&
 +	    (!cmd_capture_snapshot_decimal(args_get(args, 'U'), limit, &limit) || !limit)))
 +		goto invalid;
@@ -264,7 +265,7 @@ index ee91f05..d87f162 100644
 +	free(modes);
 +	if (n < 0 || (size_t)n >= sizeof header)
 +		goto invalid;
-+	top = lines > gd->hsize ? 0 : gd->hsize - lines;
++	top = history[1] == '\0' || lines > gd->hsize ? 0 : gd->hsize - lines;
 +	bottom = gd->hsize + gd->sy - 1;
 +	snapshot = cmd_capture_pane_native(item, wp, &wp->base, gd, top,
 +	    bottom, limit, header, &length);
@@ -287,7 +288,7 @@ index ee91f05..d87f162 100644
  static enum cmd_retval
  cmd_capture_pane_exec(struct cmd *self, struct cmdq_item *item)
  {
-@@ -360,6 +514,13 @@ cmd_capture_pane_exec(struct cmd *self, struct cmdq_item *item)
+@@ -360,6 +515,13 @@ cmd_capture_pane_exec(struct cmd *self, struct cmdq_item *item)
  	const char		*bufname;
  	size_t			 len;
  
@@ -301,7 +302,7 @@ index ee91f05..d87f162 100644
  	if (cmd_get_entry(self) == &cmd_clear_history_entry) {
  		window_pane_reset_mode_all(wp);
  		grid_clear_history(wp->base.grid);
-@@ -404,5 +565,6 @@ cmd_capture_pane_exec(struct cmd *self, struct cmdq_item *item)
+@@ -404,5 +566,6 @@ cmd_capture_pane_exec(struct cmd *self, struct cmdq_item *item)
  		}
  	}
  

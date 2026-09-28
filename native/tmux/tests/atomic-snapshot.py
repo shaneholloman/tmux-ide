@@ -36,8 +36,8 @@ class Control:
   if self.p.poll() is None:self.p.kill();self.p.communicate(timeout=3)
 def wrap(body,birth_override=None):
  return shlex.join(['tmux-ide-run','-I','-E',epoch,'-t',pane,'-B',birth_override or birth,'-O',str(uuid.uuid4()),body])
-def capture(c,extra='',ok=True):
- lines=c.execute(wrap(f'capture-pane -p -R -Q -S -1000 -t {pane} '+extra))
+def capture(c,extra='',ok=True,history='-'):
+ lines=c.execute(wrap(f'capture-pane -p -R -Q -S {history} -t {pane} '+extra))
  assert any(l.startswith('%error ') for l in lines)!=ok,lines
  return lines
 def snapshot(lines):return next(json.loads(l) for l in lines if l.startswith('{"snapshotVersion":'))
@@ -69,12 +69,13 @@ try:
  a.pause();lines=capture(a)
  assert snapshot(lines)['cursor']==call('display-message','-p','-t',pane,fmt).strip()
  grid='\n'.join(l for l in lines if l.startswith('{"version":') or l.startswith('{"row":'))+'\n'
- assert grid==call('capture-pane','-p','-R','-S','-1000','-t',pane)
+ assert grid==call('capture-pane','-p','-R','-S','-','-t',pane)
  # Exact byte budget includes the metadata header and all grid rows. Failure
  # at one byte below the boundary leaves the same issuer paused for retry.
  length=sum(len((l+'\n').encode()) for l in lines if l.startswith('{"snapshotVersion":') or l.startswith('{"version":') or l.startswith('{"row":'))
  a.pause();capture(a,'-U '+str(length-1),False)
  assert snapshot(capture(a,'-U '+str(length)))['resumed']
+ a.pause();assert snapshot(capture(a,history='-10'))['resumed']
  # Hook captures stay distinct children; the direct snapshot has exactly one
  # direct effect and the hook's ordinary capture cannot steal its proof.
  call('set-hook','-g','after-capture-pane',f'capture-pane -p -t {pane}')
@@ -108,6 +109,8 @@ try:
    encoded=line.split(' ',2)[2]
    live.append(re.sub(r'\\([0-7]{3})',lambda m:chr(int(m[1],8)),encoded))
  observed=[int(n) for n in re.findall(r'ATOMIC-(\d{4})','\n'.join(snapshots)+''.join(live))]
+ header=next(json.loads(line) for line in lines if line.startswith('{"version":'))
+ assert len(snapshots)==header['history']+header['rows']
  assert observed==list(range(500)),(len(observed),observed[:10],observed[-10:])
  # Alternate screen and nondefault input/rendering modes are extracted at
  # the same instant as grid/cursor; all23slots equal the ordinary fixed probe.

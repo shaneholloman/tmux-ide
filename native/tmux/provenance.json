@@ -13,7 +13,7 @@
     },
     {
       "patch": "interaction-journal-v1.patch",
-      "patchSha256": "1127b905c4bee39f3d9a3126667dcab202db6097eecdac1a94d9f41aa6b234dd"
+      "patchSha256": "89a22a2a23c96849d4d7eeb8f115e1c780292229529b621d16c6f82cbd91ee29"
     }
   ],
   "experimentalExtensions": ["tmux-ide-interaction-journal-v2"]
