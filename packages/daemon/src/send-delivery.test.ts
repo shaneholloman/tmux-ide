@@ -57,7 +57,7 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "tmux-ide-delivery-"));
   mocks.state.mockReturnValue({ running: true });
   mocks.panes.mockReturnValue([pane]);
-  mocks.busy.mockReturnValue("shell");
+  mocks.busy.mockReturnValue("idle");
   mocks.daemon.mockReturnValue({ pid: 123 });
   mocks.alive.mockResolvedValue(true);
   mocks.identity.mockReturnValue("pane.editor\n");
