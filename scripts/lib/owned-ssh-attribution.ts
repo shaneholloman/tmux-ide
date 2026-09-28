@@ -250,6 +250,7 @@ export async function qualifyCanonicalSshAttribution(options: {
       selector: { kind: "path", path: socket },
     });
     assert(registration?.generation);
+    facts.createdServerId = registration.serverId;
     const discovered = AutomationPanesResponseSchemaZ.parse(await json("/api/v1/automation/panes"));
     const target = discovered.panes.find(
       (pane) => pane.endpoint.serverScope.serverId === registration!.serverId,

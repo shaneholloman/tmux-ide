@@ -1,3 +1,4 @@
+import { cleanupOwnedSshRegistry } from "../../../../scripts/lib/owned-ssh-registry-cleanup.ts";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
@@ -194,5 +195,38 @@ it.each(["foreign", "malformed", "symlink", "unrelated"])(
     expect(existsSync(join(instance.runtimeDir, "development-owner.json"))).toBe(true);
     if (kind === "unrelated")
       expect(readFileSync(join(instance.runtimeDir, "keep"), "utf8")).toBe("untouched");
+  },
+);
+
+it.each(["empty", "populated", "unknown", "symlink"])(
+  "fixture secondary registry cleanup: %s",
+  async (kind) => {
+    const { instances, root } = await fixture();
+    const instance = instances[0]!;
+    claimDevelopmentRuntimeOwner(instance, (await readDevelopmentIdentity(instance))!);
+    const id = "tmux-server." + "a".repeat(32);
+    const directory = join(instance.runtimeDir, "server-owners", id);
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const path = join(directory, "workspaces.json");
+    const value = { version: 1, workspaces: kind === "populated" ? [{ name: "preserve" }] : [] };
+    if (kind === "symlink") {
+      const target = join(root, "registry");
+      writeDevelopmentRecord(target, value);
+      symlinkSync(target, path);
+    } else writeDevelopmentRecord(path, value);
+    if (kind === "unknown") writeFileSync(join(directory, "unknown"), "keep");
+    if (kind === "empty") {
+      expect(await cleanupOwnedSshRegistry(instance, id)).toMatchObject({
+        createdServerId: id,
+        bytes: 29,
+      });
+      expect(existsSync(join(instance.runtimeDir, "server-owners"))).toBe(false);
+      await expect(resetDevelopmentInstance(instance, { yes: true })).resolves.toMatchObject({
+        status: "reset",
+      });
+    } else {
+      await expect(cleanupOwnedSshRegistry(instance, id)).rejects.toThrow();
+      expect(existsSync(path)).toBe(true);
+    }
   },
 );

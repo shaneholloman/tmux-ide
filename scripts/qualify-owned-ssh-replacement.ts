@@ -1,5 +1,6 @@
 /** Opt-in native stage4. Four managed owners, two real SSH authorities, no Docker. */
 import assert from "node:assert/strict";
+import { cleanupOwnedSshRegistry } from "./lib/owned-ssh-registry-cleanup.ts";
 import { qualifyCanonicalSshAttribution } from "./lib/owned-ssh-attribution.ts";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
@@ -1022,6 +1023,14 @@ if (args[0] === "--client") {
       try {
         if (await readDevelopmentIdentity(instances[role])) {
           await cli(role, "down");
+          const createdServerId = (receipts.attribution as { createdServerId?: string } | undefined)
+            ?.createdServerId;
+          if (role === "target-a" && createdServerId) {
+            receipts.secondaryRegistryCleanup = await cleanupOwnedSshRegistry(
+              instances[role]!,
+              createdServerId,
+            );
+          }
           await cli(role, "reset", ["--yes"]);
         }
         const remaining = existsSync(instances[role].root) ? readdirSync(instances[role].root) : [];
