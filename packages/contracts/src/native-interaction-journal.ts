@@ -21,6 +21,7 @@ export const NativeJournalCapabilitySchemaZ = z
     schemaVersion: z.literal(2),
     type: z.literal("capability"),
     readerTransport: z.literal("sessionless-control-v1").optional(),
+    ownedOperationTransport: z.literal("direct-wrapper-v1").optional(),
     serverEpoch: z.uuid(),
     journalEpoch: z.uuid(),
     enabled: z.boolean(),
@@ -108,3 +109,5 @@ export const NativeJournalIdentitySchemaZ = z
     connectionId: positive,
   })
   .strict();
+
+export type NativeJournalIdentity = z.infer<typeof NativeJournalIdentitySchemaZ>;
