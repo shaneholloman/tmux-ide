@@ -1,5 +1,6 @@
 import { WindowLinkTargetSchemaZ } from "./window-links.ts";
 import { z } from "zod";
+import { InteractionEvidenceSchemaZ } from "./interaction-evidence.ts";
 
 import { DesktopWorkspaceNameSchemaZ } from "./desktop-workspace-name.ts";
 import {
@@ -240,7 +241,7 @@ export type InteractionProof = z.infer<typeof InteractionProofSchemaZ>;
  * authority. `sequence` belongs to the daemon generation's shared event
  * journal, alongside resource.changed frames.
  */
-export const InteractionReceiptSchemaZ = z
+export const InteractionReceiptV1SchemaZ = z
   .object({
     type: z.literal("interaction.receipt"),
     sequence: z.number().int().positive(),
@@ -474,4 +475,82 @@ export const InteractionReceiptSchemaZ = z
       });
     }
   });
+/** Explicit next wire contract; public alias flips only with the v4 compatibility gate. */
+export const InteractionReceiptV2SchemaZ = InteractionReceiptV1SchemaZ.safeExtend({
+  evidence: InteractionEvidenceSchemaZ.nullable(),
+}).superRefine((receipt, context) => {
+  const paneInteraction =
+    receipt.operationKind === "workspace.pane.send" ||
+    receipt.operationKind === "workspace.pane.read";
+  if (!paneInteraction) {
+    if (receipt.evidence !== null)
+      context.addIssue({
+        code: "custom",
+        path: ["evidence"],
+        message: "Structural interactions use existing structural proof",
+      });
+    return;
+  }
+  const evidence = receipt.evidence;
+  if (evidence === null) {
+    context.addIssue({
+      code: "custom",
+      path: ["evidence"],
+      message: "Pane interaction requires scoped evidence",
+    });
+    return;
+  }
+  if (evidence.interactionId !== receipt.operationId)
+    context.addIssue({
+      code: "custom",
+      path: ["evidence", "interactionId"],
+      message: "Evidence must identify this interaction",
+    });
+  const destination = evidence.endpoints.destination;
+  if (
+    destination.kind === "pane" &&
+    (destination.workspaceName !== receipt.workspaceName ||
+      receipt.target.kind !== "pane" ||
+      destination.semanticPaneId !== receipt.target.semanticPaneId)
+  )
+    context.addIssue({
+      code: "custom",
+      path: ["evidence", "endpoints"],
+      message: "Evidence destination must match receipt target",
+    });
+  const command =
+    evidence.observation.kind === "stock-hook" || evidence.observation.kind === "native-journal"
+      ? evidence.observation.command
+      : null;
+  if (
+    command !== null &&
+    (receipt.operationKind === "workspace.pane.read") !== (command === "capture-pane")
+  )
+    context.addIssue({
+      code: "custom",
+      path: ["evidence", "observation"],
+      message: "Observed command must match receipt operation",
+    });
+  if (
+    receipt.phase === "accepted" &&
+    (evidence.observation.kind !== "admission" || evidence.effect.kind !== "unknown")
+  )
+    context.addIssue({
+      code: "custom",
+      path: ["evidence"],
+      message: "Admission cannot claim command execution or effect",
+    });
+  if (
+    receipt.origin === "external" &&
+    evidence.observation.kind !== "stock-hook" &&
+    evidence.observation.kind !== "native-journal"
+  )
+    context.addIssue({
+      code: "custom",
+      path: ["evidence", "observation"],
+      message: "Passive observations require stock or native evidence",
+    });
+});
+export type InteractionReceiptV2 = z.infer<typeof InteractionReceiptV2SchemaZ>;
+export const InteractionReceiptSchemaZ = InteractionReceiptV1SchemaZ;
 export type InteractionReceipt = z.infer<typeof InteractionReceiptSchemaZ>;
