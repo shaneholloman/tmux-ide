@@ -3,13 +3,13 @@ import { settleAutomationResources } from "./packed-automation-cleanup.mjs";
 import assert from "node:assert/strict";
 import { isDeepStrictEqual } from "node:util";
 import { spawn, execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createTmuxIdeAutomationSdk } from "@tmux-ide/sdk";
 
 const config = JSON.parse(readFileSync(process.argv[2], "utf8"));
 const resolvedSdk = fileURLToPath(import.meta.resolve("@tmux-ide/sdk"));
-assert.ok(resolvedSdk.startsWith(`${config.consumer}/node_modules/@tmux-ide/sdk/`));
+assert.ok(resolvedSdk.startsWith(`${realpathSync(config.consumer)}/node_modules/@tmux-ide/sdk/`));
 const children = new Map();
 const subscriptions = new Set();
 let interrupted = false;

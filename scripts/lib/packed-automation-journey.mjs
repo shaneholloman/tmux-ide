@@ -117,6 +117,7 @@ export async function runPackedAutomationJourney({
     );
     const result = await runAsync(process.execPath, [join(consumer, "consumer.mjs"), configPath], {
       cwd: consumer,
+      stdio: "inherit",
       env: { ...env, TMUX: `${socket},${pid},0`, TMUX_PANE: sourcePane },
       timeout: 120000,
       maxBuffer: 1024 * 1024,
