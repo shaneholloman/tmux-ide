@@ -2,7 +2,7 @@ import { PANE_SOURCE_CREDENTIAL_OPTION } from "./pane-source-credentials.ts";
 import { Hono } from "hono";
 import { streamTmuxInteractions } from "../command-center/tmux-server-interaction-events.ts";
 import { subscribeTmuxServerInteractions } from "@tmux-ide/daemon-client/tmux-server-interaction-events";
-import type { InteractionReceipt } from "@tmux-ide/contracts";
+import type { InteractionJournalEntry } from "@tmux-ide/contracts";
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
@@ -103,13 +103,20 @@ describe.skipIf(!hasTmux).sequential("independent native tmux server owners", ()
     const beforeA = owners[0]!.interactionReceipts.read(0).cursor;
     const beforeB = owners[1]!.interactionReceipts.read(0).cursor;
     const streamScope = {
-      serverId: `tmux-server.${"a".repeat(32)}`,
+      serverId: `tmux-server.${"0".repeat(32)}`,
       generation: owners[0]!.generation,
     };
-    const observed: InteractionReceipt[] = [];
+    const observed: InteractionJournalEntry[] = [];
     const app = new Hono();
     app.get("/events", (c) =>
-      streamTmuxInteractions(c, streamScope, owners[0]!.interactionReceipts, beforeA, () => {}),
+      streamTmuxInteractions(
+        c,
+        streamScope,
+        owners[0]!.interactionReceipts,
+        beforeA,
+        () => {},
+        owners[0]!.interactionObservation!,
+      ),
     );
     const subscription = subscribeTmuxServerInteractions({
       baseUrl: "http://localhost",
@@ -122,29 +129,45 @@ describe.skipIf(!hasTmux).sequential("independent native tmux server owners", ()
       },
     });
     await subscription.ready;
+    expect(subscription.getObservationStatus()).toMatchObject({ serverScope: streamScope });
     run(sockets[0]!, ["send-keys", "-t", "shared:0.0", "-l", "raw-before-mutation"]);
     run(sockets[0]!, ["capture-pane", "-p", "-t", "shared:0.0"]);
     await vi.waitFor(() => {
       const receipts = owners[0]!.interactionReceipts.read(beforeA).receipts;
-      expect(receipts.some((receipt) => receipt.operationKind === "workspace.pane.send")).toBe(
-        true,
-      );
-      expect(receipts.some((receipt) => receipt.operationKind === "workspace.pane.read")).toBe(
-        true,
-      );
+      expect(
+        receipts.some(
+          (receipt) =>
+            "operationKind" in receipt && receipt.operationKind === "workspace.pane.send",
+        ),
+      ).toBe(true);
+      expect(
+        receipts.some(
+          (receipt) =>
+            "operationKind" in receipt && receipt.operationKind === "workspace.pane.read",
+        ),
+      ).toBe(true);
       expect(
         receipts.every(
-          (receipt) => receipt.origin === "external" && receipt.sourceSemanticPaneId === null,
+          (receipt) =>
+            "origin" in receipt &&
+            receipt.origin === "external" &&
+            receipt.sourceSemanticPaneId === null,
         ),
       ).toBe(true);
     });
     await vi.waitFor(() => {
-      expect(observed.some((receipt) => receipt.operationKind === "workspace.pane.send")).toBe(
-        true,
-      );
-      expect(observed.some((receipt) => receipt.operationKind === "workspace.pane.read")).toBe(
-        true,
-      );
+      expect(
+        observed.some(
+          (receipt) =>
+            "operationKind" in receipt && receipt.operationKind === "workspace.pane.send",
+        ),
+      ).toBe(true);
+      expect(
+        observed.some(
+          (receipt) =>
+            "operationKind" in receipt && receipt.operationKind === "workspace.pane.read",
+        ),
+      ).toBe(true);
     });
     subscription.close();
     await subscription.done;
