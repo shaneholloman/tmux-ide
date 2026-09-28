@@ -229,7 +229,7 @@ it("authored helper closure retains exact proof until expiry then reclaims grant
     classification: { kind: "agent", bindingId: source.bindingId, agentRunId: source.agentRunId },
   });
   expect(result.evidence.endpoints.source).toEqual(source.endpoint);
-  expect(authority.nextExpiryAt).toBe(10);
+  expect(authority.nextExpiryAt).toBeNull();
   now = 10;
   authority.expire();
   expect(authority.size.connections).toBe(0);
@@ -237,4 +237,87 @@ it("authored helper closure retains exact proof until expiry then reclaims grant
     authority.registerConnection({ ...identity, connectionId: "8" }, "authored"),
   ).not.toBeNull();
   expect(authority.ingest(projection())[0]!.disposition).toBe("unknown");
+});
+it("retires completed viewer permits under sustained operation beyond admission capacity", () => {
+  const { authority, connection } = setup();
+  authority.dispose();
+  const active = new OwnedNativeInteractionBindings({ environmentId, serverScope, serverEpoch });
+  const viewer = active.registerConnection(identity, "viewer")!;
+  for (let index = 0; index < 600; index++) {
+    const op = id(100 + index),
+      wrapper = String(1000 + index);
+    const permit = active.admit({
+      operationId: op,
+      role: "viewer",
+      target,
+      commands: ["send-keys"],
+      source: null,
+      connection: viewer,
+    });
+    expect(permit).not.toBeNull();
+    active.acknowledge(permit!, viewer, { ...ack, operationId: op, wrapperCommandId: wrapper });
+    expect(
+      active.ingest(projection({ correlation: op, parentCommandId: wrapper }))[0]!.disposition,
+    ).toBe("viewer");
+    expect(active.size.permits).toBe(0);
+  }
+  expect(connection).toBeDefined();
+  expect(active.size.connections).toBe(1);
+  active.dispose();
+});
+it("waits for paste plus Enter and counts distinct repeated command instances", () => {
+  const { authority, connection } = setup();
+  authority.dispose();
+  const active = new OwnedNativeInteractionBindings({ environmentId, serverScope, serverEpoch });
+  const viewer = active.registerConnection(identity, "viewer")!;
+  const permit = active.admit({
+    operationId,
+    role: "viewer",
+    target,
+    commands: ["paste-buffer", "send-keys", "send-keys"],
+    source: null,
+    connection: viewer,
+  })!;
+  active.acknowledge(permit, viewer, ack);
+  const paste = structuredClone(projection());
+  paste.native.commandOutcome!.kind = 3;
+  if (paste.evidence.observation.kind === "native-journal")
+    paste.evidence.observation.command = "paste-buffer";
+  expect(active.ingest(paste)[0]!.disposition).toBe("viewer");
+  expect(active.size.permits).toBe(1);
+  const enter = projection({ commandId: "10" });
+  expect(active.ingest(enter)[0]!.disposition).toBe("viewer");
+  expect(active.size.permits).toBe(1);
+  active.ingest(enter);
+  expect(active.size.permits).toBe(1);
+  expect(active.ingest(projection({ commandId: "11" }))[0]!.disposition).toBe("viewer");
+  expect(active.size.permits).toBe(0);
+  expect(connection).toBeDefined();
+});
+it("classifies all effects from a completed native command before batch retirement", () => {
+  const { authority, connection, permit } = setup();
+  authority.acknowledge(permit, connection, ack);
+  expect(
+    authority.ingestBatch([projection(), projection()]).map((item) => item.disposition),
+  ).toEqual(["viewer", "viewer"]);
+  expect(authority.size.permits).toBe(0);
+});
+it("a reused UUID cannot correlate a retired wrapper's late record", () => {
+  const { authority, connection, permit } = setup();
+  authority.acknowledge(permit, connection, ack);
+  authority.ingest(projection());
+  expect(authority.hasPendingOperations).toBe(false);
+  const next = authority.admit({
+    operationId,
+    role: "viewer",
+    target,
+    commands: ["send-keys"],
+    source: null,
+    connection,
+  })!;
+  authority.acknowledge(next, connection, { ...ack, wrapperCommandId: "20" });
+  expect(authority.ingest(projection())[0]!.disposition).toBe("unknown");
+  expect(authority.hasPendingOperations).toBe(true);
+  expect(authority.ingest(projection({ parentCommandId: "20" }))[0]!.disposition).toBe("viewer");
+  expect(authority.hasPendingOperations).toBe(false);
 });

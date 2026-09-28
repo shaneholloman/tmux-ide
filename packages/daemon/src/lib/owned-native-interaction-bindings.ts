@@ -33,6 +33,7 @@ export interface OwnedNativeOperationRequest {
   readonly operationId: string;
   readonly role: Role;
   readonly target: NativeEndpoint;
+  /** Exact direct command plan, including repeated kinds (maximum 64). */
   readonly commands: readonly Command[];
   /** Only actual validated credential grants may be supplied by the owner. */
   readonly source: {
@@ -63,6 +64,7 @@ interface Permit {
   readonly token: OwnedNativeOperation;
   readonly request: OwnedNativeOperationRequest;
   readonly expiresAt: number;
+  readonly completed: Map<string, Command>;
   acknowledgement: NativeOperationIdentity | null;
   connection: Connection | null;
 }
@@ -121,12 +123,15 @@ export class OwnedNativeInteractionBindings {
       serverEpoch: options.serverEpoch,
       connectionId: "1",
     }).serverEpoch;
-    this.#now = options.now ?? Date.now;
+    this.#now = options.now ?? (() => performance.now());
     this.#maxConnections = bound(options.maxConnections, 64, 128);
     this.#maxPermits = bound(options.maxPermits, 256, 4096);
     this.#maxPending = bound(options.maxPending, 256, 4096);
     this.#permitMs = bound(options.permitMs, 30_000, 60_000);
     this.#pendingMs = bound(options.pendingMs, 2_000, 10_000);
+  }
+  get hasPendingOperations(): boolean {
+    return this.#permits.size !== 0 || this.#pending.length !== 0;
   }
   get size() {
     return {
@@ -184,8 +189,7 @@ export class OwnedNativeInteractionBindings {
       throw new TypeError("Invalid owned operation role");
     if (
       raw.commands.length < 1 ||
-      raw.commands.length > 4 ||
-      new Set(raw.commands).size !== raw.commands.length ||
+      raw.commands.length > 64 ||
       raw.commands.some(
         (c) => !["send-keys", "paste-buffer", "capture-pane", "send-prefix"].includes(c),
       )
@@ -223,6 +227,7 @@ export class OwnedNativeInteractionBindings {
       token,
       request,
       expiresAt: this.#now() + this.#permitMs,
+      completed: new Map(),
       acknowledgement: null,
       connection: connection ?? null,
     });
@@ -262,9 +267,22 @@ export class OwnedNativeInteractionBindings {
       this.#pending.splice(i, 1);
       released.push(this.#decide(pending.item, permit));
     }
+    this.#retireCompleted();
     return released;
   }
+  /** Process a complete projector output batch before retiring completed proof, so all effects
+   * from one native command retain the same classification. */
+  ingestBatch(
+    items: readonly NativeInteractionProjection[],
+  ): readonly OwnedNativeInteractionDecision[] {
+    const decisions = items.flatMap((item) => this.#ingest(item));
+    this.#retireCompleted();
+    return decisions;
+  }
   ingest(raw: NativeInteractionProjection): readonly OwnedNativeInteractionDecision[] {
+    return this.ingestBatch([raw]);
+  }
+  #ingest(raw: NativeInteractionProjection): readonly OwnedNativeInteractionDecision[] {
     const item = freeze(structuredClone(raw));
     // Invalid public evidence is a producer error, not a reason to invent a replacement record.
     InteractionEvidenceSchemaZ.parse(item.evidence);
@@ -340,6 +358,24 @@ export class OwnedNativeInteractionBindings {
     }
     for (const [id, permit] of this.#permits) if (matches(permit)) this.#permits.delete(id);
     return released;
+  }
+  #retireCompleted(): void {
+    for (const [id, permit] of this.#permits) {
+      if (!permit.acknowledgement) continue;
+      const remaining = [...permit.request.commands];
+      for (const kind of permit.completed.values()) {
+        const index = remaining.indexOf(kind);
+        if (index >= 0) remaining.splice(index, 1);
+      }
+      if (remaining.length === 0) this.#permits.delete(id);
+    }
+    for (const [token, connection] of this.#connections) {
+      if (
+        connection.closedAt !== null &&
+        ![...this.#permits.values()].some((permit) => permit.connection === connection)
+      )
+        this.#connections.delete(token);
+    }
   }
   #scope(endpoint: InteractionPaneEndpoint): boolean {
     return (
@@ -452,6 +488,17 @@ export class OwnedNativeInteractionBindings {
       r.parentCommandId !== ack.wrapperCommandId
     )
       return this.#unknown(item, "unmatched");
+    const commandKind =
+      item.evidence.observation.kind === "native-journal"
+        ? (item.evidence.observation.command as Command)
+        : null;
+    if (
+      commandKind === null ||
+      (!permit.completed.has(r.commandId) &&
+        [...permit.completed.values()].filter((kind) => kind === commandKind).length >=
+          permit.request.commands.filter((kind) => kind === commandKind).length)
+    )
+      return this.#unknown(item, "unmatched");
     const source = permit.request.source;
     const actor = item.evidence.actor;
     if (actor.kind !== "native") return this.#unknown(item, "unmatched");
@@ -470,6 +517,18 @@ export class OwnedNativeInteractionBindings {
               : { kind: "unknown" },
       },
     });
+    // Native outcome proves this direct command completed; it does not settle the authored operation.
+    const command =
+      item.evidence.observation.kind === "native-journal"
+        ? (item.evidence.observation.command as Command)
+        : null;
+    if (
+      command !== null &&
+      !permit.completed.has(r.commandId) &&
+      [...permit.completed.values()].filter((kind) => kind === command).length <
+        permit.request.commands.filter((kind) => kind === command).length
+    )
+      permit.completed.set(r.commandId, command);
     return freeze({
       disposition: permit.request.role,
       evidence,
