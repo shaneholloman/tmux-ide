@@ -97,8 +97,9 @@ function ownerOperationId(value?: string): string {
 /**
  * Build the explicit owner/automation SDK. Unlike renderer capability hosts,
  * this client may perform reviewed semantic mutations and therefore requires
- * the daemon's owner token. Retries retain one operation id so terminal input
- * can never be applied twice after a lost response.
+ * the daemon's owner token. Retries retain one operation id within the daemon's
+ * bounded replay horizon. A lost response is uncertain; callers must not create
+ * a fresh operation id to retry it or assume replay survives daemon restart.
  */
 export function createTmuxIdeOwnerSdk(options: TmuxIdeOwnerSdkOptions): TmuxIdeOwnerSdk {
   return {
