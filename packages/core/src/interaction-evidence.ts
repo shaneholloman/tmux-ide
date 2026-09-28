@@ -7,6 +7,8 @@ const same = (left: unknown, right: unknown): boolean =>
  * Validates an already-correlated revision. It cannot establish correlation or
  * authenticate an actor: only the producer with actual evidence can do that.
  * Parsing canonicalizes object key order before immutable facts are compared.
+ * Native identity-method upgrades are deliberately unsupported until their
+ * proof lattice is specified; connection/process evidence is not a total order.
  */
 export function canEnrichInteractionEvidence(
   previous: InteractionEvidence,
@@ -65,7 +67,11 @@ export function canEnrichInteractionEvidence(
     );
   }
   if (x.kind === "stock-hook")
-    return (y.kind === "stock-hook" || y.kind === "native-journal") && x.command === y.command;
+    return (
+      x.command === ("command" in y ? y.command : null) &&
+      (y.kind === "stock-hook" ||
+        (y.kind === "native-journal" && y.correlatedOperationId === a.interactionId))
+    );
   if (x.kind === "cooperative-completion") {
     return same(x, y) || (y.kind === "native-journal" && y.correlatedOperationId === x.operationId);
   }

@@ -49,8 +49,20 @@ const native = InteractionEvidenceSchemaZ.parse({
 
 describe("monotonic interaction evidence", () => {
   it("enriches a correlated stock command without changing its immutable endpoint", () => {
-    expect(canEnrichInteractionEvidence(stock, native)).toBe(true);
+    if (native.observation.kind !== "native-journal") throw Error("fixture");
+    expect(
+      canEnrichInteractionEvidence(stock, {
+        ...native,
+        observation: {
+          ...native.observation,
+          correlatedOperationId: stock.interactionId,
+        },
+      }),
+    ).toBe(true);
     expect(canEnrichInteractionEvidence(native, native)).toBe(false);
+  });
+  it("does not correlate matching command, target and timestamp without explicit native proof", () => {
+    expect(canEnrichInteractionEvidence(stock, native)).toBe(false);
   });
   it("rejects endpoint, generation, lifetime, effect, actor and occurrence changes", () => {
     const destination = stock.endpoints.destination;
