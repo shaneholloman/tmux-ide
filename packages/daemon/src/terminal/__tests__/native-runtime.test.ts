@@ -926,16 +926,33 @@ describe("async terminal inventory reads", () => {
   it("publishes each authoritative inventory snapshot to the generation-owned cache seam", async () => {
     const { registry, root } = createRegistry("workspace.alpha", "runtime:session");
     const adopted: NativeTerminalInventorySnapshot[] = [];
+    const endpoint = {
+      kind: "pane" as const,
+      environmentId: "00000000-0000-4000-8000-000000000001",
+      serverScope: {
+        serverId: `tmux-server.${"a".repeat(32)}`,
+        generation: "00000000-0000-4000-8000-000000000002",
+      },
+      paneLifetimeId: "00000000-0000-4000-8000-000000000003",
+      workspaceName: "workspace.alpha",
+      semanticPaneId: "pane.agent",
+    };
     const runtime = new WorkspaceTerminalInventoryRuntime({
       registry,
       tmuxAuthority: authority(root),
       commandExecutor: syncStartup,
       readCommandExecutor: asyncInventory("runtime:session", []),
       onInventory: (snapshot) => adopted.push(snapshot),
+      resolveInteractionEndpoint: () => {
+        expect(adopted).toHaveLength(1);
+        return endpoint;
+      },
     });
     await runtime.whenReady();
     const inventory = await runtime.discoverTerminalInventory();
-    expect(adopted).toEqual([inventory]);
+    expect(adopted).toHaveLength(1);
+    expect(inventory.panes[0]?.interactionEndpoint).toEqual(endpoint);
+    expect(adopted[0]!.panes[0]).not.toHaveProperty("interactionEndpoint");
     expect(adopted[0]!.panes[0]).toMatchObject({
       sessionName: "runtime:session",
       runtimePaneId: "%3",

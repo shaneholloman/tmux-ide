@@ -1,3 +1,4 @@
+import type { InteractionPaneEndpoint } from "@tmux-ide/contracts";
 import { liveSessionIdForNativeIdentity } from "../terminal/protocol/live-session-identity.ts";
 import { runtimeTmuxArgs } from "../lib/runtime-namespace.ts";
 import { execFileSync } from "node:child_process";
@@ -220,6 +221,7 @@ export function readAdoptedSessionNames(runTmux: TmuxRunner = _tmuxRunner): stri
 
 /** One live pane, with the raw agent-authority options gathered for the fleet. */
 export interface FleetPaneFacts {
+  readonly interactionEndpoint?: Extract<InteractionPaneEndpoint, { kind: "pane" }> | null;
   readonly runtimePaneId: string;
   /** Durable semantic pane stamp owned by tmux-ide, when one has been assigned. */
   readonly semanticPaneId: string | null;
@@ -284,6 +286,10 @@ function emptyToNull(value: string): string | null {
 export function readAdoptedFleet(
   registry: { list(): { sessionName: string }[] } = getDefaultWorkspaceRegistry(),
   runTmux: TmuxRunner = _tmuxRunner,
+  resolveInteractionEndpoint?: (
+    sessionName: string,
+    pane: FleetPaneFacts,
+  ) => Extract<InteractionPaneEndpoint, { kind: "pane" }> | null,
 ): FleetSessionFacts[] | null {
   const adopted = readAdoptedSessionNames(runTmux);
   if (adopted === null) return null;
@@ -337,7 +343,10 @@ export function readAdoptedFleet(
       name,
       appCreated: appCreatedSessions.has(name),
       cwd: active?.currentPath ?? "",
-      panes,
+      panes: panes.map((pane) => ({
+        ...pane,
+        interactionEndpoint: resolveInteractionEndpoint?.(name, pane) ?? null,
+      })),
     };
   });
 }

@@ -151,6 +151,22 @@ export class InteractionEvidenceAuthority {
     };
   }
 
+  /** Join a fresh fleet row only to the exact current native binding. */
+  captureInventoryEndpoint(
+    sessionName: string,
+    runtimePaneId: string,
+    semanticPaneId: string,
+  ): ResolvedEndpoint | null {
+    this.#assertOpen();
+    const candidates = [...this.#live.values()].filter(
+      (binding) =>
+        binding.row.sessionName === sessionName &&
+        binding.row.runtimePaneId === runtimePaneId &&
+        binding.row.semanticPaneId === semanticPaneId,
+    );
+    return candidates.length === 1 ? structuredClone(candidates[0]!.endpoint) : null;
+  }
+
   /** Requires the hook's immutable session id and semantic stamp, not a late lookup. */
   captureObservedEndpoint(record: {
     runtimePaneId: string;

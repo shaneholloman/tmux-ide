@@ -225,6 +225,7 @@ describe("application-shell resource projector", () => {
           title: "Fable",
           kind: "agent",
           active: false,
+          interactionEndpoint: null,
           attachability: { status: "unavailable", reason: "missing-semantic-stamp" },
         },
         {
@@ -232,6 +233,7 @@ describe("application-shell resource projector", () => {
           title: "Codex",
           kind: "agent",
           active: true,
+          interactionEndpoint: null,
           attachability: { status: "unavailable", reason: "missing-semantic-stamp" },
         },
       ],
@@ -926,6 +928,7 @@ describe("GET /api/project/:name/application-shell", () => {
       expect.objectContaining({
         title: "Codex",
         kind: "agent",
+        interactionEndpoint: null,
         attachability: { status: "unavailable", reason: "missing-semantic-stamp" },
       }),
     );

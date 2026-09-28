@@ -94,3 +94,31 @@ describe("interaction evidence authority", () => {
     expect(owner.captureObservedEndpoint(observed).kind).toBe("unresolved-pane");
   });
 });
+
+it("joins fleet metadata only to the exact live native binding and never retired history", () => {
+  const owner = new InteractionEvidenceAuthority(environmentId, serverScope);
+  owner.adoptInventory([pane]);
+  const endpoint = owner.captureInventoryEndpoint(
+    pane.sessionName,
+    pane.runtimePaneId,
+    pane.semanticPaneId,
+  )!;
+  expect(endpoint).toEqual(owner.captureAuthoredEndpoint(pane.workspaceName, pane.semanticPaneId));
+  expect(
+    owner.captureInventoryEndpoint("foreign", pane.runtimePaneId, pane.semanticPaneId),
+  ).toBeNull();
+  expect(owner.captureInventoryEndpoint(pane.sessionName, "%99", pane.semanticPaneId)).toBeNull();
+  endpoint.workspaceName = "mutated";
+  expect(
+    owner.captureInventoryEndpoint(pane.sessionName, pane.runtimePaneId, pane.semanticPaneId)
+      ?.workspaceName,
+  ).toBe(pane.workspaceName);
+  owner.adoptInventory([{ ...pane, runtimePaneId: "%2" }]);
+  expect(
+    owner.captureInventoryEndpoint(pane.sessionName, pane.runtimePaneId, pane.semanticPaneId),
+  ).toBeNull();
+  owner.dispose();
+  expect(() => owner.captureInventoryEndpoint(pane.sessionName, "%2", pane.semanticPaneId)).toThrow(
+    "retired",
+  );
+});

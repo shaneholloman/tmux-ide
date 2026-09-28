@@ -1535,6 +1535,8 @@ async function startEmbeddedDaemonGeneration(
             : {}),
         },
         agentStatusProbeFactory: ({ run }) => createTmuxAgentStatusProbe({ run }),
+        resolveInteractionEndpoint: (workspaceName, semanticPaneId) =>
+          interactionEvidence?.captureAuthoredEndpoint(workspaceName, semanticPaneId) ?? null,
         onInventory: (snapshot) => {
           workspaceMultiplexer.adoptPaneInventory(snapshot.panes);
           interactionEvidence?.adoptInventory(snapshot.panes);
@@ -1731,7 +1733,16 @@ async function startEmbeddedDaemonGeneration(
         peekTerminalAttachmentRuntime,
         paneStreamRuntime,
         catalogLiveSessions: () => discoverLiveSessionSummaries(catalogTmuxRunner),
-        catalogFleet: () => readAdoptedFleet(workspaceRegistry, catalogTmuxRunner),
+        catalogFleet: () =>
+          readAdoptedFleet(workspaceRegistry, catalogTmuxRunner, (sessionName, pane) =>
+            pane.semanticPaneId
+              ? (interactionEvidence?.captureInventoryEndpoint(
+                  sessionName,
+                  pane.runtimePaneId,
+                  pane.semanticPaneId,
+                ) ?? null)
+              : null,
+          ),
         fleetPreviewCapture: createFleetPreviewCapture(
           createPinnedWorkspaceTmuxAsyncRunner(tmuxAuthority),
         ),

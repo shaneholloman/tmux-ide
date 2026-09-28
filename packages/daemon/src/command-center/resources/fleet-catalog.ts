@@ -160,6 +160,7 @@ function projectSession(
       activity: presentation.activity,
       attention: presentation.attention,
       statusSource: presentation.statusSource,
+      interactionEndpoint: pane.interactionEndpoint ?? null,
     });
   }
   return {

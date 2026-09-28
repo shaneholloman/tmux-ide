@@ -47,6 +47,31 @@ function session(overrides: Partial<FleetSessionFacts> = {}): FleetSessionFacts 
 }
 
 describe("projectFleetCatalog", () => {
+  it("carries only supplied authoritative pane endpoints, with explicit null for unknowns", () => {
+    const endpoint = {
+      kind: "pane" as const,
+      environmentId: DAEMON.instanceId,
+      serverScope: { serverId: `tmux-server.${"a".repeat(32)}`, generation: DAEMON.instanceId },
+      workspaceName: "alpha",
+      semanticPaneId: "pane.alpha",
+      paneLifetimeId: DAEMON.instanceId,
+    };
+    const resource = projectFleetCatalog(
+      [session({ panes: [pane({ currentCommand: "claude", interactionEndpoint: endpoint })] })],
+      DAEMON,
+      NOW_SEC,
+    );
+    expect(
+      FleetCatalogResourceV1SchemaZ.parse(resource).sessions[0]!.agents[0]!.interactionEndpoint,
+    ).toEqual(endpoint);
+    const unknown = projectFleetCatalog(
+      [session({ panes: [pane({ currentCommand: "claude" })] })],
+      DAEMON,
+      NOW_SEC,
+    );
+    expect(unknown.sessions[0]!.agents[0]!.interactionEndpoint).toBeNull();
+  });
+
   it("is a valid, stamped, path-free resource", () => {
     const resource = projectFleetCatalog(
       [

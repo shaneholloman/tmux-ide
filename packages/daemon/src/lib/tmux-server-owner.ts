@@ -245,6 +245,8 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
     sessionRuntimeRegistry,
     tmuxAuthority: { ...authority, trustedCwd: options.stateDirectory, nativeServerIdentity },
     agentStatusProbeFactory: ({ run }) => createTmuxAgentStatusProbe({ run }),
+    resolveInteractionEndpoint: (workspaceName, semanticPaneId) =>
+      interactionEvidence?.captureAuthoredEndpoint(workspaceName, semanticPaneId) ?? null,
     onInventory: (snapshot) => {
       multiplexer.adoptPaneInventory(snapshot.panes);
       interactionEvidence.adoptInventory(snapshot.panes);

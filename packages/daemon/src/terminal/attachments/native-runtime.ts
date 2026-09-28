@@ -1,3 +1,5 @@
+import type { InteractionPaneEndpoint } from "@tmux-ide/contracts";
+type ResolvedInteractionEndpoint = Extract<InteractionPaneEndpoint, { kind: "pane" }>;
 import {
   fenceNativeTmuxCommand,
   type NativeTmuxServerIdentity,
@@ -473,6 +475,7 @@ export type NativeTerminalInventoryCatalogIssue =
   | "duplicate-runtime-pane-binding";
 
 export interface NativeTerminalInventoryPaneSnapshot extends TrustedSemanticPaneSnapshot {
+  readonly interactionEndpoint?: ResolvedInteractionEndpoint | null;
   readonly sessionName: string;
   readonly index: number;
   readonly title: string;
@@ -613,6 +616,7 @@ function analyzeInventoryPanes(panes: readonly NativeTerminalInventoryPaneSnapsh
         type: _type,
         missionStamp: _missionStamp,
         dir: _dir,
+        interactionEndpoint: _interactionEndpoint,
         ...row
       }) => row,
     ),
@@ -975,6 +979,7 @@ export async function discoverWorkspaceRegistryTerminalInventory(
         type: _type,
         missionStamp: _missionStamp,
         dir: _dir,
+        interactionEndpoint: _interactionEndpoint,
         ...row
       }) => row,
     ),
@@ -1001,6 +1006,7 @@ export async function discoverWorkspaceRegistrySemanticPanes(
       type: _type,
       missionStamp: _missionStamp,
       dir: _dir,
+      interactionEndpoint: _interactionEndpoint,
       ...row
     }) => row,
   );
@@ -1183,6 +1189,10 @@ type AdmissionRuntimeOptions = Omit<
 >;
 
 export interface WorkspaceTerminalInventoryRuntimeOptions {
+  readonly resolveInteractionEndpoint?: (
+    workspaceName: string,
+    semanticPaneId: string,
+  ) => ResolvedInteractionEndpoint | null;
   readonly registry: WorkspaceRegistry;
   readonly sessionRuntimeRegistry?: SessionRuntimeRegistry;
   readonly tmuxAuthority: NativeTerminalAttachmentTmuxAuthority;
@@ -1232,6 +1242,7 @@ async function enumerateStartupMarkedViews(
  * legacy attachment stack.
  */
 export class WorkspaceTerminalInventoryRuntime {
+  readonly #resolveInteractionEndpoint: WorkspaceTerminalInventoryRuntimeOptions["resolveInteractionEndpoint"];
   readonly semanticPaneCatalog: SemanticPaneCatalog;
   readonly runner: TmuxAttachmentCommandRunner;
   readonly readRunner: NativeTerminalInventoryReadRunner;
@@ -1285,6 +1296,7 @@ export class WorkspaceTerminalInventoryRuntime {
     this.readRunner = pinnedReadRunner(authority, executeRead);
     this.#registry = options.registry;
     this.#observability = options.observability ?? DISABLED_SESSION_RUNTIME_OBSERVABILITY;
+    this.#resolveInteractionEndpoint = options.resolveInteractionEndpoint;
     this.#onInventory = options.onInventory ?? null;
     this.#onSessionInventory = options.onSessionInventory ?? null;
     this.#discoverTerminalInventory = (signal) => this.#readInventory(signal);
@@ -1305,6 +1317,7 @@ export class WorkspaceTerminalInventoryRuntime {
               type: _type,
               missionStamp: _missionStamp,
               dir: _dir,
+              interactionEndpoint: _interactionEndpoint,
               ...row
             }) => row,
           );
@@ -1490,9 +1503,21 @@ export class WorkspaceTerminalInventoryRuntime {
     try {
       this.#onInventory?.(snapshot);
     } catch {
-      // Cache adoption is an optimization/readiness fence, never inventory authority.
+      // Inventory still renders; stale evidence must not escape a failed adoption.
+      return {
+        ...snapshot,
+        panes: snapshot.panes.map((pane) => ({ ...pane, interactionEndpoint: null })),
+      };
     }
-    return snapshot;
+    return {
+      ...snapshot,
+      panes: snapshot.panes.map((pane) => ({
+        ...pane,
+        interactionEndpoint: pane.semanticPaneId
+          ? (this.#resolveInteractionEndpoint?.(pane.workspaceName, pane.semanticPaneId) ?? null)
+          : null,
+      })),
+    };
   }
 
   async #readInventory(
@@ -1747,6 +1772,7 @@ export class WorkspaceTerminalInventoryRuntime {
     }
     const finalRetry = retryIfReplaced();
     if (finalRetry) return finalRetry;
+    let trustedInteractionInventoryAdopted = false;
     if (trustedInventory) {
       const currentMembership = this.#registry
         .list()
@@ -1769,6 +1795,7 @@ export class WorkspaceTerminalInventoryRuntime {
       }
       try {
         this.#onSessionInventory?.(workspace.sessionName, shouldPrewarm ? inventory : null);
+        trustedInteractionInventoryAdopted = shouldPrewarm;
       } catch {
         // A cache consumer cannot own terminal inventory discovery.
       }
@@ -1789,7 +1816,21 @@ export class WorkspaceTerminalInventoryRuntime {
             sessionWindowCount: _sessionWindowCount,
             dir: _dir,
             ...pane
-          }) => Object.freeze({ ...pane }),
+          }) =>
+            Object.freeze({
+              ...pane,
+              ...(trustedInventory
+                ? {
+                    interactionEndpoint:
+                      trustedInteractionInventoryAdopted && pane.semanticPaneId
+                        ? (this.#resolveInteractionEndpoint?.(
+                            workspace.name,
+                            pane.semanticPaneId,
+                          ) ?? null)
+                        : null,
+                  }
+                : {}),
+            }),
         ),
       ),
     });
@@ -1949,6 +1990,7 @@ export class NativeTerminalAttachmentRuntime {
               type: _type,
               missionStamp: _missionStamp,
               dir: _dir,
+              interactionEndpoint: _interactionEndpoint,
               ...row
             }) => row,
           );
@@ -2220,6 +2262,7 @@ export class NativeTerminalAttachmentRuntime {
           type: _type,
           missionStamp: _missionStamp,
           dir: _dir,
+          interactionEndpoint: _interactionEndpoint,
           ...row
         }) => row,
       ),
