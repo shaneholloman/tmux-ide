@@ -10,7 +10,10 @@ import {
   type SessionRuntimeConsumer,
   type SessionRuntimeRegistry,
 } from "./registry.ts";
-import { SessionRuntimeIntentError } from "./semantic-mutation-executor.ts";
+import {
+  type SessionRuntimeInteractionContext,
+  SessionRuntimeIntentError,
+} from "./semantic-mutation-executor.ts";
 import { SessionRuntimeTransportBinder } from "./transport-binding.ts";
 
 export interface SessionRuntimeMultiplexerBackendOptions {
@@ -25,6 +28,11 @@ export interface SessionRuntimeMultiplexerBackendOptions {
     | "submitPaneCredentialIntent"
   >;
   readonly resolveSession: (workspaceName: string) => string | null;
+  readonly resolvePaneSourceBinding?: (
+    credential: string,
+    session: string,
+    claimedSemanticPaneId: string | undefined,
+  ) => SessionRuntimeInteractionContext["source"];
   readonly resolvePaneSourceCredential?: (
     credential: string | undefined,
     session: string,
@@ -150,6 +158,8 @@ export function createSessionRuntimeMultiplexerBackend(
       );
       if (sourcePaneCredential) {
         if (!credentialSource) throw new Error("Pane source credential is invalid or stale");
+        const sourceBinding =
+          options.resolvePaneSourceBinding?.(sourcePaneCredential, session, claimedSource) ?? null;
         const result = await submit(() =>
           options.registry.submitPaneCredentialIntent(
             session,
@@ -162,10 +172,17 @@ export function createSessionRuntimeMultiplexerBackend(
                 session,
                 claimedSource,
               );
-              if (current !== credentialSource) {
+              const currentBinding =
+                options.resolvePaneSourceBinding?.(sourcePaneCredential, session, claimedSource) ??
+                null;
+              if (
+                current !== credentialSource ||
+                JSON.stringify(currentBinding) !== JSON.stringify(sourceBinding)
+              ) {
                 throw new Error("Pane source credential became invalid before execution");
               }
             },
+            sourceBinding,
           ),
         );
         if (!result || result.verb === "workspace.pane.read")

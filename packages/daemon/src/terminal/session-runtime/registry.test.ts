@@ -1,3 +1,4 @@
+import { testInteractionContext } from "../../../test-support/interaction-evidence.ts";
 import { describe, expect, it, vi } from "vitest";
 import type { SessionRuntimeSemanticIntent } from "@tmux-ide/contracts";
 import type { MirrorServiceOptions } from "../mirror/mirror-service.ts";
@@ -83,6 +84,7 @@ function controllerRig(generation = GENERATION_A) {
     mirror: base.mirror,
     createControllerToken: () => tokens[tokenIndex++]!,
     semanticMutations: {
+      captureInteractionContext: testInteractionContext,
       resolveSession: (workspaceName) => `${workspaceName}-session`,
       execute: (operationId, intent) => {
         executed.push(intent.verb);
@@ -488,6 +490,7 @@ describe("SessionRuntimeRegistry", () => {
       generation: GENERATION_A,
       mirror: base.mirror,
       semanticMutations: {
+        captureInteractionContext: testInteractionContext,
         resolveSession: () => "alpha-session",
         execute: (operationId, intent) => {
           if (intent.verb === "workspace.pane.send") executed.push(intent);
@@ -504,6 +507,11 @@ describe("SessionRuntimeRegistry", () => {
       OP_A,
       { ...send(), sourceSemanticPaneId: "pane.editor" },
       "pane.editor",
+      undefined,
+      {
+        endpoint: testInteractionContext({ ...send(), semanticPaneId: "pane.editor" }).destination,
+        bindingId: OP_B,
+      },
     );
     await vi.waitFor(() => expect(executed).toHaveLength(1));
     expect(registry.activeControllerLeaseCount()).toBe(0);
@@ -534,6 +542,7 @@ describe("SessionRuntimeRegistry", () => {
       mirror: base.mirror,
       createControllerToken: () => TOKEN_A,
       semanticMutations: {
+        captureInteractionContext: testInteractionContext,
         resolveSession: () => "alpha-session",
         execute: (operationId, intent) => {
           executed.push(operationId);
@@ -592,6 +601,7 @@ describe("SessionRuntimeRegistry", () => {
       generation: GENERATION_A,
       mirror: base.mirror,
       semanticMutations: {
+        captureInteractionContext: testInteractionContext,
         resolveSession: () => "alpha-session",
         execute: (operationId, intent) => {
           executed.push(operationId);
@@ -636,7 +646,7 @@ describe("SessionRuntimeRegistry", () => {
     await registry.dispose();
   });
 
-  it("attributes an observed send only from a live authenticated source binding", async () => {
+  it("does not turn a legacy semantic source hint into a lifetime-bound actor", async () => {
     const base = rig();
     const executed: Array<{ sourceSemanticPaneId?: string }> = [];
     const receipts: Array<{ phase: string; sourceSemanticPaneId: string | null }> = [];
@@ -646,6 +656,7 @@ describe("SessionRuntimeRegistry", () => {
       mirror: base.mirror,
       createControllerToken: () => TOKEN_A,
       semanticMutations: {
+        captureInteractionContext: testInteractionContext,
         resolveSession: () => "alpha-session",
         execute: (operationId, intent) => {
           if (intent.verb === "workspace.pane.send") executed.push(intent);
@@ -677,7 +688,11 @@ describe("SessionRuntimeRegistry", () => {
     expect(executed[0]!.sourceSemanticPaneId).toBe("pane.editor");
     expect(receipts).toMatchObject([
       { phase: "accepted", sourceSemanticPaneId: null },
-      { phase: "observed", sourceSemanticPaneId: "pane.editor" },
+      {
+        phase: "observed",
+        sourceSemanticPaneId: null,
+        evidence: { actor: { kind: "unknown" }, endpoints: { source: null } },
+      },
     ]);
     await registry.dispose();
   });
@@ -691,6 +706,7 @@ describe("SessionRuntimeRegistry", () => {
       mirror: base.mirror,
       createControllerToken: () => TOKEN_A,
       semanticMutations: {
+        captureInteractionContext: testInteractionContext,
         resolveSession: () => "alpha-session",
         execute: (operationId, intent) => resultFor(operationId, intent),
         publishReceipt: (receipt) => {
@@ -720,6 +736,7 @@ describe("SessionRuntimeRegistry", () => {
       mirror: base.mirror,
       createControllerToken: () => TOKEN_A,
       semanticMutations: {
+        captureInteractionContext: testInteractionContext,
         resolveSession: () => "alpha-session",
         execute: (operationId, intent) => {
           if (intent.verb === "workspace.pane.send") executed.push(intent);

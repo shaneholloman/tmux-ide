@@ -53,6 +53,7 @@ import {
   SessionSemanticMutationExecutor,
   type SessionRuntimeIntentResult,
   type SessionRuntimeAutomationAuthority,
+  type SessionRuntimeInteractionContext,
   type SessionRuntimeTmuxObservation,
   type SessionSemanticMutationExecutorOptions,
   type SessionSemanticMutationMetrics,
@@ -659,6 +660,7 @@ export class SessionRuntimeRegistry implements PaneStreamMirror {
     rawIntent: SessionRuntimeSemanticIntent,
     semanticPaneId: string,
     authorizeBeforeEffect?: () => void,
+    sourceBinding?: SessionRuntimeInteractionContext["source"],
   ): Promise<SessionRuntimeIntentResult> {
     const intent = SessionRuntimeSemanticIntentSchemaZ.parse(rawIntent);
     if (intent.verb !== "workspace.pane.send") {
@@ -681,6 +683,7 @@ export class SessionRuntimeRegistry implements PaneStreamMirror {
       {
         origin: "cli",
         authenticatedSourceSemanticPaneId: semanticPaneId,
+        authenticatedSourceBinding: sourceBinding,
         authorizeBeforeEffect,
       },
     );

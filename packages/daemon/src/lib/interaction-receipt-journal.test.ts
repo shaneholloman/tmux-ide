@@ -1,3 +1,4 @@
+import { testStockInteractionEvidence } from "../../test-support/interaction-evidence.ts";
 import { describe, expect, it, vi } from "vitest";
 import {
   InteractionReceiptJournal,
@@ -5,6 +6,11 @@ import {
 } from "./interaction-receipt-journal.ts";
 
 const draft: InteractionReceiptDraft = {
+  evidence: testStockInteractionEvidence(
+    "afbc7eaf-604a-4117-8296-aef44b889af1",
+    "shared-name",
+    "pane.same",
+  ),
   operationId: "afbc7eaf-604a-4117-8296-aef44b889af1",
   origin: "external",
   workspaceName: "shared-name",

@@ -61,6 +61,7 @@ export interface SessionRuntimeAutomationAuthority extends SessionRuntimeInterac
 
 export interface SessionRuntimeSubmissionAuthority {
   readonly interactionContext?: SessionRuntimeInteractionContext;
+  readonly authenticatedSourceBinding?: SessionRuntimeInteractionContext["source"];
   /** Trusted submitting surface, established outside caller-authored intent JSON. */
   readonly origin: AuthoredInteractionOrigin;
   readonly authenticatedSourceSemanticPaneId?: string | null;
@@ -218,11 +219,16 @@ export class SessionSemanticMutationExecutor {
     const origin = authority.origin;
     const paneInteraction =
       intent.verb === "workspace.pane.send" || intent.verb === "workspace.pane.read";
-    const interactionContext = paneInteraction
+    let interactionContext = paneInteraction
       ? structuredClone(
           authority.interactionContext ?? this.#options.captureInteractionContext?.(intent) ?? null,
         )
       : null;
+    if (interactionContext && authority.authenticatedSourceBinding)
+      interactionContext = {
+        ...interactionContext,
+        source: structuredClone(authority.authenticatedSourceBinding),
+      };
     if (paneInteraction && !interactionContext)
       return Promise.reject(
         new SessionRuntimeIntentError("rejected", "Scoped interaction evidence is unavailable"),

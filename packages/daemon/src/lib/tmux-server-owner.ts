@@ -295,6 +295,12 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
     semanticPaneCatalog: terminalInventoryRuntime.semanticPaneCatalog,
   });
   const backend = createSessionRuntimeMultiplexerBackend({
+    resolvePaneSourceCredential: (credential, session, claimed) =>
+      sourceCredentials.resolve(credential, session, claimed),
+    resolvePaneSourceBinding: (credential, session, claimed) => {
+      const grant = sourceCredentials.resolveBinding(credential, session, claimed);
+      return grant ? interactionEvidence.captureSourceBinding(grant) : null;
+    },
     registry: sessionRuntimeRegistry,
     resolveSession: (name) => workspaceRegistry.get(name)?.sessionName ?? null,
   });

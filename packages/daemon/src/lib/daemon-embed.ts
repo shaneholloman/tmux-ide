@@ -1574,6 +1574,16 @@ async function startEmbeddedDaemonGeneration(
         registry: sessionRuntimeRegistry,
         resolveSession: (workspaceName) =>
           workspaceRegistry.get(workspaceName)?.sessionName ?? null,
+        resolvePaneSourceBinding: (credential, resolvedSession, claimedSource) => {
+          const grant = paneSourceCredentials.resolveBinding(
+            credential,
+            resolvedSession,
+            claimedSource,
+          );
+          return grant && interactionEvidence
+            ? interactionEvidence.captureSourceBinding(grant)
+            : null;
+        },
         resolvePaneSourceCredential: (credential, resolvedSession, claimedSource) =>
           paneSourceCredentials.resolve(credential, resolvedSession, claimedSource),
       });

@@ -1,3 +1,4 @@
+import { testInteractionContext } from "../../../test-support/interaction-evidence.ts";
 import type {
   SessionRuntimeSemanticIntent,
   WorkspaceMultiplexerMutationRequest,
@@ -160,7 +161,18 @@ function rig() {
         ? "pane.source"
         : null,
   );
+  const sourceBinding = {
+    endpoint: testInteractionContext({
+      verb: "workspace.pane.read",
+      workspaceName: "alpha",
+      semanticPaneId: "pane.source",
+      origin: "cli",
+    }).destination,
+    bindingId: OPERATION_IDS[0]!,
+  };
+  const resolvePaneSourceBinding = vi.fn(() => sourceBinding);
   const backend = createSessionRuntimeMultiplexerBackend({
+    resolvePaneSourceBinding,
     registry,
     resolveSession: (workspaceName) => (workspaceName === "alpha" ? "alpha-session" : null),
     resolvePaneSourceCredential,
@@ -172,6 +184,8 @@ function rig() {
     connect,
     registry,
     resolvePaneSourceCredential,
+    resolvePaneSourceBinding,
+    sourceBinding,
     submitAuthenticatedIntent,
     submitIntent,
     submitPaneCredentialIntent,
@@ -205,6 +219,7 @@ describe("createSessionRuntimeMultiplexerBackend", () => {
     const registry = new SessionRuntimeRegistry({
       generation: GENERATION,
       semanticMutations: {
+        captureInteractionContext: testInteractionContext,
         resolveSession: () => "alpha-session",
         execute: (operationId, intent) => {
           if (intent.verb !== "workspace.pane.resize") throw new Error("unexpected intent");
@@ -251,6 +266,7 @@ describe("createSessionRuntimeMultiplexerBackend", () => {
       const registry = new SessionRuntimeRegistry({
         generation: GENERATION,
         semanticMutations: {
+          captureInteractionContext: testInteractionContext,
           resolveSession: () => "alpha-session",
           execute: () => {
             throw failure;
@@ -411,6 +427,38 @@ describe("createSessionRuntimeMultiplexerBackend", () => {
     expect(h.submitIntent).not.toHaveBeenCalled();
   });
 
+  it("rejects a rotated scoped source binding even when its semantic ID remains the same", async () => {
+    const h = rig();
+    const effect = vi.fn();
+    h.submitPaneCredentialIntent.mockImplementationOnce(
+      async (_session, _operation, _intent, _source, authorize) => {
+        h.resolvePaneSourceBinding.mockReturnValue({
+          ...h.sourceBinding,
+          bindingId: OPERATION_IDS[1]!,
+        });
+        authorize?.();
+        effect();
+        return { outcome: "applied" };
+      },
+    );
+    await expect(
+      h.backend.mutate(
+        request({
+          verb: "workspace.pane.send",
+          workspaceName: "alpha",
+          semanticPaneId: "pane.alpha",
+          text: "never delivered",
+          submit: true,
+          origin: "sdk",
+        }),
+        undefined,
+        "valid-pane-token",
+      ),
+    ).rejects.toThrow("became invalid");
+    expect(effect).not.toHaveBeenCalled();
+    await h.backend.dispose?.();
+  });
+
   it("re-resolves a pane credential at the final effect boundary", async () => {
     const h = rig();
     const effect = vi.fn();
@@ -459,6 +507,7 @@ describe("createSessionRuntimeMultiplexerBackend", () => {
       { ...send, origin: "cli" },
       "pane.source",
       expect.any(Function),
+      h.sourceBinding,
     );
     expect(h.connect).not.toHaveBeenCalled();
     expect(h.acquireController).not.toHaveBeenCalled();
@@ -512,6 +561,7 @@ it("routes fenced ordinary close through the real registry and semantic ledger w
   const registry = new SessionRuntimeRegistry({
     generation: GENERATION,
     semanticMutations: {
+      captureInteractionContext: testInteractionContext,
       resolveSession: () => null,
       execute: (operationId, intent) => {
         if (intent.verb !== "workspace.session.kill") throw new Error("unexpected intent");

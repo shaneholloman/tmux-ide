@@ -1,3 +1,4 @@
+import { testInteractionContext } from "../../test-support/interaction-evidence.ts";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
@@ -110,6 +111,7 @@ describe.skipIf(!hasTmux).sequential("pane source credentials, live tmux", () =>
     registry = new SessionRuntimeRegistry({
       generation: randomUUID(),
       semanticMutations: {
+        captureInteractionContext: testInteractionContext,
         resolveSession: (workspaceName) => (workspaceName === "alpha" ? session : null),
         execute: (operationId, intent) => {
           if (intent.verb !== "workspace.pane.send") throw new Error("unexpected read");
