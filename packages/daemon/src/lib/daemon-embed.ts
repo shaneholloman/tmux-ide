@@ -1172,7 +1172,11 @@ async function startEmbeddedDaemonGeneration(
       runAsync: (args, signal) => fleetFactsTmuxRunner(args, signal),
     });
     const legacySession = process.env.TMUX_IDE_SESSION;
-    if (legacySession && !workspaceRegistry.has(legacySession)) {
+    if (
+      legacySession &&
+      !workspaceRegistry.has(legacySession) &&
+      !workspaceRegistry.list().some((workspace) => workspace.sessionName === legacySession)
+    ) {
       try {
         workspaceRegistry.add({
           name: legacySession,
@@ -1191,7 +1195,8 @@ async function startEmbeddedDaemonGeneration(
     if (
       !sessionless &&
       sessionName !== EMBEDDED_SESSION_NAME &&
-      !workspaceRegistry.has(sessionName)
+      !workspaceRegistry.has(sessionName) &&
+      !workspaceRegistry.list().some((workspace) => workspace.sessionName === sessionName)
     ) {
       try {
         workspaceRegistry.add({

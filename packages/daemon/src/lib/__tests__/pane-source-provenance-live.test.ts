@@ -15,7 +15,11 @@ import { send } from "../../send.ts";
 import { startEmbeddedDaemon, type EmbeddedDaemonHandle } from "../daemon-embed.ts";
 import { PANE_SOURCE_CREDENTIAL_OPTION } from "../pane-source-credentials.ts";
 import { INTERNAL_SEND_OPERATION_OPTION } from "../tmux-external-interaction-observer.ts";
-import { _setDefaultWorkspaceRegistryForTests, WorkspaceRegistry } from "../workspace-registry.ts";
+import {
+  _setDefaultWorkspaceRegistryForTests,
+  getDefaultWorkspaceRegistry,
+  WorkspaceRegistry,
+} from "../workspace-registry.ts";
 
 const hasTmux = spawnSync("tmux", ["-V"], { stdio: "ignore" }).status === 0;
 
@@ -149,6 +153,13 @@ describe.skipIf(!hasTmux).sequential("authenticated pane provenance, full daemon
 
   it("runs the real CLI send path, emits honest receipts, and rotates authority on restart", async () => {
     const first = await start();
+    // An explicit session launch must preserve its already configured workspace,
+    // not create a second alias that makes immutable stock observations ambiguous.
+    expect(
+      getDefaultWorkspaceRegistry()
+        .list()
+        .filter((entry) => entry.sessionName === session),
+    ).toMatchObject([{ name: workspaceName, sessionName: session }]);
     const events = eventClient(first);
     await new Promise<void>((resolve, reject) => {
       events.socket.once("open", resolve);
@@ -184,6 +195,30 @@ describe.skipIf(!hasTmux).sequential("authenticated pane provenance, full daemon
         frame.target.semanticPaneId === "pane.tests",
     )) as InteractionReceipt;
     expect(observed.sourceSemanticPaneId).toBe("pane.editor");
+    expect(observed.evidence).toMatchObject({
+      actor: { kind: "cooperative", bindingId: expect.any(String) },
+      observation: { kind: "cooperative-completion", operationId: observed.operationId },
+      endpoints: {
+        source: {
+          kind: "pane",
+          workspaceName,
+          semanticPaneId: "pane.editor",
+          paneLifetimeId: expect.any(String),
+        },
+        destination: {
+          kind: "pane",
+          workspaceName,
+          semanticPaneId: "pane.tests",
+          paneLifetimeId: expect.any(String),
+        },
+      },
+    });
+    expect(observed.evidence!.endpoints.source!.environmentId).toBe(
+      observed.evidence!.endpoints.destination.environmentId,
+    );
+    expect(observed.evidence!.endpoints.source!.serverScope).toEqual(
+      observed.evidence!.endpoints.destination.serverScope,
+    );
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(
       events.frames.filter(
@@ -212,17 +247,30 @@ describe.skipIf(!hasTmux).sequential("authenticated pane provenance, full daemon
       (frame) =>
         frame.type === "interaction.receipt" &&
         frame.origin === "external" &&
+        frame.operationKind === "workspace.pane.send" &&
         frame.target.kind === "pane" &&
         frame.target.semanticPaneId === "pane.tests",
     )) as InteractionReceipt;
     expect(external).toMatchObject({ phase: "observed", sourceSemanticPaneId: null });
+    expect(external.evidence).toMatchObject({
+      actor: { kind: "unknown", reason: "stock-hook" },
+      observation: { kind: "stock-hook", command: "send-keys" },
+      effect: { kind: "unknown" },
+      endpoints: { source: null, destination: observed.evidence!.endpoints.destination },
+    });
 
     events.socket.close();
     await first.stop({ gracefulMs: 500 });
     handle = null;
     expect(run(["has-session", "-t", session])).toBe("");
 
+    process.env.TMUX_IDE_SESSION = session;
     const second = await start();
+    expect(
+      getDefaultWorkspaceRegistry()
+        .list()
+        .filter((entry) => entry.sessionName === session),
+    ).toMatchObject([{ name: workspaceName, sessionName: session }]);
     const newCredential = run([
       "display-message",
       "-p",

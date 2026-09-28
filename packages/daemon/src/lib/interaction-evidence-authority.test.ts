@@ -69,6 +69,21 @@ describe("interaction evidence authority", () => {
       "unresolved-pane",
     );
   });
+  it("does not choose a workspace for intentionally configured same-session aliases", () => {
+    const owner = new InteractionEvidenceAuthority(environmentId, serverScope);
+    owner.adoptInventory([pane, { ...pane, workspaceName: "workspace.alias" }]);
+    expect(owner.captureObservedEndpoint(observed).kind).toBe("unresolved-pane");
+    expect(
+      owner.captureSourceBinding({
+        bindingId: generation,
+        session: pane.sessionName,
+        runtimePaneId: pane.runtimePaneId,
+        semanticPaneId: pane.semanticPaneId,
+      }),
+    ).toBeNull();
+    expect(owner.captureAuthoredEndpoint(pane.workspaceName, pane.semanticPaneId)).not.toBeNull();
+    expect(owner.captureAuthoredEndpoint("workspace.alias", pane.semanticPaneId)).not.toBeNull();
+  });
   it("refuses ambiguous semantic bindings and validates source grant against current inventory", () => {
     const owner = new InteractionEvidenceAuthority(environmentId, serverScope);
     owner.adoptInventory([pane, { ...pane, runtimePaneId: "%1" }]);
