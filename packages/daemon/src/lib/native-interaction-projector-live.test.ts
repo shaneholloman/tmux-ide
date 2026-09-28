@@ -69,7 +69,7 @@ it.skipIf(!binary)(
         ),
       ).toBe(true);
       expect(
-        projections.every((p) => p.evidence.endpoints.destination.kind === "unresolved-pane"),
+        projections.every((p) => p.evidence.endpoints.destination.kind === "native-pane"),
       ).toBe(true);
       expect(projector.pendingRecords).toBe(0);
       await observer.dispose();

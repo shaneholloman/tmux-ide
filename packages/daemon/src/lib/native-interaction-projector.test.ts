@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   NativeInteractionProjector,
   nativeInteractionReference,
-  type NativePaneAdoptionProof,
 } from "./native-interaction-projector.ts";
 import type { NativeJournalBatch, NativeJournalRecord } from "@tmux-ide/contracts";
 const environmentId = "00000000-0000-4000-8000-000000000001";
@@ -25,6 +24,7 @@ const record = (
   monotonicUs: "100",
   count: kind === 5 ? "3" : kind === 6 ? "10" : "0",
   targetId: 0,
+  targetBirthId: "1",
   outcome: 1,
   flags: 1,
   transport: 1,
@@ -36,7 +36,7 @@ const batch = (
   records: NativeJournalRecord[],
   extra: Partial<NativeJournalBatch> = {},
 ): NativeJournalBatch => ({
-  schemaVersion: 1,
+  schemaVersion: 2,
   type: "batch",
   serverEpoch,
   journalEpoch,
@@ -58,22 +58,6 @@ const projector = (
     now: () => new Date("2026-09-28T00:00:00Z"),
     ...options,
   });
-const endpoint = {
-  kind: "pane" as const,
-  environmentId,
-  serverScope,
-  paneLifetimeId: otherEpoch,
-  workspaceName: "workspace.project",
-  semanticPaneId: "pane.editor",
-};
-const proof: NativePaneAdoptionProof = {
-  serverEpoch,
-  journalEpoch,
-  nativePaneId: 0,
-  fromSequence: "10",
-  throughSequence: "20",
-  endpoint,
-};
 describe("bounded native evidence projection", () => {
   it("assembles effects across batch boundaries without duplicate command action", () => {
     const p = projector();
@@ -95,8 +79,8 @@ describe("bounded native evidence projection", () => {
     expect(result).toHaveLength(2);
     expect(result[0]!.evidence.interactionId).not.toBe(result[1]!.evidence.interactionId);
     expect(result.map((r) => r.evidence.endpoints.destination.kind)).toEqual([
-      "unresolved-pane",
-      "unresolved-pane",
+      "native-pane",
+      "native-pane",
     ]);
     expect(result[0]!.evidence.observation).toMatchObject({
       commandId: (result[1]!.evidence.observation as { commandId: string }).commandId,
@@ -210,34 +194,35 @@ describe("bounded native evidence projection", () => {
     expect(first[0]!.evidence.interactionId).not.toBe(second[0]!.evidence.interactionId);
     expect(() => p.consume(batch([record("2")], { serverEpoch: otherEpoch }))).toThrow("Foreign");
   });
-  it("requires a proven exact placement interval, not current pane metadata", () => {
-    const p = projector({ adoptionProof: () => proof });
-    const old = p.consume(batch([record("1")]));
-    expect(old[0]!.evidence.endpoints.destination.kind).toBe("unresolved-pane");
-    const valid = p.consume(batch([record("10")]));
-    expect(valid[0]!.evidence.endpoints.destination).toEqual(endpoint);
-    const later = p.consume(batch([record("21")]));
-    expect(later[0]!.evidence.endpoints.destination.kind).toBe("unresolved-pane");
-    const wrong = projector({
-      adoptionProof: () => ({ ...proof, fromSequence: "1", serverEpoch: otherEpoch }),
-    }).consume(batch([record("1")]));
-    expect(wrong[0]!.evidence.endpoints.destination.kind).toBe("unresolved-pane");
+  it("preserves immutable physical identity across journal reset without semantic placement", () => {
+    const p = projector();
+    const before = p.consume(batch([record("1")]))[0]!.evidence;
+    expect(before.endpoints.destination).toEqual({
+      kind: "native-pane",
+      environmentId,
+      serverScope,
+      serverEpoch,
+      paneBirthId: "1",
+    });
+    p.reset(otherEpoch);
+    const after = p.consume(batch([record("1")], { journalEpoch: otherEpoch }))[0]!.evidence;
+    expect(after.endpoints.destination).toEqual(before.endpoints.destination);
+    expect(after.observation).toMatchObject({ serverEpoch, cursor: { epoch: otherEpoch } });
+    expect(after.interactionId).not.toBe(before.interactionId);
   });
-  it("does not share same-numbered pane lifetimes across movement or rollover intervals", () => {
-    const moved = {
-      ...proof,
-      fromSequence: "21",
-      throughSequence: "30",
-      endpoint: { ...endpoint, paneLifetimeId: journalEpoch, workspaceName: "workspace.moved" },
-    };
-    const p = projector({ adoptionProof: (r) => (BigInt(r.sequence) <= 20n ? proof : moved) });
-    expect(p.consume(batch([record("10")]))[0]!.evidence.endpoints.destination).toEqual(endpoint);
-    expect(p.consume(batch([record("25")]))[0]!.evidence.endpoints.destination).toEqual(
-      moved.endpoint,
+  it("never confuses recycled numeric pane IDs or unknown birth identity", () => {
+    const p = projector();
+    const rows = p.consume(
+      batch([
+        record("1"),
+        record("2", 1, { targetBirthId: "2" }),
+        record("3", 1, { targetBirthId: "0" }),
+      ]),
     );
-    expect(p.consume(batch([record("31")]))[0]!.evidence.endpoints.destination.kind).toBe(
-      "unresolved-pane",
+    expect(rows[0]!.evidence.endpoints.destination).not.toEqual(
+      rows[1]!.evidence.endpoints.destination,
     );
+    expect(rows[2]!.evidence.endpoints.destination.kind).toBe("unresolved-pane");
   });
   it("flushes pending effects at disposal and generates valid stable UUIDv8 references", () => {
     const p = projector();

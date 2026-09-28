@@ -2,10 +2,8 @@ import { createHash } from "node:crypto";
 import {
   EnvironmentIdSchema,
   InteractionEvidenceSchemaZ,
-  InteractionPaneEndpointSchemaZ,
   NativeJournalBatchSchemaZ,
   NativeJournalCursorSchemaZ,
-  NativeJournalUint64SchemaZ,
   TmuxServerScopeSchemaZ,
   type InteractionEvidence,
   type InteractionPaneEndpoint,
@@ -24,14 +22,6 @@ export type NativeProjectionUncertainty =
   | "metadata-mismatch"
   | "degraded"
   | "disposed";
-export interface NativePaneAdoptionProof {
-  readonly serverEpoch: string;
-  readonly journalEpoch: string;
-  readonly nativePaneId: number;
-  readonly fromSequence: string;
-  readonly throughSequence: string;
-  readonly endpoint: Extract<InteractionPaneEndpoint, { kind: "pane" }>;
-}
 export interface NativeInteractionProjection {
   readonly evidence: InteractionEvidence;
   /** Private metadata for later owned-connection validation; never publish this as a public endpoint. */
@@ -50,11 +40,6 @@ export interface NativeInteractionProjectorOptions {
   readonly cursor?: NativeJournalCursor;
   readonly maxPendingRecords?: number;
   readonly now?: () => Date;
-  /** Supply an actual recorded adoption interval, never a lookup of today's placement. */
-  readonly adoptionProof?: (
-    record: NativeJournalRecord,
-    cursor: NativeJournalCursor,
-  ) => NativePaneAdoptionProof | null;
 }
 /** Deterministic UUIDv8 references; zero native IDs are never passed here as identity. */
 export function nativeInteractionReference(scope: readonly string[]): string {
@@ -133,43 +118,21 @@ export class NativeInteractionProjector {
       ...parts,
     ]);
   }
-  #destination(
-    record: NativeJournalRecord,
-    cursor: NativeJournalCursor,
-    interactionId: string,
-  ): InteractionPaneEndpoint {
-    const unresolved: InteractionPaneEndpoint = {
+  #destination(record: NativeJournalRecord, interactionId: string): InteractionPaneEndpoint {
+    if (record.flags & 1 && record.targetBirthId !== "0")
+      return {
+        kind: "native-pane",
+        environmentId: this.#environmentId,
+        serverScope: { ...this.#serverScope },
+        serverEpoch: this.#serverEpoch,
+        paneBirthId: record.targetBirthId,
+      };
+    return {
       kind: "unresolved-pane",
       environmentId: this.#environmentId,
       serverScope: { ...this.#serverScope },
       observationRef: this.#reference("destination", interactionId),
     };
-    if (!(record.flags & 1) || !this.#options.adoptionProof) return unresolved;
-    try {
-      const proof = this.#options.adoptionProof(record, cursor);
-      if (
-        !proof ||
-        proof.serverEpoch !== cursor.serverEpoch ||
-        proof.journalEpoch !== cursor.journalEpoch ||
-        proof.nativePaneId !== record.targetId
-      )
-        return unresolved;
-      const from = BigInt(NativeJournalUint64SchemaZ.parse(proof.fromSequence));
-      const through = BigInt(NativeJournalUint64SchemaZ.parse(proof.throughSequence));
-      const sequence = BigInt(cursor.sequence);
-      if (sequence < from || sequence > through) return unresolved;
-      const endpoint = InteractionPaneEndpointSchemaZ.parse(proof.endpoint);
-      if (
-        endpoint.kind !== "pane" ||
-        endpoint.environmentId !== this.#environmentId ||
-        endpoint.serverScope.serverId !== this.#serverScope.serverId ||
-        endpoint.serverScope.generation !== this.#serverScope.generation
-      )
-        return unresolved;
-      return endpoint;
-    } catch {
-      return unresolved;
-    }
   }
   #project(
     record: NativeJournalRecord,
@@ -177,11 +140,6 @@ export class NativeInteractionProjector {
     uncertainty: NativeProjectionUncertainty | null,
   ): NativeInteractionProjection {
     const journalEpoch = this.#journalEpoch!;
-    const cursor = Object.freeze({
-      serverEpoch: this.#serverEpoch,
-      journalEpoch,
-      sequence: record.sequence,
-    });
     const interactionId = this.#reference("interaction", journalEpoch, record.sequence);
     const origin = command ?? record;
     const commandId =
@@ -190,7 +148,7 @@ export class NativeInteractionProjector {
       schemaVersion: 1,
       interactionId,
       revision: 0,
-      endpoints: { destination: this.#destination(record, cursor, interactionId), source: null },
+      endpoints: { destination: this.#destination(record, interactionId), source: null },
       actor:
         origin.issuerId === "0"
           ? { kind: "unknown", reason: "unavailable" }
@@ -203,6 +161,7 @@ export class NativeInteractionProjector {
             },
       observation: {
         kind: "native-journal",
+        serverEpoch: this.#serverEpoch,
         command: commandName(command?.kind ?? record.kind),
         cursor: { epoch: journalEpoch, sequence: record.sequence },
         commandId,
