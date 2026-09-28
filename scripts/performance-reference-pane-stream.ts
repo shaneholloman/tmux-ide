@@ -39,6 +39,7 @@ const client = await openPaneStreamRuntimeClient({
   ownerToken: daemon.authToken,
   daemonInstanceId: daemon.instanceId,
   origin: "tmux-ide://opentui",
+  requestInitialInputAuthority: false,
   hostClientId: `reference-bun:${process.pid}`,
   requestId: randomUUID(),
   stream: {
