@@ -2060,6 +2060,18 @@ try {
   // The app is now a thin client which intentionally ensures and reuses the
   // persistent canonical daemon; running it before this section would make the
   // election warm and leave an untracked detached owner outside `children`.
+  // This journey retires the last session; automation needs the initial live owner.
+  automationObservations = await runPackedAutomationJourney({
+    root,
+    directory: join(tmpRoot, "automation"),
+    installedCli,
+    socket: installedTmuxSocketPath,
+    environment: tmuxEnv(dirname(installedCli)),
+    daemonInfoPath: daemonInfo,
+    run,
+    runAsync,
+    cancellation,
+  });
   runtimeEvidence = await runInstalledTuiGate(installedCli);
   installationScenarios = {};
   await runPackedInstallScenarios(
@@ -2077,17 +2089,6 @@ try {
     },
     installationScenarios,
   );
-  automationObservations = await runPackedAutomationJourney({
-    root,
-    directory: join(tmpRoot, "automation"),
-    installedCli,
-    socket: installedTmuxSocketPath,
-    environment: tmuxEnv(dirname(installedCli)),
-    daemonInfoPath: daemonInfo,
-    run,
-    runAsync,
-    cancellation,
-  });
   journeyObservations = await runPackedGoldenJourney(installedCli, owner);
   proofCompleted = true;
 } finally {
