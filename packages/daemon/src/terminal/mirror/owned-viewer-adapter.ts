@@ -36,7 +36,7 @@ export interface OwnedViewerAuthority {
 export type OwnedViewerRequest = Omit<
   NativeViewerControlRequest,
   "operationId" | "onAcknowledgement"
->;
+> & { readonly expectedServerEpoch?: string };
 const commands = new Set(["send-keys", "capture-pane", "paste-buffer", "send-prefix"]);
 
 /** One attached control connection, one owner grant. No polling, journal or retry queue. */
@@ -110,6 +110,8 @@ export class OwnedViewerAdapter {
       !connection ||
       !actual ||
       actual.serverEpoch !== identity.serverEpoch ||
+      (request.expectedServerEpoch !== undefined &&
+        request.expectedServerEpoch !== identity.serverEpoch) ||
       actual.connectionId !== identity.connectionId ||
       capability?.serverEpoch !== identity.serverEpoch ||
       !io.commandNativeViewerInline ||

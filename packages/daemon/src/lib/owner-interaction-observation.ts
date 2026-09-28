@@ -70,6 +70,11 @@ export class OwnerInteractionObservation {
   get selection() {
     return this.#selection;
   }
+  get atomicPaneSnapshot(): boolean {
+    return (
+      this.ownedOperationPaneGuard && this.#capability?.atomicPaneSnapshot === "capture-resume-v1"
+    );
+  }
   get ownedOperationSessionGuard(): boolean {
     return (
       this.ownedOperationEpochGuard &&

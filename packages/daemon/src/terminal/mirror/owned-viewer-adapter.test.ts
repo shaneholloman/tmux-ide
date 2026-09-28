@@ -192,3 +192,14 @@ it("treats a throwing owner capability as optional metadata failure", () => {
   s.adapter.dispose();
   expect(s.bindings.size.connections).toBe(0);
 });
+
+it("declines stale pinned server epoch before admitting or writing", () => {
+  const s = setup();
+  s.options.onIdentity(identity);
+  expect(s.adapter.tryDispatch(s.io, { ...request, expectedServerEpoch: id(999) }, vi.fn())).toBe(
+    false,
+  );
+  expect(s.bindings.size.permits).toBe(0);
+  expect(s.send).not.toHaveBeenCalled();
+  s.adapter.dispose();
+});

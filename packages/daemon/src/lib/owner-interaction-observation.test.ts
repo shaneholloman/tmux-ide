@@ -261,3 +261,25 @@ it("retires permanently even if reader disposal rejects", async () => {
   r.event({ type: "state", status: "ready", capability: cap });
   expect(r.journal.read(0).receipts).toHaveLength(0);
 });
+
+it("requires explicit snapshot capability plus all owned pane guards and retires the getter", async () => {
+  const r = rig();
+  const start = r.selector.start();
+  expect(r.selector.atomicPaneSnapshot).toBe(false);
+  r.event({
+    type: "state",
+    status: "ready",
+    capability: {
+      ...cap,
+      ownedOperationTransport: "direct-wrapper-v1",
+      ownedOperationEpochGuard: "server-epoch-v1",
+      ownedOperationPaneGuard: "direct-pane-v1",
+      atomicPaneSnapshot: "capture-resume-v1",
+    },
+  });
+  r.finish("ready");
+  await start;
+  expect(r.selector.atomicPaneSnapshot).toBe(true);
+  await r.selector.dispose();
+  expect(r.selector.atomicPaneSnapshot).toBe(false);
+});
