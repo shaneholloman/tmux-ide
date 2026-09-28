@@ -1,3 +1,4 @@
+import { canonicalDaemonUrl } from "../../../lib/canonical-daemon.ts";
 import { createApplicationSidebarShortcuts } from "./application-sidebar-shortcuts.ts";
 import type { TmuxServerScope } from "@tmux-ide/contracts";
 import { terminalWindowActionCallbacks } from "./application-terminal-workspace-policy.ts";
@@ -267,7 +268,6 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
         });
         const { terminalRendererSource, terminalGestureRuntime, focusRendererSource } =
           createApplicationTerminalRendererSources(generation);
-        const paneInteractions = createApplicationPaneActivityOwner(generation);
         getTerminalRendererSource = focusRendererSource;
         interaction = createApplicationTerminalInteractionController({
           generation,
@@ -357,6 +357,37 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
           },
           setSurface,
           setNote: appearance.setNote,
+        });
+        const paneInteractions = createApplicationPaneActivityOwner(() => {
+          const sources = new Map<
+            string,
+            { environmentId: string; server: TmuxServerScope; baseUrl: string; ownerToken: string }
+          >();
+          for (const group of machines.sidebar.groups()) {
+            if (group.state !== "ready" || !group.environmentId) continue;
+            const daemon = applicationMachineAuthorityManager.getMachine(group.id)?.read();
+            if (!daemon?.authToken) continue;
+            const endpoints = (group.agents ?? []).flatMap((agent) =>
+              agent.interactionEndpoint ? [agent.interactionEndpoint] : [],
+            );
+            if (group.id === generationMachineId())
+              endpoints.push(
+                ...(shell().semantic?.terminalInventory?.resources ?? []).flatMap((resource) =>
+                  resource.interactionEndpoint ? [resource.interactionEndpoint] : [],
+                ),
+              );
+            for (const endpoint of endpoints) {
+              if (endpoint.environmentId !== group.environmentId) continue;
+              const key = JSON.stringify([endpoint.environmentId, endpoint.serverScope]);
+              sources.set(key, {
+                environmentId: endpoint.environmentId,
+                server: endpoint.serverScope,
+                baseUrl: canonicalDaemonUrl("http", daemon.bindHostname, daemon.port),
+                ownerToken: daemon.authToken,
+              });
+            }
+          }
+          return [...sources.values()];
         });
         machineAgentNavigator = createApplicationMachineAgentNavigator({
           isCurrentTarget: (machineId, row) => machines.agents.isCurrentTarget(machineId, row),

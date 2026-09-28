@@ -1,3 +1,5 @@
+import type { PaneInteractionEndpoint } from "../ui/pane-interaction-presentation.ts";
+import type { InteractionPaneEndpoint } from "@tmux-ide/contracts";
 import type { PaneInteractionEvent } from "../ui/pane-interaction-presentation.ts";
 import { CHROME_ACTIONS, SIDEBAR_ACTIONS } from "../workspace/application-action-descriptions.ts";
 import { AgentRow } from "../ui/agent-row.tsx";
@@ -28,6 +30,7 @@ import { Surface } from "../ui/surface.tsx";
 import { useKeyboardRoute } from "../ui/keyboard-router.tsx";
 
 export interface ApplicationMachineAgent {
+  readonly interactionEndpoint: Extract<InteractionPaneEndpoint, { kind: "pane" }> | null;
   readonly daemonInstanceId?: string;
   readonly server?: TmuxServerScope;
   readonly id: string;
@@ -107,7 +110,7 @@ export function ApplicationMachineSidebar(props: {
   readonly interactionForAgent?: (
     agent: ApplicationMachineAgent,
   ) => PaneInteractionEvent | undefined;
-  readonly paneName?: (id: string) => string | undefined;
+  readonly paneName?: (endpoint: PaneInteractionEndpoint) => string | undefined;
   readonly model: ApplicationMachineSidebarModel;
   readonly width: number;
   readonly height: number;

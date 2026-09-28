@@ -1,3 +1,4 @@
+import type { PaneInteractionEndpoint } from "./pane-interaction-presentation.ts";
 /* @jsxImportSource @opentui/solid */
 import { createEffect, createSignal, onCleanup, Show } from "solid-js";
 import { INTERACTION_PRESENCE_MS } from "@tmux-ide/core";
@@ -15,7 +16,7 @@ import {
 export interface PaneInteractionProps {
   theme: SemanticThemeSnapshot;
   event: PaneInteractionEvent;
-  paneName?: (id: string) => string | undefined;
+  paneName?: (endpoint: PaneInteractionEndpoint) => string | undefined;
   width: number;
   onDetails?: () => void;
 }

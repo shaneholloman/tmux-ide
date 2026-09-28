@@ -1,4 +1,4 @@
-import type { PaneInteractionProjection } from "@tmux-ide/core";
+import { interactionPaneEndpointKey, type PaneInteractionProjection } from "@tmux-ide/core";
 /* @jsxImportSource @opentui/solid */
 import { describe, expect, it } from "bun:test";
 import { MouseButtons } from "@opentui/core/testing";
@@ -2223,6 +2223,18 @@ it.each([12, 30])(
   },
 );
 
+const endpoint = (semanticPaneId: string) => ({
+  kind: "pane" as const,
+  environmentId: "00000000-0000-4000-8000-000000000001",
+  serverScope: {
+    serverId: `tmux-server.${"a".repeat(32)}`,
+    generation: "00000000-0000-4000-8000-000000000001",
+  },
+  workspaceName: "research",
+  paneLifetimeId: "00000000-0000-4000-8000-000000000002",
+  semanticPaneId,
+});
+
 it("interaction details own terminal keys and retire with the renderer generation", async () => {
   registerPaneSurface();
   const theme = createSemanticThemeSnapshot({ mode: "dark" });
@@ -2238,6 +2250,11 @@ it("interaction details own terminal keys and retire with the renderer generatio
   };
   const event: PaneInteractionProjection = {
     paneId: "pane.a",
+    endpoint: endpoint("pane.a"),
+    sourceEndpoint: null,
+    destinationEndpoint: endpoint("pane.a"),
+    effect: { kind: "input-enqueued" },
+    operationKey: "input",
     operationId: "input",
     operationKind: "workspace.pane.send",
     phase: "observed",
@@ -2260,7 +2277,8 @@ it("interaction details own terminal keys and retire with the renderer generatio
         focusedPane="pane.a"
         theme={theme}
         palette={createTerminalPaletteProjection(theme)}
-        paneInteractions={() => new Map([["pane.a", event]])}
+        interactionEndpoints={() => new Map([["pane.a", endpoint("pane.a")]])}
+        paneInteractions={() => new Map([[interactionPaneEndpointKey(endpoint("pane.a")), event]])}
         onSelectPane={() => {}}
         onSelectionKeyOwner={(handler, owner) => {
           keyOwner = handler;

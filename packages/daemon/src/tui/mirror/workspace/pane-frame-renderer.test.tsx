@@ -362,6 +362,7 @@ describe("PaneFrame OpenTUI renderer", () => {
             title: "Dev shell",
             kind: "terminal",
             active: true,
+            interactionEndpoint: null,
             attachability: { status: "available", semanticPaneId: "pane.dev-shell" },
           },
         ],

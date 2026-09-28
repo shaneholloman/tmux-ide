@@ -1,3 +1,7 @@
+import { interactionPaneEndpointKey } from "@tmux-ide/core";
+import type { PaneInteractionEndpoint } from "../ui/pane-interaction-presentation.ts";
+import type { InteractionPaneEndpoint } from "@tmux-ide/contracts";
+import { interactionForCurrentPane } from "./application-pane-interaction-identity.ts";
 import { PaneInteractionDetails } from "../ui/pane-interaction.tsx";
 import type { PaneInteractionEvent } from "../ui/pane-interaction-presentation.ts";
 import { Menu } from "../ui/index.ts";
@@ -150,6 +154,9 @@ export function beginApplicationMouseIngress(
 }
 
 export interface ApplicationTerminalWorkspaceProps {
+  readonly interactionEndpoints?: Accessor<
+    ReadonlyMap<string, Extract<InteractionPaneEndpoint, { kind: "pane" }>>
+  >;
   readonly connectionStatus?: string;
   readonly onScrollbackChange?: (active: boolean) => void;
   readonly paneInteractions?: Accessor<ReadonlyMap<string, PaneInteractionProjection>>;
@@ -516,14 +523,25 @@ export function ApplicationTerminalWorkspace(props: ApplicationTerminalWorkspace
     paneId: string;
     epoch: number;
   } | null>(null);
-  const paneName = (id: string) => props.agentIndicators?.().get(id)?.name ?? id;
+  const paneName = (endpoint: PaneInteractionEndpoint) => {
+    const current = props.interactionEndpoints?.().get(endpoint.semanticPaneId);
+    return current && interactionPaneEndpointKey(current) === interactionPaneEndpointKey(endpoint)
+      ? props.agentIndicators?.().get(endpoint.semanticPaneId)?.name
+      : undefined;
+  };
   const inspectInteraction = (paneId: string) => {
-    const event = props.paneInteractions?.().get(paneId);
+    const event = interactionForCurrentPane(
+      props.paneInteractions?.(),
+      props.interactionEndpoints?.().get(paneId),
+    );
     if (!event) return;
     paneMenu.dismiss();
     const names = new Map<string, string>();
-    for (const id of [event.sourcePaneId, event.destinationPaneId])
-      if (id) names.set(id, paneName(id));
+    for (const endpoint of [event.sourceEndpoint, event.destinationEndpoint]) {
+      if (!endpoint) continue;
+      const name = paneName(endpoint);
+      if (name) names.set(interactionPaneEndpointKey(endpoint), name);
+    }
     setInteractionDetails({ event: { ...event }, names, paneId, epoch: props.rendererEpoch });
   };
   createEffect(() => {
@@ -1832,7 +1850,10 @@ export function ApplicationTerminalWorkspace(props: ApplicationTerminalWorkspace
                 terminalFocused={terminalSurfaceFocused(frame())}
                 keyboardFocused={props.focusedPane === frame().paneId}
                 menuOpen={paneContextMenu()?.paneId === frame().paneId}
-                interaction={props.paneInteractions?.().get(frame().paneId)}
+                interaction={interactionForCurrentPane(
+                  props.paneInteractions?.(),
+                  props.interactionEndpoints?.().get(frame().paneId),
+                )}
                 paneName={paneName}
                 onInteractionDetails={() => inspectInteraction(frame().paneId)}
                 activity={indicator()?.activity}
@@ -1946,7 +1967,7 @@ export function ApplicationTerminalWorkspace(props: ApplicationTerminalWorkspace
           <PaneInteractionDetails
             theme={props.theme}
             event={details.event}
-            paneName={(id) => details.names.get(id)}
+            paneName={(id) => details.names.get(interactionPaneEndpointKey(id))}
             width={props.width}
             viewportWidth={props.width}
             viewportHeight={props.height}

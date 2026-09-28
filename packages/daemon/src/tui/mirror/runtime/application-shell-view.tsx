@@ -1,3 +1,7 @@
+import {
+  interactionForCurrentPane,
+  nameForCurrentEndpoint,
+} from "./application-pane-interaction-identity.ts";
 import { isSidebarToggleKey } from "./application-sidebar-shortcuts.ts";
 import {
   ApplicationMachineSidebar,
@@ -210,6 +214,16 @@ export function ApplicationShellView(props: ApplicationShellViewProps): JSX.Elem
     },
   };
   const projectionOwner = createMemo(() => (projection() ? appearance : null));
+  const interactionEndpoints = createMemo(
+    () =>
+      new Map(
+        (props.semantic()?.terminalInventory?.resources ?? []).flatMap((resource) =>
+          resource.attachability.status === "available" && resource.interactionEndpoint
+            ? [[resource.attachability.semanticPaneId, resource.interactionEndpoint] as const]
+            : [],
+        ),
+      ),
+  );
   const agentIndicators = createMemo<ReadonlyMap<string, ApplicationTerminalAgentIndicator>>(
     () =>
       new Map(
@@ -455,36 +469,20 @@ export function ApplicationShellView(props: ApplicationShellViewProps): JSX.Elem
                   {(model) => (
                     <ApplicationMachineSidebar
                       model={model()}
-                      paneName={(id) => agentIndicators().get(id)?.name}
-                      interactionForAgent={(agent) => {
-                        if (
-                          !agent.paneId ||
-                          !agent.daemonInstanceId ||
-                          agent.daemonInstanceId !== props.activityDaemonId?.()
+                      paneName={(endpoint) =>
+                        nameForCurrentEndpoint(
+                          model()
+                            .groups()
+                            .flatMap((group) => group.agents ?? []),
+                          endpoint,
                         )
-                          return undefined;
-                        const matches = model()
-                          .groups()
-                          .flatMap((group) => group.agents ?? [])
-                          .filter(
-                            (row) =>
-                              row.daemonInstanceId === agent.daemonInstanceId &&
-                              row.sessionName === agent.sessionName &&
-                              row.paneId === agent.paneId,
-                          );
-                        if (matches.length !== 1) return undefined;
-                        const event = props.paneInteractions?.().get(agent.paneId);
-                        return event &&
-                          props
-                            .recentPaneActivity?.()
-                            .some(
-                              (receipt) =>
-                                receipt.operationId === event.operationId &&
-                                receipt.workspaceName === agent.sessionName,
-                            )
-                          ? event
-                          : undefined;
-                      }}
+                      }
+                      interactionForAgent={(agent) =>
+                        interactionForCurrentPane(
+                          props.paneInteractions?.(),
+                          agent.interactionEndpoint,
+                        )
+                      }
                       onHelp={(source) => {
                         props.onSetPaletteOpen(true, source);
                         props.onPaletteReferenceChange?.("help");
@@ -595,6 +593,7 @@ export function ApplicationShellView(props: ApplicationShellViewProps): JSX.Elem
                       palette={appearance.palette}
                       agentIndicators={agentIndicators}
                       paneInteractions={props.paneInteractions}
+                      interactionEndpoints={interactionEndpoints}
                       onSelectPane={props.onSelectPane}
                       onSelectWindowLink={props.onSelectWindowLink}
                       onUnlinkWindowLink={props.onUnlinkWindowLink}

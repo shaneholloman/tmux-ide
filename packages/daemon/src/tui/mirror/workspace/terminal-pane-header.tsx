@@ -1,3 +1,4 @@
+import type { PaneInteractionEndpoint } from "../ui/pane-interaction-presentation.ts";
 import { PaneModeControl } from "../ui/pane-mode-control.tsx";
 /* @jsxImportSource @opentui/solid */
 import { paneInteractionPresence, type PaneInteractionProjection } from "@tmux-ide/core";
@@ -36,7 +37,7 @@ export interface PaneTitleBarProps {
   readonly onRestoreIntent?: () => void;
   readonly activity?: AgentActivity;
   readonly interaction?: PaneInteractionProjection;
-  readonly paneName?: (id: string) => string | undefined;
+  readonly paneName?: (endpoint: PaneInteractionEndpoint) => string | undefined;
   readonly onInteractionDetails?: () => void;
   readonly attention?: boolean;
   /** Renderer-global anchor used by the keyboard-operable overflow control. */

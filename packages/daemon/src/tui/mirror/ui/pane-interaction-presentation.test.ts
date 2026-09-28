@@ -3,6 +3,17 @@ import {
   paneInteractionPresentation,
   type PaneInteractionEvent,
 } from "./pane-interaction-presentation.ts";
+const endpoint = (semanticPaneId: string) => ({
+  kind: "pane" as const,
+  environmentId: "00000000-0000-4000-8000-000000000001",
+  serverScope: {
+    serverId: `tmux-server.${"a".repeat(32)}`,
+    generation: "00000000-0000-4000-8000-000000000001",
+  },
+  workspaceName: "test",
+  paneLifetimeId: "00000000-0000-4000-8000-000000000002",
+  semanticPaneId,
+});
 const event: PaneInteractionEvent = {
   operationId: "read",
   operationKind: "workspace.pane.read",
@@ -10,9 +21,13 @@ const event: PaneInteractionEvent = {
   origin: "tui",
   sourcePaneId: "source",
   destinationPaneId: "target",
+  sourceEndpoint: endpoint("source"),
+  destinationEndpoint: endpoint("target"),
+  effect: { kind: "snapshot-produced" },
   at: "2026-09-28T00:00:00Z",
 };
-const name = (id: string) => ({ source: "Codex", target: "Tests" })[id];
+const name = (value: ReturnType<typeof endpoint>) =>
+  ({ source: "Codex", target: "Tests" })[value.semanticPaneId];
 it("never names a request's unverified source", () => {
   const value = paneInteractionPresentation(event, name);
   expect(value.label).toBe("Read requested");
@@ -29,7 +44,14 @@ it("distinguishes the two endpoints of an observed read", () => {
 it("never invents an actor for external reads or sends", () => {
   expect(
     paneInteractionPresentation(
-      { ...event, phase: "observed", sourcePaneId: null, origin: "external" },
+      {
+        ...event,
+        phase: "observed",
+        sourcePaneId: null,
+        sourceEndpoint: null,
+        effect: { kind: "unknown" },
+        origin: "external",
+      },
       name,
     ).source,
   ).toBe("Unknown");
@@ -39,6 +61,8 @@ it("never invents an actor for external reads or sends", () => {
         ...event,
         phase: "observed",
         sourcePaneId: null,
+        sourceEndpoint: null,
+        effect: { kind: "unknown" },
         origin: "external",
         operationKind: "workspace.pane.send",
       },
@@ -49,7 +73,14 @@ it("never invents an actor for external reads or sends", () => {
 it("keeps stock-hook command evidence distinct from delivery and reader attribution", () => {
   for (const operationKind of ["workspace.pane.read", "workspace.pane.send"] as const) {
     const value = paneInteractionPresentation(
-      { ...event, phase: "observed", origin: "external", operationKind },
+      {
+        ...event,
+        phase: "observed",
+        sourceEndpoint: null,
+        effect: { kind: "unknown" },
+        origin: "external",
+        operationKind,
+      },
       name,
     );
     expect(value.source).toBe("Unknown");

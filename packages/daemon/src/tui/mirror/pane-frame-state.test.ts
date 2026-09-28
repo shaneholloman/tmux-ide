@@ -30,11 +30,28 @@ function pane(overrides: Partial<LivePane> = {}): LivePane {
   };
 }
 
+const endpoint = (semanticPaneId: string) => ({
+  kind: "pane" as const,
+  environmentId: "00000000-0000-4000-8000-000000000001",
+  serverScope: {
+    serverId: `tmux-server.${"a".repeat(32)}`,
+    generation: "00000000-0000-4000-8000-000000000001",
+  },
+  workspaceName: "test",
+  paneLifetimeId: "00000000-0000-4000-8000-000000000002",
+  semanticPaneId,
+});
+
 function interaction(
   overrides: Partial<PaneInteractionProjection> = {},
 ): PaneInteractionProjection {
   return {
     paneId: "pane.tests",
+    endpoint: endpoint("pane.tests"),
+    sourceEndpoint: endpoint("pane.editor"),
+    destinationEndpoint: endpoint("pane.tests"),
+    effect: { kind: "input-enqueued" },
+    operationKey: "test",
     direction: "incoming",
     sourcePaneId: "pane.editor",
     destinationPaneId: "pane.tests",
@@ -165,14 +182,14 @@ describe("pane frame state", () => {
         operationKind: "workspace.pane.read",
         phase: "observed",
       }),
-      paneLabel: (paneId) => (paneId === "pane.editor" ? "Editor" : "Tests"),
+      paneLabel: (endpoint) => (endpoint.semanticPaneId === "pane.editor" ? "Editor" : "Tests"),
     });
     expect(read.reading).toMatchObject({
       role: "read-source",
       kind: "read",
       endpoint: "source",
       treatment: "observation",
-      badge: "READ",
+      badge: "READ OBSERVED",
       tone: "info",
       label: "Editor reads Tests",
     });

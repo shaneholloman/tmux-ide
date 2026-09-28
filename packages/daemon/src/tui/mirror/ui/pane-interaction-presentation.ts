@@ -1,49 +1,67 @@
-import type { InteractionReceipt } from "@tmux-ide/contracts";
-import type { PaneInteractionProjection } from "@tmux-ide/core";
+import type { InteractionReceipt, InteractionPaneEndpoint } from "@tmux-ide/contracts";
+import { interactionPaneEndpointKey, type PaneInteractionProjection } from "@tmux-ide/core";
 
+export type PaneInteractionEndpoint = Extract<InteractionPaneEndpoint, { kind: "pane" }>;
 export type PaneInteractionEvent = Pick<
   PaneInteractionProjection,
-  "operationId" | "operationKind" | "phase" | "origin" | "sourcePaneId" | "destinationPaneId" | "at"
+  | "operationId"
+  | "operationKind"
+  | "phase"
+  | "origin"
+  | "sourcePaneId"
+  | "destinationPaneId"
+  | "sourceEndpoint"
+  | "destinationEndpoint"
+  | "effect"
+  | "at"
 > & { direction?: "incoming" | "outgoing" };
 export function receiptPaneInteraction(
   receipt: InteractionReceipt,
-  viewingPaneId?: string | null,
+  viewingEndpoint?: PaneInteractionEndpoint | null,
 ): PaneInteractionEvent | null {
+  const evidence = receipt.evidence;
+  const destination = evidence?.endpoints.destination;
   if (
-    receipt.target.kind !== "pane" ||
+    !evidence ||
+    destination?.kind !== "pane" ||
     !["workspace.pane.read", "workspace.pane.send"].includes(receipt.operationKind)
   )
     return null;
+  const source = evidence.endpoints.source?.kind === "pane" ? evidence.endpoints.source : null;
   return {
     direction:
-      viewingPaneId &&
-      receipt.sourceSemanticPaneId === viewingPaneId &&
-      receipt.target.semanticPaneId !== viewingPaneId
+      viewingEndpoint &&
+      source &&
+      interactionPaneEndpointKey(source) === interactionPaneEndpointKey(viewingEndpoint) &&
+      interactionPaneEndpointKey(source) !== interactionPaneEndpointKey(destination)
         ? "outgoing"
         : "incoming",
     operationId: receipt.operationId,
     operationKind: receipt.operationKind,
     phase: receipt.phase,
     origin: receipt.origin,
-    sourcePaneId: receipt.sourceSemanticPaneId,
-    destinationPaneId: receipt.target.semanticPaneId,
+    sourcePaneId: source?.semanticPaneId ?? null,
+    destinationPaneId: destination.semanticPaneId,
+    sourceEndpoint: source,
+    destinationEndpoint: destination,
+    effect: evidence.effect,
     at: receipt.at,
   };
 }
 export function paneInteractionPresentation(
   event: PaneInteractionEvent,
-  name: (id: string) => string | undefined = () => undefined,
+  name: (endpoint: PaneInteractionEndpoint) => string | undefined = () => undefined,
 ) {
   const read = event.operationKind === "workspace.pane.read";
   // An accepted request is not an authenticated actor or proof of delivery.
   const source =
-    event.phase === "observed" && event.sourcePaneId ? name(event.sourcePaneId) : undefined;
-  const target = name(event.destinationPaneId) ?? "Pane";
+    event.phase === "observed" && event.sourceEndpoint ? name(event.sourceEndpoint) : undefined;
+  const target = name(event.destinationEndpoint) ?? "Pane";
   const pending = event.phase === "accepted";
   const failed = event.phase === "rejected" || event.phase === "timed-out";
   // Stock after-command hooks do not prove application input or that a
   // caller consumed captured output. Keep that limit visible on every surface.
-  if (event.origin === "external" && event.phase === "observed") {
+  if (event.effect.kind === "unknown" && event.phase === "observed") {
     return {
       label: read ? "Read command · reader unknown" : "Send command · sender unknown",
       compactLabel: read ? "Read command" : "Send command",

@@ -234,7 +234,9 @@ describe("interaction receipt reducer", () => {
     expect(
       paneInteractionRelationshipLabel(
         interactionForPane(state, endpoint("pane.tests"))!,
-        (paneId) => ({ "pane.editor": "Editor", "pane.tests": "Tests" })[paneId] ?? paneId,
+        (endpoint) =>
+          ({ "pane.editor": "Editor", "pane.tests": "Tests" })[endpoint.semanticPaneId] ??
+          endpoint.semanticPaneId,
       ),
     ).toBe("Editor → Tests");
   });
@@ -243,8 +245,8 @@ describe("interaction receipt reducer", () => {
     expect(
       paneInteractionRelationshipLabel({
         origin: "external",
-        sourcePaneId: null,
-        destinationPaneId: "pane.tests",
+        sourceEndpoint: null,
+        destinationEndpoint: endpoint("pane.tests"),
       }),
     ).toBe("External input → pane.tests");
   });

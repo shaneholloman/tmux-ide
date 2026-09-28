@@ -8,11 +8,30 @@ import { projectAgentTerminalCanvas } from "./agent-terminal-canvas.ts";
 import { projectTerminalPaneChrome } from "./terminal-pane-chrome.ts";
 import { TerminalPaneCommunicationLayer } from "./terminal-pane-chrome-view.tsx";
 
+const endpoint = (semanticPaneId: string) => ({
+  kind: "pane" as const,
+  environmentId: "00000000-0000-4000-8000-000000000001",
+  serverScope: {
+    serverId: `tmux-server.${"a".repeat(32)}`,
+    generation: "00000000-0000-4000-8000-000000000001",
+  },
+  workspaceName: "alpha",
+  paneLifetimeId: "00000000-0000-4000-8000-000000000002",
+  semanticPaneId,
+});
+
 function interaction(
   operationKind: "workspace.pane.read" | "workspace.pane.send",
 ): PaneInteractionProjection {
   return {
     paneId: "pane.tests",
+    endpoint: endpoint("pane.tests"),
+    sourceEndpoint: endpoint("pane.editor"),
+    destinationEndpoint: endpoint("pane.tests"),
+    operationKey: "test",
+    effect: {
+      kind: operationKind === "workspace.pane.read" ? "snapshot-produced" : "input-enqueued",
+    },
     direction: "incoming",
     sourcePaneId: "pane.editor",
     destinationPaneId: "pane.tests",

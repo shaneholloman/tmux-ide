@@ -1,3 +1,9 @@
+import { interactionPaneEndpointKey } from "@tmux-ide/core";
+import type { PaneInteractionEndpoint } from "../ui/pane-interaction-presentation.ts";
+import {
+  interactionForCurrentPane,
+  nameForCurrentEndpoint,
+} from "./application-pane-interaction-identity.ts";
 import type { InteractionReceipt } from "@tmux-ide/contracts";
 
 /* @jsxImportSource @opentui/solid */
@@ -142,21 +148,14 @@ export function ApplicationHomeSurface(props: ApplicationHomeSurfaceProps): JSX.
   const activityRows = () => (height() >= 24 && bodyWidth() >= 48 ? 2 : 1);
   const selectedAgent = () =>
     props.agentRoster?.rows.find((row) => row.key === props.agentSelection?.selectedKey);
-  // Receipts lack a fleet-wide machine identity. Never attribute a same-named
-  // workspace/pane collision to the selected agent.
   const selectedActivity = () => {
-    const selected = selectedAgent();
-    if (!selected?.paneId || selected.daemonInstanceId !== props.activityDaemonId) return [];
-    const matches = props.agentRoster?.rows.filter(
-      (row) => row.sessionName === selected.sessionName && row.paneId === selected.paneId,
-    );
-    if (matches?.length !== 1) return [];
-    return (props.recentPaneActivity ?? []).filter(
-      (receipt) =>
-        receipt.workspaceName === selected.sessionName &&
-        receipt.target.kind === "pane" &&
-        (receipt.target.semanticPaneId === selected.paneId ||
-          (receipt.phase === "observed" && receipt.sourceSemanticPaneId === selected.paneId)),
+    const endpoint = selectedAgent()?.interactionEndpoint;
+    if (!endpoint) return [];
+    const key = interactionPaneEndpointKey(endpoint);
+    return (props.recentPaneActivity ?? []).filter((receipt) =>
+      [receipt.evidence?.endpoints.destination, receipt.evidence?.endpoints.source].some(
+        (candidate) => candidate?.kind === "pane" && interactionPaneEndpointKey(candidate) === key,
+      ),
     );
   };
   const recentActivity = () =>
@@ -181,16 +180,8 @@ export function ApplicationHomeSurface(props: ApplicationHomeSurfaceProps): JSX.
     if (value && value.key !== `${props.activityDaemonId}:${selectedAgent()?.key}`)
       setInspection(null);
   });
-  const paneLabel = (paneId: string) => {
-    const matches =
-      props.agentRoster?.rows.filter(
-        (row) =>
-          row.paneId === paneId &&
-          row.daemonInstanceId === props.activityDaemonId &&
-          row.sessionName === selectedAgent()?.sessionName,
-      ) ?? [];
-    return matches.length === 1 ? matches[0]!.name : paneId;
-  };
+  const paneLabel = (endpoint: PaneInteractionEndpoint) =>
+    nameForCurrentEndpoint(props.agentRoster?.rows ?? [], endpoint);
   const activityTime = (receipt: InteractionReceipt) => {
     const at = Date.parse(receipt.at);
     return Number.isFinite(at)
@@ -199,8 +190,11 @@ export function ApplicationHomeSurface(props: ApplicationHomeSurfaceProps): JSX.
   };
   const inspect = (event: PaneInteractionEvent) => {
     const names = new Map<string, string>();
-    for (const id of [event.sourcePaneId, event.destinationPaneId])
-      if (id) names.set(id, paneLabel(id));
+    for (const endpoint of [event.sourceEndpoint, event.destinationEndpoint]) {
+      if (!endpoint) continue;
+      const name = paneLabel(endpoint);
+      if (name) names.set(interactionPaneEndpointKey(endpoint), name);
+    }
     setInspection({
       event: { ...event },
       names,
@@ -296,23 +290,9 @@ export function ApplicationHomeSurface(props: ApplicationHomeSurfaceProps): JSX.
               width={bodyWidth()}
               height={rosterHeight()}
               paneName={paneLabel}
-              interactionForAgent={(row) => {
-                if (!row.paneId || row.daemonInstanceId !== props.activityDaemonId)
-                  return undefined;
-                const matches = props.agentRoster?.rows.filter(
-                  (other) => other.paneId === row.paneId && other.sessionName === row.sessionName,
-                );
-                if (matches?.length !== 1) return undefined;
-                const event = props.paneInteractions?.get(row.paneId);
-                return event &&
-                  props.recentPaneActivity?.some(
-                    (receipt) =>
-                      receipt.operationId === event.operationId &&
-                      receipt.workspaceName === row.sessionName,
-                  )
-                  ? event
-                  : undefined;
-              }}
+              interactionForAgent={(row) =>
+                interactionForCurrentPane(props.paneInteractions, row.interactionEndpoint)
+              }
               snapshot={snapshot()}
               selection={props.agentSelection ?? { selectedKey: null, scrollOffset: 0 }}
               inputActive={(props.agentInputActive ?? false) && !inspection()}
@@ -339,7 +319,10 @@ export function ApplicationHomeSurface(props: ApplicationHomeSurfaceProps): JSX.
             <For each={recentActivity()}>
               {(receipt) => (
                 <box height={activityRows()} width={bodyWidth()} flexDirection="column">
-                  <Show when={receiptPaneInteraction(receipt, selectedAgent()?.paneId)} keyed>
+                  <Show
+                    when={receiptPaneInteraction(receipt, selectedAgent()?.interactionEndpoint)}
+                    keyed
+                  >
                     {(event) => (
                       <PaneInteraction
                         theme={props.theme}
@@ -464,7 +447,7 @@ export function ApplicationHomeSurface(props: ApplicationHomeSurfaceProps): JSX.
             <PaneInteractionDetails
               theme={props.theme}
               event={value.event}
-              paneName={(id) => value.names.get(id)}
+              paneName={(id) => value.names.get(interactionPaneEndpointKey(id))}
               width={bodyWidth()}
               viewportWidth={props.width}
               viewportHeight={props.height}

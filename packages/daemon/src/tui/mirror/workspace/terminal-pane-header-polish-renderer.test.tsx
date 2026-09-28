@@ -1,5 +1,18 @@
+const endpoint = (semanticPaneId: string) => ({
+  kind: "pane" as const,
+  environmentId: "00000000-0000-4000-8000-000000000001",
+  serverScope: {
+    serverId: `tmux-server.${"a".repeat(32)}`,
+    generation: "00000000-0000-4000-8000-000000000001",
+  },
+  workspaceName: "alpha",
+  paneLifetimeId: "00000000-0000-4000-8000-000000000002",
+  semanticPaneId,
+});
 import { createApplicationPaneActivityOwner } from "../runtime/application-pane-activity-owner.ts";
-import type { OpenTuiGenerationHostSnapshot } from "../runtime/open-tui-generation-host.ts";
+import type { ApplicationInteractionSource } from "../runtime/application-pane-activity-owner.ts";
+import { interactionPaneEndpointKey } from "@tmux-ide/core";
+import type { subscribeTmuxServerInteractions } from "@tmux-ide/daemon-client/tmux-server-interaction-events";
 import type { InteractionReceipt } from "@tmux-ide/contracts";
 /* @jsxImportSource @opentui/solid */
 import { MouseButtons } from "@opentui/core/testing";
@@ -110,6 +123,11 @@ describe("pane title hierarchy polish", () => {
           direction: "incoming",
           sourcePaneId: null,
           destinationPaneId: "pane.polish",
+          endpoint: endpoint("pane.polish"),
+          sourceEndpoint: null,
+          destinationEndpoint: endpoint("pane.polish"),
+          effect: { kind: "input-enqueued" },
+          operationKey: "test",
           operationKind: "workspace.pane.send",
           operationId: "input",
           phase: "observed",
@@ -331,32 +349,68 @@ describe("persistent native zoom state", () => {
 describe("receipt presence lifetime", () => {
   it("expires badges without polling and clears subscriptions on generation replacement", async () => {
     let receipt: InteractionReceipt | null = null;
-    const subscribers = new Set<() => void>();
-    const client = {
-      getSnapshot: () => ({ generation: 1, operations: { lastObservedReceipt: receipt } }),
-      subscribe: (_scope: string, callback: () => void) => {
-        subscribers.add(callback);
-        return () => subscribers.delete(callback);
+    let batchHandler: Parameters<typeof subscribeTmuxServerInteractions>[0]["onBatch"];
+    let closed = 0;
+    const [host, setHost] = createSignal<readonly ApplicationInteractionSource[]>([
+      {
+        environmentId: "00000000-0000-4000-8000-000000000001",
+        server: endpoint("pane.alpha").serverScope,
+        baseUrl: "http://localhost",
+        ownerToken: "token",
       },
-    };
-    const [host, setHost] = createSignal({
-      status: "live",
-      client,
-    } as unknown as OpenTuiGenerationHostSnapshot | null);
+    ]);
     let visible!: ReturnType<typeof createApplicationPaneActivityOwner>;
     const setup = await renderForTest(
       () => {
-        visible = createApplicationPaneActivityOwner(host);
-        return <text>{visible().get("pane.alpha")?.phase ?? "quiet"}</text>;
+        visible = createApplicationPaneActivityOwner(host, (options) => {
+          batchHandler = options.onBatch;
+          return {
+            ready: Promise.resolve(),
+            done: new Promise<void>(() => {}),
+            close: () => {
+              closed++;
+            },
+            getCursor: () => undefined,
+          };
+        });
+        return (
+          <text>
+            {visible().get(interactionPaneEndpointKey(endpoint("pane.alpha")))?.phase ?? "quiet"}
+          </text>
+        );
       },
       { width: 20, height: 1 },
     );
     await setup.renderOnce();
     const notify = () => {
-      for (const listener of subscribers) listener();
+      if (receipt)
+        batchHandler!(
+          {
+            version: 1,
+            type: "batch",
+            server: endpoint("pane.alpha").serverScope,
+            after: receipt.sequence - 1,
+            cursor: receipt.sequence,
+            gap: false,
+            receipts: [receipt],
+          },
+          new AbortController().signal,
+        );
     };
     receipt = {
       type: "interaction.receipt",
+      evidence: {
+        schemaVersion: 1,
+        interactionId: "10000000-0000-4000-8000-000000000001",
+        revision: 0,
+        actor: { kind: "unknown", reason: "stock-hook" },
+        endpoints: { source: null, destination: endpoint("pane.alpha") },
+        observation: { kind: "stock-hook", command: "send-keys" },
+        effect: { kind: "unknown" },
+        occurredAt: null,
+        timeBasis: "unknown",
+        receivedAt: new Date().toISOString(),
+      },
       sequence: 1,
       operationId: "10000000-0000-4000-8000-000000000001",
       origin: "external",
@@ -371,7 +425,9 @@ describe("receipt presence lifetime", () => {
       resourceRevision: null,
     };
     notify();
-    expect(visible().get("pane.alpha")?.phase).toBe("observed");
+    expect(visible().get(interactionPaneEndpointKey(endpoint("pane.alpha")))?.phase).toBe(
+      "observed",
+    );
     await new Promise((resolve) => setTimeout(resolve, 130));
     expect(visible().size).toBe(0);
     notify();
@@ -379,14 +435,15 @@ describe("receipt presence lifetime", () => {
     receipt = {
       ...receipt,
       sequence: 2,
+      evidence: { ...receipt.evidence!, interactionId: "10000000-0000-4000-8000-000000000002" },
       operationId: "10000000-0000-4000-8000-000000000002",
       at: new Date().toISOString(),
     };
     notify();
     expect(visible().size).toBe(1);
-    setHost(null);
+    setHost([]);
     expect(visible().size).toBe(0);
-    expect(subscribers.size).toBe(0);
+    expect(closed).toBe(1);
     setup.renderer.destroy();
   });
 });
@@ -398,6 +455,11 @@ describe("pane activity labels", () => {
       direction: "incoming",
       sourcePaneId: null,
       destinationPaneId: "pane.alpha",
+      endpoint: endpoint("pane.alpha"),
+      sourceEndpoint: null,
+      destinationEndpoint: endpoint("pane.alpha"),
+      effect: { kind: "input-enqueued" },
+      operationKey: "test",
       operationKind: "workspace.pane.read",
       operationId: "read",
       phase: "observed",
@@ -473,6 +535,11 @@ describe("pane activity labels", () => {
             direction: "incoming",
             sourcePaneId: null,
             destinationPaneId: "pane.alpha",
+            endpoint: endpoint("pane.alpha"),
+            sourceEndpoint: null,
+            destinationEndpoint: endpoint("pane.alpha"),
+            effect: { kind: "input-enqueued" },
+            operationKey: "test",
             operationKind: "workspace.pane.send",
             operationId: "op",
             phase: "observed",

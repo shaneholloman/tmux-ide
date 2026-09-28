@@ -236,64 +236,55 @@ export function interactionReceiptIdentity(receipt: InteractionReceipt): string 
 }
 
 export function interactionReceiptTargetLabel(
-  receipt: Pick<InteractionReceipt, "operationKind" | "origin" | "sourceSemanticPaneId" | "target">,
-  paneLabel: (semanticPaneId: string) => string = (semanticPaneId) => semanticPaneId,
+  receipt: Pick<InteractionReceipt, "operationKind" | "origin" | "target" | "evidence">,
+  paneLabel: (endpoint: ResolvedInteractionEndpoint) => string = (endpoint) =>
+    endpoint.semanticPaneId,
 ): string {
+  const destination = receipt.evidence?.endpoints.destination;
+  const source = receipt.evidence?.endpoints.source;
   if (
+    destination?.kind === "pane" &&
     (receipt.operationKind === "workspace.pane.send" ||
-      receipt.operationKind === "workspace.pane.read") &&
-    receipt.target.kind === "pane"
+      receipt.operationKind === "workspace.pane.read")
   ) {
     return paneInteractionRelationshipLabel(
       {
         origin: receipt.origin,
-        sourcePaneId: receipt.sourceSemanticPaneId,
-        destinationPaneId: receipt.target.semanticPaneId,
+        sourceEndpoint: source?.kind === "pane" ? source : null,
+        destinationEndpoint: destination,
         operationKind: receipt.operationKind,
       },
       paneLabel,
     );
   }
-  if (receipt.target.kind === "pane") return paneLabel(receipt.target.semanticPaneId);
-  if (receipt.target.kind === "window") {
-    return receipt.target.target.by === "pane"
-      ? `Window at ${paneLabel(receipt.target.target.semanticPaneId)}`
-      : receipt.target.target.semanticWindowId;
-  }
-  return "Session";
+  if (destination?.kind === "pane") return paneLabel(destination);
+  return receipt.target.kind === "window"
+    ? "Window"
+    : receipt.target.kind === "pane"
+      ? "Pane"
+      : "Session";
 }
-
 export interface PaneInteractionRelationship {
   readonly origin: InteractionReceipt["origin"];
-  readonly sourcePaneId: string | null;
-  readonly destinationPaneId: string;
+  readonly sourceEndpoint: ResolvedInteractionEndpoint | null;
+  readonly destinationEndpoint: ResolvedInteractionEndpoint;
   readonly operationKind?: InteractionReceipt["operationKind"];
 }
-
-/**
- * Honest relationship copy shared by DOM and OpenTUI. A pane source is shown
- * only when daemon authority authenticated it; raw tmux activity stays
- * explicitly external rather than being attributed to whichever pane happens
- * to be focused.
- */
+/** Names are resolved only from authoritative current endpoint metadata. */
 export function paneInteractionRelationshipLabel(
   interaction: PaneInteractionRelationship,
-  paneLabel: (semanticPaneId: string) => string = (semanticPaneId) => semanticPaneId,
+  paneLabel: (endpoint: ResolvedInteractionEndpoint) => string = (endpoint) =>
+    endpoint.semanticPaneId,
 ): string {
-  if (interaction.operationKind === "workspace.pane.read") {
-    const reader = interaction.sourcePaneId
-      ? paneLabel(interaction.sourcePaneId)
-      : interaction.origin === "external"
-        ? "External reader"
-        : `${interaction.origin.toUpperCase()} reader`;
-    return `${reader} reads ${paneLabel(interaction.destinationPaneId)}`;
-  }
-  const source = interaction.sourcePaneId
-    ? paneLabel(interaction.sourcePaneId)
+  const read = interaction.operationKind === "workspace.pane.read";
+  const source = interaction.sourceEndpoint
+    ? paneLabel(interaction.sourceEndpoint)
     : interaction.origin === "external"
-      ? "External input"
-      : `${interaction.origin.toUpperCase()} input`;
-  return `${source} → ${paneLabel(interaction.destinationPaneId)}`;
+      ? read
+        ? "External reader"
+        : "External input"
+      : `${interaction.origin.toUpperCase()} ${read ? "reader" : "input"}`;
+  return `${source}${read ? " reads " : " → "}${paneLabel(interaction.destinationEndpoint)}`;
 }
 
 /**

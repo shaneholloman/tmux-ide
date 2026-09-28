@@ -1,5 +1,6 @@
 import type {
   AgentActivity,
+  InteractionPaneEndpoint,
   ApplicationShellResourceV2,
   TmuxServerScope,
 } from "@tmux-ide/contracts";
@@ -8,6 +9,7 @@ import type { ApplicationHomeCatalogSession } from "./application-home-catalog.t
 import { terminalAgentStatusLabel } from "./application-terminal-workspace-policy.ts";
 
 export interface HomeAgentRow {
+  readonly interactionEndpoint: Extract<InteractionPaneEndpoint, { kind: "pane" }> | null;
   readonly key: string;
   readonly machineId?: string;
   readonly machineLabel?: string;
@@ -74,6 +76,12 @@ export function projectHomeAgentRows(
     daemonInstanceId: session.server?.generation ?? shell.daemon.instanceId,
     agentId: agent.id,
     paneId: agent.paneId,
+    interactionEndpoint:
+      shell.resource.terminalInventory?.resources.find(
+        (resource) =>
+          resource.attachability.status === "available" &&
+          resource.attachability.semanticPaneId === agent.paneId,
+      )?.interactionEndpoint ?? null,
     windowId:
       shell.resource.terminalInventory?.resources.find(
         (resource) =>

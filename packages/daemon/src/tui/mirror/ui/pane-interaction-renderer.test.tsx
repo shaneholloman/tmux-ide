@@ -7,6 +7,17 @@ import { renderForTest, expectFrameBounds } from "../testing/renderer-harness.te
 import { PaneInteraction } from "./pane-interaction.tsx";
 import { AgentRow } from "./agent-row.tsx";
 import type { PaneInteractionEvent } from "./pane-interaction-presentation.ts";
+const endpoint = (semanticPaneId: string) => ({
+  kind: "pane" as const,
+  environmentId: "00000000-0000-4000-8000-000000000001",
+  serverScope: {
+    serverId: `tmux-server.${"a".repeat(32)}`,
+    generation: "00000000-0000-4000-8000-000000000001",
+  },
+  workspaceName: "research",
+  paneLifetimeId: "00000000-0000-4000-8000-000000000002",
+  semanticPaneId,
+});
 const base: PaneInteractionEvent = {
   operationId: "op",
   operationKind: "workspace.pane.read",
@@ -14,9 +25,13 @@ const base: PaneInteractionEvent = {
   origin: "tui",
   sourcePaneId: "source",
   destinationPaneId: "target",
+  sourceEndpoint: endpoint("source"),
+  destinationEndpoint: endpoint("target"),
+  effect: { kind: "snapshot-produced" },
   at: new Date().toISOString(),
 };
-const name = (id: string) => (id === "source" ? "Codex" : "Tests");
+const name = (value: ReturnType<typeof endpoint>) =>
+  value.semanticPaneId === "source" ? "Codex" : "Tests";
 it("external command observations do not display a delivery success marker", async () => {
   const setup = await renderForTest(
     () => (
@@ -26,6 +41,8 @@ it("external command observations do not display a delivery success marker", asy
           ...base,
           phase: "observed",
           origin: "external",
+          sourceEndpoint: null,
+          effect: { kind: "unknown" },
           sourcePaneId: null,
           operationKind: "workspace.pane.send",
         }}

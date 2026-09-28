@@ -1,3 +1,4 @@
+import type { PaneInteractionEndpoint } from "./ui/pane-interaction-presentation.ts";
 import type { PaneAttention } from "@tmux-ide/contracts";
 import {
   paneInteractionPresence,
@@ -32,7 +33,7 @@ export interface PaneChromeStateInput {
   readonly inputOwned: boolean;
   readonly attention?: PaneAttention;
   readonly interaction?: PaneInteractionProjection | null;
-  readonly paneLabel?: (semanticPaneId: string) => string;
+  readonly paneLabel?: (endpoint: PaneInteractionEndpoint) => string;
 }
 
 export type PaneChromePrimaryMarker = "input-owner" | "attention" | "keyboard-focus" | "idle";
@@ -64,7 +65,7 @@ export function projectPaneChromeState(input: PaneChromeStateInput): PaneChromeS
 
 export function paneChromeInteractionState(
   interaction: PaneInteractionProjection,
-  paneLabel?: (semanticPaneId: string) => string,
+  paneLabel?: (endpoint: PaneInteractionEndpoint) => string,
 ): PaneChromeInteractionState {
   const presence = paneInteractionPresence(interaction);
   return Object.freeze({

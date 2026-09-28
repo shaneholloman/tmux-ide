@@ -1,3 +1,4 @@
+import type { PaneInteractionEndpoint } from "../ui/pane-interaction-presentation.ts";
 import type { PaneInteractionEvent } from "../ui/pane-interaction-presentation.ts";
 /* @jsxImportSource @opentui/solid */
 import {
@@ -22,7 +23,7 @@ import type { HomeAgentSelectionSnapshot } from "./application-home-agent-select
 
 export interface HomeAgentRosterProps {
   readonly interactionForAgent?: (row: HomeAgentRow) => PaneInteractionEvent | undefined;
-  readonly paneName?: (id: string) => string | undefined;
+  readonly paneName?: (endpoint: PaneInteractionEndpoint) => string | undefined;
   readonly query?: string;
   readonly onQueryChange?: (query: string) => void;
   readonly filterLabel?: string;

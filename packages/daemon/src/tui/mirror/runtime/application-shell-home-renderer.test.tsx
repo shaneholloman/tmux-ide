@@ -267,9 +267,37 @@ describe("compact production Home presentation", () => {
   });
 });
 
+const endpoint = (semanticPaneId: string) => ({
+  kind: "pane" as const,
+  environmentId: "00000000-0000-4000-8000-000000000001",
+  serverScope: {
+    serverId: `tmux-server.${"a".repeat(32)}`,
+    generation: "00000000-0000-4000-8000-000000000001",
+  },
+  workspaceName: "research",
+  paneLifetimeId: "00000000-0000-4000-8000-000000000002",
+  semanticPaneId,
+});
+
 describe("Home observed pane activity", () => {
   const receipt: InteractionReceipt = {
     type: "interaction.receipt",
+
+    evidence: {
+      schemaVersion: 1,
+      interactionId: "10000000-0000-4000-8000-000000000001",
+      revision: 0,
+      actor: { kind: "unknown", reason: "stock-hook" },
+      endpoints: {
+        source: null,
+        destination: endpoint("pane.tests"),
+      },
+      observation: { kind: "stock-hook", command: "capture-pane" },
+      effect: { kind: "unknown" },
+      occurredAt: null,
+      timeBasis: "unknown",
+      receivedAt: "2026-09-08T10:00:00.000Z",
+    },
     sequence: 1,
     operationId: "10000000-0000-4000-8000-000000000001",
     origin: "external",
@@ -306,6 +334,7 @@ describe("Home observed pane activity", () => {
             daemonInstanceId: "daemon-local",
             agentId: "tests",
             paneId: "pane.tests",
+            interactionEndpoint: endpoint("pane.tests"),
             name: "Tests",
             harness: "codex",
             activity: "running",
@@ -329,7 +358,7 @@ describe("Home observed pane activity", () => {
       const frame = setup.captureCharFrame();
       expect(frame).toContain("Tests · latest activity");
       expect(frame).toContain("09-08 10:00Z");
-      expect(frame).toContain("Pane read · reader unknown");
+      expect(frame).toContain("Read command · reader unknown");
       expect(frame).toContain("Activity reported through tmux-ide");
       expect(frame).not.toContain("SECRET_PANE_CONTENT");
       expect(frame).toContain("Open terminals");
@@ -340,7 +369,7 @@ describe("Home observed pane activity", () => {
   });
   it.each([
     ["accepted", "Read requested"],
-    ["observed", "Pane read · reader unknown"],
+    ["observed", "Read command · reader unknown"],
     ["rejected", "Read failed"],
     ["timed-out", "Read timed out"],
   ] as const)("keeps %s activity explicit with secondary timestamps", async (phase, label) => {
@@ -386,15 +415,15 @@ describe("Home observed pane activity", () => {
     const y = rows.findIndex((line) => line.includes("Details"));
     await setup.mockMouse.click(rows[y]!.indexOf("Details"), y, MouseButtons.LEFT);
     await setup.renderOnce();
-    expect(setup.captureCharFrame()).toContain("Read completed");
+    expect(setup.captureCharFrame()).toContain("Command observed");
     setReceipts([]);
     await setup.renderOnce();
-    expect(setup.captureCharFrame()).toContain("Read completed");
+    expect(setup.captureCharFrame()).toContain("Command observed");
     setDaemon("different-daemon");
     await setup.renderOnce();
-    expect(setup.captureCharFrame()).not.toContain("Read completed");
+    expect(setup.captureCharFrame()).not.toContain("Command observed");
   });
-  it("only reveals activity for the selected agent on its originating daemon", async () => {
+  it("only reveals activity for the selected exact endpoint independent of the active daemon", async () => {
     const base = activityProps({ height: 32 });
     const [selectedKey, setSelectedKey] = createSignal<string | null>("tests");
     const [daemonId, setDaemonId] = createSignal<string | null>("daemon-local");
@@ -406,7 +435,18 @@ describe("Home observed pane activity", () => {
           agentSelection={{ selectedKey: selectedKey(), scrollOffset: 0 }}
           recentPaneActivity={[
             receipt,
-            { ...receipt, workspaceName: "another-workspace", at: "2026-09-09T12:00:00Z" },
+            {
+              ...receipt,
+              workspaceName: "another-workspace",
+              evidence: {
+                ...receipt.evidence!,
+                endpoints: {
+                  ...receipt.evidence!.endpoints,
+                  destination: { ...endpoint("pane.tests"), workspaceName: "another-workspace" },
+                },
+              },
+              at: "2026-09-09T12:00:00Z",
+            },
           ]}
         />
       ),
@@ -422,10 +462,10 @@ describe("Home observed pane activity", () => {
       setSelectedKey("tests");
       setDaemonId("daemon-remote");
       await setup.renderOnce();
-      expect(setup.captureCharFrame()).not.toContain("latest activity");
+      expect(setup.captureCharFrame()).toContain("latest activity");
       setDaemonId(null);
       await setup.renderOnce();
-      expect(setup.captureCharFrame()).not.toContain("latest activity");
+      expect(setup.captureCharFrame()).toContain("latest activity");
     } finally {
       setup.renderer.destroy();
     }

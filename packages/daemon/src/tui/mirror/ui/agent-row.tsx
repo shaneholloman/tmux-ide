@@ -1,3 +1,4 @@
+import type { PaneInteractionEndpoint } from "./pane-interaction-presentation.ts";
 import { createPaneInteractionMarker } from "./pane-interaction.tsx";
 import {
   paneInteractionPresentation,
@@ -21,7 +22,7 @@ export function AgentRow(props: {
   context: string;
   activity: AgentActivity;
   interaction?: PaneInteractionEvent;
-  paneName?: (id: string) => string | undefined;
+  paneName?: (endpoint: PaneInteractionEndpoint) => string | undefined;
   attention?: boolean;
   unavailable?: boolean;
   width: number;
