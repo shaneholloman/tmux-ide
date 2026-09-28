@@ -86,3 +86,22 @@ nested synchronous observation or count overflow sets degraded bit8. Recorded
 counts then represent only observed portions, not completeness. Input continues
 for all targets; no per-key allocations, content logging, or serialization occur
 in the observer. Unknown key-binding ingress stays unknown.
+
+## Cooperative operation assertion
+
+`cooperative-operation-v1` provides `tmux-ide-run -O UUID { commands }`. The
+wrapper works with observation disabled and never supplies/replaces issuerId.
+Records add `correlation: UUID | null`. Explicit native descendants (including
+hooks and delayed commands) inherit it; new external subprocess connections do
+not. Nested explicit wrappers may replace the assertion.
+
+A UUID alone proves nothing. To bind an authored operation, the daemon must
+match serverEpoch and nonzero issuerId against the identity handshake on its
+own same control connection, then validate the expected operation. A different
+connection can assert the same UUID but cannot acquire that connection ID. Do
+not blanket-discard every effect with a matched correlation: hooks can perform
+additional real actions. Preserve command/effect lineage and operation scope.
+
+No mutable pane marker or claimed process ID participates in this mechanism.
+The wrapper is cooperative metadata, not a security boundary against other
+processes running as the same OS user.
