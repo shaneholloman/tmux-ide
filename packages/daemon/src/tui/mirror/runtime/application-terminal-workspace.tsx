@@ -1,3 +1,5 @@
+import { PaneInteractionDetails } from "../ui/pane-interaction.tsx";
+import type { PaneInteractionEvent } from "../ui/pane-interaction-presentation.ts";
 import { Menu } from "../ui/index.ts";
 import type { WindowLinkTarget } from "@tmux-ide/contracts";
 import { windowLinkTarget } from "./application-terminal-workspace-policy.ts";
@@ -148,6 +150,7 @@ export function beginApplicationMouseIngress(
 }
 
 export interface ApplicationTerminalWorkspaceProps {
+  readonly connectionStatus?: string;
   readonly onScrollbackChange?: (active: boolean) => void;
   readonly paneInteractions?: Accessor<ReadonlyMap<string, PaneInteractionProjection>>;
   readonly layout: Accessor<OpenTuiWorkspaceLayoutSnapshot>;
@@ -507,6 +510,32 @@ export function ApplicationTerminalWorkspace(props: ApplicationTerminalWorkspace
     },
   });
   const paneContextMenu = paneMenu.state;
+  const [interactionDetails, setInteractionDetails] = createSignal<{
+    event: PaneInteractionEvent;
+    names: ReadonlyMap<string, string>;
+    paneId: string;
+    epoch: number;
+  } | null>(null);
+  const paneName = (id: string) => props.agentIndicators?.().get(id)?.name ?? id;
+  const inspectInteraction = (paneId: string) => {
+    const event = props.paneInteractions?.().get(paneId);
+    if (!event) return;
+    paneMenu.dismiss();
+    const names = new Map<string, string>();
+    for (const id of [event.sourcePaneId, event.destinationPaneId])
+      if (id) names.set(id, paneName(id));
+    setInteractionDetails({ event: { ...event }, names, paneId, epoch: props.rendererEpoch });
+  };
+  createEffect(() => {
+    const details = interactionDetails();
+    if (
+      details &&
+      (details.epoch !== props.rendererEpoch ||
+        props.interactive === false ||
+        !projectedFrames().some((frame) => frame.visible && frame.paneId === details.paneId))
+    )
+      setInteractionDetails(null);
+  });
   let selecting: {
     readonly paneId: string;
     readonly anchor: TerminalSelectionRange["start"];
@@ -952,6 +981,10 @@ export function ApplicationTerminalWorkspace(props: ApplicationTerminalWorkspace
   props.onSelectionCopyOwner?.(copySelection);
   const handlePaneMenuKey: PaneMenuKeyHandler = (name, event) => {
     if (props.interactive === false) return false;
+    if (interactionDetails()) {
+      if (name === "escape" && event?.eventType !== "release") setInteractionDetails(null);
+      return true;
+    }
     if (windowLinkMenu()) {
       if (event?.eventType === "release") return true;
       if (name === "escape") setWindowLinkMenu(null);
@@ -1146,6 +1179,7 @@ export function ApplicationTerminalWorkspace(props: ApplicationTerminalWorkspace
       props.interactive !== false &&
       (drag !== null ||
         windowLinkMenu() !== null ||
+        interactionDetails() !== null ||
         paneMenu.ownsInput() ||
         keyboardCopy() !== null),
     () => {
@@ -1166,7 +1200,7 @@ export function ApplicationTerminalWorkspace(props: ApplicationTerminalWorkspace
   // listener and the typed listener on a target, even after stopPropagation.
   const routePointer = (event: WorkspaceMouseEvent): void => {
     if (event.type === "down") wheelGesture.reset();
-    if (windowLinkMenu() || paneMenu.ownsInput()) {
+    if (interactionDetails() || windowLinkMenu() || paneMenu.ownsInput()) {
       event.stopPropagation?.();
       return;
     }
@@ -1781,7 +1815,11 @@ export function ApplicationTerminalWorkspace(props: ApplicationTerminalWorkspace
               <PaneTitleBar
                 theme={props.theme}
                 paneId={frame().paneId}
-                title={`${frame().compactPosition ? `Compact ${frame().compactPosition} · Ctrl+O: next · ` : ""}${displayTitle()}${scrollback.offset(frame().paneId) > 0 ? ` ↑${scrollback.offset(frame().paneId)} · Esc: live` : ""}`}
+                title={`${frame().compactPosition ? `Compact ${frame().compactPosition} · Ctrl+O: next · ` : ""}${displayTitle()}`}
+                connectionStatus={props.connectionStatus}
+                scrollback={scrollback.offset(frame().paneId) > 0}
+                linesAboveLive={scrollback.offset(frame().paneId)}
+                onBackToLiveIntent={() => scrollback.live(frame().paneId)}
                 zoomed={layout().windows.some(
                   (window) =>
                     window.zoomed && window.panes.some((pane) => pane.pane === frame().paneId),
@@ -1795,6 +1833,8 @@ export function ApplicationTerminalWorkspace(props: ApplicationTerminalWorkspace
                 keyboardFocused={props.focusedPane === frame().paneId}
                 menuOpen={paneContextMenu()?.paneId === frame().paneId}
                 interaction={props.paneInteractions?.().get(frame().paneId)}
+                paneName={paneName}
+                onInteractionDetails={() => inspectInteraction(frame().paneId)}
                 activity={indicator()?.activity}
                 attention={indicator()?.attention}
                 menuAnchor={{
@@ -1900,6 +1940,20 @@ export function ApplicationTerminalWorkspace(props: ApplicationTerminalWorkspace
           onDismiss={() => setWindowLinkMenu(null)}
           onSelect={unlinkWindowTab}
         />
+      </Show>
+      <Show when={interactionDetails()} keyed>
+        {(details) => (
+          <PaneInteractionDetails
+            theme={props.theme}
+            event={details.event}
+            paneName={(id) => details.names.get(id)}
+            width={props.width}
+            viewportWidth={props.width}
+            viewportHeight={props.height}
+            viewportOrigin={{ x: props.originX ?? 0, y: props.originY ?? 0 }}
+            onDismiss={() => setInteractionDetails(null)}
+          />
+        )}
       </Show>
       <Show when={paneContextMenu()}>
         {(menu) => (

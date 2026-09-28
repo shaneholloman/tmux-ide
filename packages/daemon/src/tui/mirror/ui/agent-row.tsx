@@ -1,3 +1,8 @@
+import { createPaneInteractionMarker } from "./pane-interaction.tsx";
+import {
+  paneInteractionPresentation,
+  type PaneInteractionEvent,
+} from "./pane-interaction-presentation.ts";
 /* @jsxImportSource @opentui/solid */
 import type { AgentActivity } from "@tmux-ide/contracts";
 import { Show } from "solid-js";
@@ -5,6 +10,7 @@ import type { SemanticThemeSnapshot } from "../theme.ts";
 import { clipTerminal } from "../terminal-text.ts";
 import { NavigationRow, type NavigationRowInputSource } from "./navigation-row.tsx";
 import { createAgentStatusMarker } from "./agent-status-marker.ts";
+import { statusPresentation } from "./status-presentation.ts";
 import { componentPalette } from "./state.ts";
 
 /** One agent identity and one state marker, shared by Home and fleet navigation. */
@@ -14,6 +20,8 @@ export function AgentRow(props: {
   name: string;
   context: string;
   activity: AgentActivity;
+  interaction?: PaneInteractionEvent;
+  paneName?: (id: string) => string | undefined;
   attention?: boolean;
   unavailable?: boolean;
   width: number;
@@ -24,10 +32,24 @@ export function AgentRow(props: {
   hovered?: boolean;
   onOpen: (source: NavigationRowInputSource) => void;
 }) {
+  const status = () => statusPresentation(props);
+  const receipt = () =>
+    !props.unavailable &&
+    props.activity !== "disconnected" &&
+    !props.attention &&
+    props.activity !== "waiting" &&
+    props.activity !== "failed" &&
+    props.interaction
+      ? paneInteractionPresentation(props.interaction, props.paneName)
+      : undefined;
+  const receiptMarker = createPaneInteractionMarker(
+    () => (receipt() ? props.interaction : undefined),
+    () => props.theme,
+  );
   const marker = createAgentStatusMarker({
     theme: () => props.theme,
-    status: () => props.activity,
-    attention: () => !!props.attention,
+    status: () => (receipt() ? undefined : status()?.activity),
+    attention: () => status()?.activity === "waiting",
     unavailable: () => !!props.unavailable,
   });
   const palette = () =>
@@ -41,8 +63,6 @@ export function AgentRow(props: {
     palette().state === "base" && props.surface === "canvas"
       ? props.theme.roles.surfaces.canvas
       : palette().background;
-  const exceptional = () =>
-    props.unavailable ? "unavailable" : props.activity === "disconnected" ? "unknown" : undefined;
   return (
     <box
       width={props.width}
@@ -64,18 +84,26 @@ export function AgentRow(props: {
         width={props.width}
         label={props.name}
         marker={
-          props.activity === "idle" && !props.attention && !props.unavailable ? " " : marker()
+          receipt()
+            ? receiptMarker()
+            : props.activity === "idle" && !props.attention && !props.unavailable
+              ? " "
+              : marker()
         }
-        detail={exceptional()}
+        detail={
+          props.width < 24
+            ? undefined
+            : receipt()
+              ? clipTerminal(receipt()!.compactLabel, Math.max(0, props.width - 14))
+              : status()?.label === "Idle"
+                ? undefined
+                : status()?.label
+        }
         selected={props.selected}
         focused={props.focused}
         hovered={props.hovered}
         disabled={props.unavailable}
-        tone={
-          props.attention || props.activity === "waiting" || props.activity === "failed"
-            ? "warning"
-            : "neutral"
-        }
+        tone={status()?.tone === "blocked" ? "warning" : "neutral"}
         onActivate={props.onOpen}
       />
       <Show when={!props.compact}>

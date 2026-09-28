@@ -354,3 +354,147 @@ test("working-session pointer opens once and acknowledges the same result as Ent
   expect(actions).toEqual(["Open documentation · Spark · default (simulated)"]);
   expect(setup.captureCharFrame()).not.toContain("new result");
 });
+
+test("pane status gallery exercises view mode and connection priority through production chrome", async () => {
+  const setup = await renderForTest(
+    () => (
+      <TuiGallery
+        width={116}
+        height={38}
+        initial={{ story: 3, interacting: true }}
+        onQuit={() => {}}
+      />
+    ),
+    { width: 116, height: 38 },
+  );
+  key(setup, "m");
+  await setup.renderOnce();
+  expect(setup.captureCharFrame()).toContain("Scrollback");
+  key(setup, "c");
+  await setup.renderOnce();
+  expect(setup.captureCharFrame()).toContain("Reconnecting…");
+  expect(setup.captureCharFrame()).toContain("Back to live");
+  key(setup, "c");
+  await setup.renderOnce();
+  expect(setup.captureCharFrame()).toContain("Read-only");
+});
+
+for (const light of [false, true])
+  for (const narrow of [false, true]) {
+    test(`pane mode concept retains identity, actions and interaction context (${light}, ${narrow})`, async () => {
+      const setup = await renderForTest(
+        () => (
+          <TuiGallery
+            width={116}
+            height={38}
+            initial={{ story: 6, interacting: true, light, narrow }}
+            onQuit={() => {}}
+          />
+        ),
+        { width: 116, height: 38 },
+      );
+      await setup.renderOnce();
+      expectFrameBounds(setup.captureCharFrame(), 116, 38);
+      expect(setup.captureCharFrame()).toContain("Claude");
+      expect(setup.captureCharFrame()).toContain("Back to live");
+      expect(setup.captureCharFrame()).toContain("Read requested");
+      const outputRow = setup
+        .captureCharFrame()
+        .split("\n")
+        .findIndex((line) => line.includes("$ pnpm test"));
+      key(setup, "i");
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).toContain("Read by Codex");
+      key(setup, "d");
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).toContain("Read completed");
+      key(setup, "escape");
+      key(setup, "return");
+      await setup.renderOnce();
+      expect(setup.captureCharFrame().split("\n")[5]).not.toContain("Back to live");
+      expect(setup.captureCharFrame()).toContain("Read by Codex");
+      key(setup, "m");
+      key(setup, "m");
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).toContain("Expanded");
+      expect(setup.captureCharFrame()).toContain("Restore");
+      for (let i = 0; i < 5; i++) key(setup, "i");
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).not.toContain("Read by Codex");
+      expect(
+        setup
+          .captureCharFrame()
+          .split("\n")
+          .findIndex((line) => line.includes("$ pnpm test")),
+      ).toBe(outputRow);
+    });
+  }
+
+test("playback cancels superseded receipts and keeps completion visible before quiet", async () => {
+  const { createInteractionPlayback } = await import("./pane-interaction-playback.ts");
+  const scheduled: { run: () => void; delay: number; cancelled: boolean }[] = [];
+  const events: [number, boolean][] = [];
+  const playback = createInteractionPlayback(
+    (event, playing) => events.push([event, playing]),
+    (run, delay) => {
+      const item = { run, delay, cancelled: false };
+      scheduled.push(item);
+      return () => {
+        item.cancelled = true;
+      };
+    },
+  );
+  playback.play("read", false);
+  expect(events).toEqual([[0, true]]);
+  expect(scheduled.map((item) => item.delay)).toEqual([1200, 4400]);
+  scheduled[0]!.run();
+  expect(events.at(-1)).toEqual([1, true]);
+  playback.play("send", true);
+  expect(scheduled.slice(0, 2).every((item) => item.cancelled)).toBe(true);
+  scheduled[1]!.run();
+  expect(events.at(-1)).toEqual([2, true]);
+  expect(scheduled[2]!.delay).toBe(20);
+  scheduled[2]!.run();
+  expect(events.at(-1)).toEqual([3, true]);
+  scheduled[3]!.run();
+  expect(events.at(-1)).toEqual([6, false]);
+  playback.stop();
+  expect(scheduled.every((item) => item.cancelled)).toBe(true);
+});
+
+test("static playback preserves geometry and authenticates actor only at completion", async () => {
+  const setup = await renderForTest(
+    () => (
+      <TuiGallery
+        width={116}
+        height={38}
+        initial={{ story: 6, interacting: true }}
+        onQuit={() => {}}
+      />
+    ),
+    { width: 116, height: 38 },
+  );
+  key(setup, "a");
+  key(setup, "p");
+  await setup.renderOnce();
+  const pending = setup.captureCharFrame();
+  expect(pending).toContain("Read requested");
+  expect(pending).not.toContain("Read by Codex");
+  await Bun.sleep(100);
+  await setup.renderOnce();
+  expect(setup.captureCharFrame()).toBe(pending);
+  key(setup, "p");
+  key(setup, "f");
+  key(setup, "p");
+  await Bun.sleep(60);
+  await setup.renderOnce();
+  const completed = setup.captureCharFrame();
+  expect(completed).toContain("Read by Codex");
+  expect(completed.split("\n").findIndex((line) => line.includes("$ pnpm test"))).toBe(
+    pending.split("\n").findIndex((line) => line.includes("$ pnpm test")),
+  );
+  key(setup, "d");
+  await setup.renderOnce();
+  expect(setup.captureCharFrame()).toContain("Read completed");
+  setup.renderer.destroy();
+});

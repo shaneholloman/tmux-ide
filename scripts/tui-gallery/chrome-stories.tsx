@@ -17,11 +17,33 @@ interface ChromeStoryProps {
 }
 export function PaneHeaderStory(props: ChromeStoryProps) {
   const [selected, setSelected] = createSignal(true);
+  const [view, setView] = createSignal(0);
+  const [connection, setConnection] = createSignal(0);
+  useKeyboardRoute((event) => {
+    if (!props.interacting || event.ctrl || event.meta || event.eventType !== "press") return false;
+    if (event.name === "m") setView((value) => (value + 1) % 3);
+    else if (event.name === "c") setConnection((value) => (value + 1) % 3);
+    else return false;
+    event.preventDefault();
+    event.stopPropagation();
+    return true;
+  });
   return (
     <box width={props.width} height={props.height} flexDirection="column">
       <PaneTitleBar
         theme={props.theme}
         paneId="pane.fixture"
+        scrollback={view() === 1}
+        zoomed={view() === 2}
+        connectionStatus={["live", "rebinding", "read-only"][connection()]}
+        onBackToLiveIntent={() => {
+          setView(0);
+          props.record("Back to live (simulated)");
+        }}
+        onRestoreIntent={() => {
+          setView(0);
+          props.record("Restore pane (simulated)");
+        }}
         title={
           props.state === "long labels"
             ? "分析 Café — implementation with a very long pane title"
@@ -51,7 +73,7 @@ export function PaneHeaderStory(props: ChromeStoryProps) {
         onMenuIntent={() => props.record("Pane menu (simulated)")}
       />
       <text fg={props.theme.colors.mutedForeground}>
-        Fixture terminal body — title and menu use production hit targets.
+        Fixture terminal body — M: live / scrollback / expanded; C: connection.
       </text>
     </box>
   );

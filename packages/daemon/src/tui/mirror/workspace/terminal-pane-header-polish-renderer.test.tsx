@@ -12,6 +12,7 @@ import { renderForTest, stableFrame } from "../testing/renderer-harness.test.ts"
 import { componentPalette } from "../ui/index.ts";
 import { createKeyboardRouteOwner, KeyboardRouteProvider } from "../ui/keyboard-router.tsx";
 import { PaneTitleBar, type PaneTitleBarProps } from "./terminal-pane-header.tsx";
+import { AgentRow } from "../ui/agent-row.tsx";
 import { PaneActionMenu, type PaneMenuActionId } from "./pane-action-menu.tsx";
 import { expectFrameBounds } from "../testing/renderer-harness.test.ts";
 
@@ -69,7 +70,7 @@ describe("pane title hierarchy polish", () => {
         activity: "running",
       });
       expectFrameBounds(setup.captureCharFrame(), width, 2);
-      if (width >= 26) expect(setup.captureCharFrame()).toContain("working");
+      if (width >= 26) expect(setup.captureCharFrame()).toContain("Working");
       setup.renderer.destroy();
     }
   });
@@ -120,13 +121,13 @@ describe("pane title hierarchy polish", () => {
       });
       try {
         const spans = setup.captureSpans().lines[0]!.spans;
-        const receipt = spans.find((span) => span.text.includes("Received"))!;
+        const receipt = spans.find((span) => span.text.includes("Input observed"))!;
         const menu = spans.find((span) => span.text.includes("⋯"))!;
         expect(colorKey(title().bg)).toBe(colorKey(theme.roles.selection.selection));
         expect(colorKey(receipt.bg)).toBe(colorKey(theme.roles.surfaces.panel));
         expect(colorKey(menu.bg)).toBe(colorKey(theme.roles.surfaces.panelRaised));
         expect(colorKey(menu.fg)).toBe(colorKey(theme.roles.text.primary));
-        expect(setup.captureCharFrame()).toContain("Received · tmux");
+        expect(setup.captureCharFrame()).toContain("Input observed");
         await setup.mockMouse.click(78, 0, MouseButtons.LEFT);
         expect(opened).toBe(1);
       } finally {
@@ -263,7 +264,7 @@ describe("pane title hierarchy polish", () => {
           selected,
         });
         const spans = setup.captureSpans().lines[0]!.spans;
-        const badge = spans.find((span) => span.text.includes("block"))!;
+        const badge = spans.find((span) => span.text.includes("Needs input"))!;
         const palette = componentPalette(theme, { status: "blocked", attention: true });
         expect(badge).toBeDefined();
         expect(colorKey(badge.bg)).toBe(colorKey(palette.background));
@@ -309,7 +310,8 @@ describe("persistent native zoom state", () => {
     const { setup } = await header("dark", { zoomed: true, onRestoreIntent: () => restores++ });
     try {
       const line = stableFrame(setup.captureCharFrame()).split("\n")[0]!;
-      expect(line).toContain("Zoomed · Restore");
+      expect(line).toContain("Expanded");
+      expect(line).toContain("Restore");
       await setup.mockMouse.click(line.indexOf("Restore"), 0, MouseButtons.LEFT);
       expect(restores).toBe(1);
     } finally {
@@ -319,7 +321,7 @@ describe("persistent native zoom state", () => {
   it("keeps a compact zoom indication at narrow widths", async () => {
     const { setup } = await header("dark", { zoomed: true, width: 12 });
     try {
-      expect(stableFrame(setup.captureCharFrame()).split("\n")[0]).toContain(" Z");
+      expect(stableFrame(setup.captureCharFrame()).split("\n")[0]).toContain(" Re");
     } finally {
       setup.renderer.destroy();
     }
@@ -425,16 +427,18 @@ describe("pane activity labels", () => {
     );
     try {
       await setup.renderOnce();
-      expect(setup.captureCharFrame()).toContain("Read");
-      const badge = setup.renderer.root.findDescendantById("ui-badge:Read · tmux");
+      expect(setup.captureCharFrame()).toContain("Pane read");
+      const badge = setup.renderer.root.findDescendantById("ui-badge:Pane read · reader unknown");
       expect(badge).toBeDefined();
       setInteraction({ ...interaction()!, sequence: 2, operationId: "next-read" });
       await setup.renderOnce();
-      expect(setup.renderer.root.findDescendantById("ui-badge:Read · tmux")).toBe(badge);
+      expect(setup.renderer.root.findDescendantById("ui-badge:Pane read · reader unknown")).toBe(
+        badge,
+      );
       setInteraction({ ...interaction()!, operationKind: "workspace.pane.send", sequence: 3 });
       await setup.renderOnce();
-      expect(setup.captureCharFrame()).toContain("Received · tmux");
-      expect(setup.captureCharFrame()).not.toContain("Read");
+      expect(setup.captureCharFrame()).toContain("Input observed");
+      expect(setup.captureCharFrame()).not.toContain("Pane read");
       setInteraction({ ...interaction()!, phase: "accepted", sequence: 4 });
       await setup.renderOnce();
       expect(() =>
@@ -444,7 +448,7 @@ describe("pane activity labels", () => {
         }),
       ).not.toThrow();
       await setup.renderOnce();
-      expect(setup.captureCharFrame()).not.toContain("Read");
+      expect(setup.captureCharFrame()).not.toContain("Pane read");
       expect(setup.captureCharFrame()).toContain("Shell");
     } finally {
       setup.renderer.destroy();
@@ -486,9 +490,9 @@ describe("pane activity labels", () => {
     );
     await setup.renderOnce();
     const rows = setup.captureCharFrame().split("\n");
-    expect(rows[0]).toContain("Received · tmux");
-    expect(rows[0]).toContain("failed");
-    expect(rows[0]).toContain("Zoomed");
+    expect(rows[0]).toContain("Input observed");
+    expect(rows[0]).toContain("Failed");
+    expect(rows[0]).toContain("Expanded");
     expect(rows[1]!.trim()).toBe("");
     setup.renderer.destroy();
   });
@@ -515,9 +519,109 @@ describe("pane activity labels", () => {
       );
       await setup.renderOnce();
       const rows = setup.captureCharFrame().split("\n");
-      if (width === 40) expect(rows[0]).toContain("disconnected");
+      if (width === 40) expect(rows[0]).toContain("Unknown");
       expect(rows[1]!.trim()).toBe("");
       setup.renderer.destroy();
+    }
+  });
+});
+
+describe("shared status presentation", () => {
+  for (const mode of ["dark", "light"] as const) {
+    it(`${mode}: uses the same attention label in pane chrome and Home/sidebar rows`, async () => {
+      const theme = createSemanticThemeSnapshot({ mode });
+      const setup = await renderForTest(
+        () => (
+          <box width={80} height={4}>
+            <PaneTitleBar
+              theme={theme}
+              paneId="pane.status"
+              title="Claude"
+              width={80}
+              selected={false}
+              terminalFocused={false}
+              keyboardFocused={false}
+              activity="running"
+              attention
+              menuAnchor={{ x: 79, y: 0 }}
+              onSelectIntent={() => {}}
+              onMenuIntent={() => {}}
+            />
+            <box position="absolute" top={2}>
+              <AgentRow
+                theme={theme}
+                id="agent.status"
+                name="Claude"
+                context="Local · main"
+                activity="running"
+                attention
+                width={36}
+                onOpen={() => {}}
+              />
+            </box>
+          </box>
+        ),
+        { width: 80, height: 4 },
+      );
+      await setup.renderOnce();
+      const rows = setup.captureCharFrame().split("\n");
+      expect(rows[0]).toContain("Needs input");
+      expect(rows[2]).toContain("Needs input");
+      expect(rows[3]).toContain("Local · main");
+      expect(setup.captureCharFrame()).not.toContain("Working");
+    });
+    it(`${mode}: returns from scrollback once without selecting the pane or restoring zoom`, async () => {
+      let back = 0,
+        selected = 0,
+        restored = 0;
+      const { setup } = await header(mode, {
+        width: 80,
+        scrollback: true,
+        zoomed: true,
+        activity: "running",
+        onBackToLiveIntent: () => back++,
+        onRestoreIntent: () => restored++,
+        onSelectIntent: () => selected++,
+      });
+      const line = setup.captureCharFrame().split("\n")[0]!;
+      expect(line).toContain("Scrollback");
+      expect(line).toContain("Back to live");
+      expect(line).not.toContain("Working");
+      await setup.mockMouse.click(line.indexOf("Back to live"), 0, MouseButtons.LEFT);
+      expect([back, selected, restored]).toEqual([1, 0, 0]);
+    });
+  }
+  it("replaces stale working status through reconnect and read-only transitions", async () => {
+    const [connection, setConnection] = createSignal("live");
+    const setup = await renderForTest(
+      () => (
+        <PaneTitleBar
+          theme={createSemanticThemeSnapshot({ mode: "dark" })}
+          paneId="pane.status"
+          title="Claude"
+          width={80}
+          selected={false}
+          terminalFocused={false}
+          keyboardFocused={false}
+          activity="running"
+          connectionStatus={connection()}
+          menuAnchor={{ x: 79, y: 0 }}
+          onSelectIntent={() => {}}
+          onMenuIntent={() => {}}
+        />
+      ),
+      { width: 80, height: 1 },
+    );
+    for (const [state, label] of [
+      ["live", "Working"],
+      ["rebinding", "Reconnecting…"],
+      ["read-only", "Read-only"],
+      ["live", "Working"],
+    ]) {
+      setConnection(state!);
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).toContain(label!);
+      if (state !== "live") expect(setup.captureCharFrame()).not.toContain("Working");
     }
   });
 });

@@ -372,7 +372,7 @@ it("retains agents across machine selection and routes identical pane IDs only t
   setOffline(true);
   await setup.renderOnce();
   expect(setup.captureCharFrame()).toContain("server agent");
-  expect(setup.captureCharFrame()).toContain("unavailable");
+  expect(setup.captureCharFrame()).toContain("Unavailable");
   await setup.mockMouse.click(5, findAgent(), MouseButtons.LEFT);
   expect(calls).toHaveLength(2);
   setup.renderer.destroy();
@@ -570,7 +570,7 @@ it("keeps collapsed activity visible, handles vim/page navigation and scopes hel
   expect(setup.captureCharFrame()).toContain("Mini · work-0");
   setOffline(true);
   await setup.renderOnce();
-  expect(setup.captureCharFrame()).toContain("unavailable");
+  expect(setup.captureCharFrame()).toContain("Unavailable");
   setOffline(false);
   key("l");
   key("j");

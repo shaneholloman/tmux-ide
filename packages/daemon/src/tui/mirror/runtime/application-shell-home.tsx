@@ -1,15 +1,19 @@
 import type { InteractionReceipt } from "@tmux-ide/contracts";
-import { interactionReceiptTargetLabel } from "@tmux-ide/core";
+
 /* @jsxImportSource @opentui/solid */
 import type { JSX } from "solid-js";
-import { For, Show, createSignal } from "solid-js";
+import { For, Show, createEffect, createSignal } from "solid-js";
 
 import type { SemanticThemeSnapshot } from "../theme.ts";
 import { clipTerminal, terminalDisplayWidth } from "../terminal-text.ts";
 import { SectionHeading } from "../ui/section-heading.tsx";
 import { KeyHint } from "../ui/key-hint.tsx";
 import { CHROME_ACTIONS, HOME_ACTIONS } from "../workspace/application-action-descriptions.ts";
-import { DetailRow } from "../ui/detail-row.tsx";
+import { PaneInteraction, PaneInteractionDetails } from "../ui/pane-interaction.tsx";
+import {
+  receiptPaneInteraction,
+  type PaneInteractionEvent,
+} from "../ui/pane-interaction-presentation.ts";
 import { TuiButton } from "../ui/button.tsx";
 import type { ApplicationTerminalAgentIndicator } from "./application-terminal-workspace-policy.ts";
 import { HomeAgentRoster } from "./application-home-agent-roster.tsx";
@@ -55,6 +59,7 @@ export interface ApplicationHomeSurfaceProps {
   readonly onToggleAgentAttention?: () => void;
   readonly agentRoster?: HomeAgentSnapshot;
   readonly activityDaemonId?: string | null;
+  readonly paneInteractions?: ReadonlyMap<string, PaneInteractionEvent>;
   readonly recentPaneActivity?: readonly InteractionReceipt[];
   readonly agentSelection?: HomeAgentSelectionSnapshot;
   readonly agentInputActive?: boolean;
@@ -68,6 +73,11 @@ export interface ApplicationHomeSurfaceProps {
 
 /** Presentation only: session data, commands, and keyboard admission stay with the shell. */
 export function ApplicationHomeSurface(props: ApplicationHomeSurfaceProps): JSX.Element {
+  const [inspection, setInspection] = createSignal<{
+    event: PaneInteractionEvent;
+    names: ReadonlyMap<string, string>;
+    key: string;
+  } | null>(null);
   const [tipHidden, setTipHidden] = createSignal(false);
   const width = () => Math.max(0, Math.floor(props.width));
   const height = () => Math.max(0, Math.floor(props.height));
@@ -145,7 +155,8 @@ export function ApplicationHomeSurface(props: ApplicationHomeSurfaceProps): JSX.
       (receipt) =>
         receipt.workspaceName === selected.sessionName &&
         receipt.target.kind === "pane" &&
-        receipt.target.semanticPaneId === selected.paneId,
+        (receipt.target.semanticPaneId === selected.paneId ||
+          (receipt.phase === "observed" && receipt.sourceSemanticPaneId === selected.paneId)),
     );
   };
   const recentActivity = () =>
@@ -165,8 +176,19 @@ export function ApplicationHomeSurface(props: ApplicationHomeSurfaceProps): JSX.
     );
   const activityHeight = () =>
     recentActivity().length > 0 ? recentActivity().length * activityRows() + 2 : 0;
+  createEffect(() => {
+    const value = inspection();
+    if (value && value.key !== `${props.activityDaemonId}:${selectedAgent()?.key}`)
+      setInspection(null);
+  });
   const paneLabel = (paneId: string) => {
-    const matches = props.agentRoster?.rows.filter((row) => row.paneId === paneId) ?? [];
+    const matches =
+      props.agentRoster?.rows.filter(
+        (row) =>
+          row.paneId === paneId &&
+          row.daemonInstanceId === props.activityDaemonId &&
+          row.sessionName === selectedAgent()?.sessionName,
+      ) ?? [];
     return matches.length === 1 ? matches[0]!.name : paneId;
   };
   const activityTime = (receipt: InteractionReceipt) => {
@@ -175,18 +197,16 @@ export function ApplicationHomeSurface(props: ApplicationHomeSurfaceProps): JSX.
       ? `${new Date(at).toISOString().slice(5, 16).replace("T", " ")}Z`
       : "Time unknown";
   };
-  const activityPhase = (receipt: InteractionReceipt) =>
-    receipt.phase === "accepted"
-      ? receipt.operationKind === "workspace.pane.read"
-        ? "reading"
-        : "sending"
-      : receipt.phase === "observed"
-        ? receipt.operationKind === "workspace.pane.read"
-          ? "read"
-          : "sent"
-        : receipt.phase === "rejected"
-          ? "failed"
-          : "timed out";
+  const inspect = (event: PaneInteractionEvent) => {
+    const names = new Map<string, string>();
+    for (const id of [event.sourcePaneId, event.destinationPaneId])
+      if (id) names.set(id, paneLabel(id));
+    setInspection({
+      event: { ...event },
+      names,
+      key: `${props.activityDaemonId}:${selectedAgent()?.key}`,
+    });
+  };
   const rosterHeight = () => Math.max(0, height() - reservedRows() - activityHeight());
 
   return (
@@ -275,9 +295,27 @@ export function ApplicationHomeSurface(props: ApplicationHomeSurfaceProps): JSX.
               theme={props.theme}
               width={bodyWidth()}
               height={rosterHeight()}
+              paneName={paneLabel}
+              interactionForAgent={(row) => {
+                if (!row.paneId || row.daemonInstanceId !== props.activityDaemonId)
+                  return undefined;
+                const matches = props.agentRoster?.rows.filter(
+                  (other) => other.paneId === row.paneId && other.sessionName === row.sessionName,
+                );
+                if (matches?.length !== 1) return undefined;
+                const event = props.paneInteractions?.get(row.paneId);
+                return event &&
+                  props.recentPaneActivity?.some(
+                    (receipt) =>
+                      receipt.operationId === event.operationId &&
+                      receipt.workspaceName === row.sessionName,
+                  )
+                  ? event
+                  : undefined;
+              }}
               snapshot={snapshot()}
               selection={props.agentSelection ?? { selectedKey: null, scrollOffset: 0 }}
-              inputActive={props.agentInputActive ?? false}
+              inputActive={(props.agentInputActive ?? false) && !inspection()}
               onSelect={(key) => props.onSelectAgent?.(key)}
               onMove={(delta) => props.onMoveAgent?.(delta)}
               onViewport={(rows) => props.onAgentViewport?.(rows)}
@@ -300,14 +338,24 @@ export function ApplicationHomeSurface(props: ApplicationHomeSurfaceProps): JSX.
             </text>
             <For each={recentActivity()}>
               {(receipt) => (
-                <DetailRow
-                  theme={props.theme}
-                  width={bodyWidth()}
-                  label={interactionReceiptTargetLabel(receipt, paneLabel)}
-                  detail={activityPhase(receipt)}
-                  description={activityRows() === 2 ? activityTime(receipt) : undefined}
-                  attention={receipt.phase === "rejected" || receipt.phase === "timed-out"}
-                />
+                <box height={activityRows()} width={bodyWidth()} flexDirection="column">
+                  <Show when={receiptPaneInteraction(receipt, selectedAgent()?.paneId)} keyed>
+                    {(event) => (
+                      <PaneInteraction
+                        theme={props.theme}
+                        event={event}
+                        paneName={paneLabel}
+                        width={bodyWidth()}
+                        onDetails={() => inspect(event)}
+                      />
+                    )}
+                  </Show>
+                  <Show when={activityRows() === 2}>
+                    <text height={1} fg={props.theme.roles.text.muted}>
+                      {activityTime(receipt)}
+                    </text>
+                  </Show>
+                </box>
               )}
             </For>
             <text height={1} width={bodyWidth()} fg={props.theme.roles.text.muted}>
@@ -408,6 +456,21 @@ export function ApplicationHomeSurface(props: ApplicationHomeSurfaceProps): JSX.
           >
             {clipTerminal(note(), bodyWidth())}
           </text>
+        )}
+      </Show>
+      <Show when={inspection()} keyed>
+        {(value) => (
+          <Show when={value.key === `${props.activityDaemonId}:${selectedAgent()?.key}`}>
+            <PaneInteractionDetails
+              theme={props.theme}
+              event={value.event}
+              paneName={(id) => value.names.get(id)}
+              width={bodyWidth()}
+              viewportWidth={props.width}
+              viewportHeight={props.height}
+              onDismiss={() => setInspection(null)}
+            />
+          </Show>
         )}
       </Show>
     </box>

@@ -213,6 +213,10 @@ const checks = [
       "src/lib/__tests__/tui-binary.test.ts",
       "src/tui/mirror/runtime/application-performance-log.test.ts",
       "src/tui/mirror/runtime/bounded-performance-record-writer.test.ts",
+      "src/tui/mirror/ui/status-presentation.test.ts",
+      "src/tui/mirror/ui/pane-interaction-presentation.test.ts",
+      "src/tui/mirror/ui/component-chrome-contract.test.ts",
+      "src/tui/mirror/runtime/production-design-system-contract.test.ts",
     ],
   },
   {
@@ -363,6 +367,7 @@ const checks = [
       "./packages/daemon/src/tui/mirror/runtime/guided-tour-renderer.test.tsx",
       "./packages/daemon/src/tui/mirror/runtime/application-shell-sidebar-catalog-renderer.test.tsx",
       "./packages/daemon/src/tui/mirror/workspace/terminal-pane-header-polish-renderer.test.tsx",
+      "./packages/daemon/src/tui/mirror/ui/pane-interaction-renderer.test.tsx",
     ],
   },
   {

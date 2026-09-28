@@ -329,7 +329,7 @@ describe("Home observed pane activity", () => {
       const frame = setup.captureCharFrame();
       expect(frame).toContain("Tests · latest activity");
       expect(frame).toContain("09-08 10:00Z");
-      expect(frame).toContain("External reader reads Tests");
+      expect(frame).toContain("Pane read · reader unknown");
       expect(frame).toContain("Activity reported through tmux-ide");
       expect(frame).not.toContain("SECRET_PANE_CONTENT");
       expect(frame).toContain("Open terminals");
@@ -339,10 +339,10 @@ describe("Home observed pane activity", () => {
     }
   });
   it.each([
-    ["accepted", "reading"],
-    ["observed", "read"],
-    ["rejected", "failed"],
-    ["timed-out", "timed out"],
+    ["accepted", "Read requested"],
+    ["observed", "Pane read · reader unknown"],
+    ["rejected", "Read failed"],
+    ["timed-out", "Read timed out"],
   ] as const)("keeps %s activity explicit with secondary timestamps", async (phase, label) => {
     const setup = await renderForTest(
       () => (
@@ -358,14 +358,41 @@ describe("Home observed pane activity", () => {
     try {
       await setup.renderOnce();
       const lines = setup.captureCharFrame().split("\n");
-      const row = lines.findIndex((line) => line.includes("External reader reads Tests"));
+      const row = lines.findIndex((line) => line.includes(label));
       expect(row).toBeGreaterThan(-1);
-      expect(lines[row]!.trimEnd().endsWith(label)).toBe(true);
+      expect(lines[row]).toContain(label);
       expect(lines[row + 1]).toContain("09-08 10:00Z");
       expect(lines[row]).not.toContain("09-08");
     } finally {
       setup.renderer.destroy();
     }
+  });
+  it("keeps inspected receipt stable through feed expiry and closes it on daemon change", async () => {
+    const props = activityProps();
+    const [receipts, setReceipts] = createSignal<readonly InteractionReceipt[]>([receipt]);
+    const [daemon, setDaemon] = createSignal(props.activityDaemonId);
+    const setup = await renderForTest(
+      () => (
+        <ApplicationHomeSurface
+          {...props}
+          activityDaemonId={daemon()}
+          recentPaneActivity={receipts()}
+        />
+      ),
+      { width: 80, height: 24 },
+    );
+    await setup.renderOnce();
+    const rows = setup.captureCharFrame().split("\n");
+    const y = rows.findIndex((line) => line.includes("Details"));
+    await setup.mockMouse.click(rows[y]!.indexOf("Details"), y, MouseButtons.LEFT);
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).toContain("Read completed");
+    setReceipts([]);
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).toContain("Read completed");
+    setDaemon("different-daemon");
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).not.toContain("Read completed");
   });
   it("only reveals activity for the selected agent on its originating daemon", async () => {
     const base = activityProps({ height: 32 });

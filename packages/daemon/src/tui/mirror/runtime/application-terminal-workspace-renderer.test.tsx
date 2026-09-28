@@ -2222,3 +2222,65 @@ it.each([12, 30])(
     }
   },
 );
+
+it("interaction details own terminal keys and retire with the renderer generation", async () => {
+  registerPaneSurface();
+  const theme = createSemanticThemeSnapshot({ mode: "dark" });
+  const [epoch, setEpoch] = createSignal(1);
+  let keyOwner: PaneMenuKeyHandler | null = null;
+  let owns: (() => boolean) | undefined;
+  const liveAdapter = adapter({ "pane.a": "A" }, []);
+  const current = {
+    ...layout().current!,
+    cols: 80,
+    rows: 20,
+    panes: [{ pane: "pane.a", left: 0, top: 0, width: 80, height: 20, active: true }],
+  };
+  const event: PaneInteractionProjection = {
+    paneId: "pane.a",
+    operationId: "input",
+    operationKind: "workspace.pane.send",
+    phase: "observed",
+    origin: "external",
+    direction: "incoming",
+    sourcePaneId: null,
+    destinationPaneId: "pane.a",
+    at: new Date().toISOString(),
+    sequence: 1,
+    label: "input observed",
+  };
+  const setup = await renderForTest(
+    () => (
+      <ApplicationTerminalWorkspace
+        layout={() => ({ current, windows: [current] })}
+        adapter={liveAdapter}
+        rendererEpoch={epoch()}
+        width={80}
+        height={22}
+        focusedPane="pane.a"
+        theme={theme}
+        palette={createTerminalPaletteProjection(theme)}
+        paneInteractions={() => new Map([["pane.a", event]])}
+        onSelectPane={() => {}}
+        onSelectionKeyOwner={(handler, owner) => {
+          keyOwner = handler;
+          owns = owner;
+        }}
+      />
+    ),
+    { width: 80, height: 24 },
+  );
+  await setup.renderOnce();
+  const rows = setup.captureCharFrame().split("\n");
+  const y = rows.findIndex((line) => line.includes("Details"));
+  expect(y).toBeGreaterThanOrEqual(0);
+  await setup.mockMouse.click(rows[y]!.indexOf("Details"), y, MouseButtons.LEFT);
+  await setup.renderOnce();
+  expect(setup.captureCharFrame()).toContain("Input delivered");
+  expect(owns?.()).toBe(true);
+  expect((keyOwner as PaneMenuKeyHandler | null)?.("x")).toBe(true);
+  setEpoch(2);
+  await setup.renderOnce();
+  expect(setup.captureCharFrame()).not.toContain("Input delivered");
+  expect(owns?.()).toBe(false);
+});

@@ -1,3 +1,4 @@
+import type { PaneInteractionEvent } from "../ui/pane-interaction-presentation.ts";
 import { CHROME_ACTIONS, SIDEBAR_ACTIONS } from "../workspace/application-action-descriptions.ts";
 import { AgentRow } from "../ui/agent-row.tsx";
 import type { TmuxServerDescriptor, TmuxServerScope } from "@tmux-ide/contracts";
@@ -27,6 +28,7 @@ import { Surface } from "../ui/surface.tsx";
 import { useKeyboardRoute } from "../ui/keyboard-router.tsx";
 
 export interface ApplicationMachineAgent {
+  readonly daemonInstanceId?: string;
   readonly server?: TmuxServerScope;
   readonly id: string;
   readonly name: string;
@@ -102,6 +104,10 @@ type Row = {
 };
 /** Pure machine navigation. All connection and session authority stays with the caller. */
 export function ApplicationMachineSidebar(props: {
+  readonly interactionForAgent?: (
+    agent: ApplicationMachineAgent,
+  ) => PaneInteractionEvent | undefined;
+  readonly paneName?: (id: string) => string | undefined;
   readonly model: ApplicationMachineSidebarModel;
   readonly width: number;
   readonly height: number;
@@ -582,6 +588,8 @@ export function ApplicationMachineSidebar(props: {
                         .filter(Boolean)
                         .join(" · ")}
                       width={Math.max(1, props.width - 1)}
+                      interaction={props.interactionForAgent?.(agent())}
+                      paneName={props.paneName}
                       activity={agent().activity}
                       attention={agent().attention}
                       unavailable={

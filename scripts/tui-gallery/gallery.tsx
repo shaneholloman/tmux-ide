@@ -20,6 +20,7 @@ import {
   KeyboardRouteProvider,
 } from "../../packages/daemon/src/tui/mirror/ui/keyboard-router.tsx";
 import { WorkingSessionsStory } from "./working-sessions.tsx";
+import { PaneModesStory } from "./pane-modes-story.tsx";
 import { PaneHeaderStory, FooterStory } from "./chrome-stories.tsx";
 import { GALLERY_STATES, galleryAgents, galleryMachines } from "./fixtures.ts";
 
@@ -67,7 +68,7 @@ export function TuiGallery(props: {
       return;
     }
     if (event.ctrl || event.meta) return;
-    if (["1", "2", "3", "4", "5", "6"].includes(event.name)) {
+    if (["1", "2", "3", "4", "5", "6", "7"].includes(event.name)) {
       setStory(Number(event.name) - 1);
       reset();
     } else if (event.name === "t") setLight((v) => !v);
@@ -97,12 +98,22 @@ export function TuiGallery(props: {
         Production TUI gallery · {interacting() ? "INTERACT" : "CONTROLS"} · F12 toggle
       </text>
       <text fg={theme().colors.mutedForeground}>
-        1 Home 2 Sidebar 3 Help 4 Pane 5 Footer 6 Work
+        1 Home 2 Sidebar 3 Help 4 Pane 5 Footer 6 Work 7 Modes
       </text>
       <text fg={theme().colors.mutedForeground}>t Theme v Size s State r Reset q Quit</text>
       <text fg={theme().colors.foreground}>
-        {["Home", "Sidebar", "Help", "Pane header", "Footer", "Working sessions"][story()]} ·{" "}
-        {GALLERY_STATES[state()]} · {light() ? "light" : "dark"} · {width()}×{height()}
+        {
+          [
+            "Home",
+            "Sidebar",
+            "Help",
+            "Pane header",
+            "Footer",
+            "Working sessions",
+            "Pane modes preview",
+          ][story()]
+        }{" "}
+        · {GALLERY_STATES[state()]} · {light() ? "light" : "dark"} · {width()}×{height()}
       </text>
       <KeyboardRouteProvider owner={owner}>
         <For each={[revision()]}>
@@ -160,6 +171,9 @@ function GalleryStory(props: {
   return (
     <box width={props.width} height={props.height} flexShrink={0} overflow="hidden">
       <Switch>
+        <Match when={props.story === 6}>
+          <PaneModesStory {...props} />
+        </Match>
         <Match when={props.story === 0}>
           <ApplicationHomeSurface
             project="tmux-ide"
@@ -176,6 +190,32 @@ function GalleryStory(props: {
             theme={props.theme}
             width={props.width}
             height={props.height}
+            activityDaemonId="fixture-daemon"
+            recentPaneActivity={
+              GALLERY_STATES[props.state] === "offline"
+                ? []
+                : [
+                    {
+                      type: "interaction.receipt",
+                      sequence: 1,
+                      operationId: "10000000-0000-4000-8000-000000000001",
+                      origin: "tui",
+                      workspaceName: "tmux-ide",
+                      sourceSemanticPaneId: "pane.2",
+                      target: { kind: "pane", semanticPaneId: "pane.0" },
+                      operationKind: "workspace.pane.read",
+                      summary: { operationKind: "workspace.pane.read", observedOnly: true },
+                      phase: "observed",
+                      proof: {
+                        operationKind: "workspace.pane.read",
+                        observed: true,
+                        semanticPaneId: "pane.0",
+                      },
+                      at: "2026-09-28T09:00:00.000Z",
+                      resourceRevision: null,
+                    },
+                  ]
+            }
             agentRoster={snapshot()}
             agentSelection={selection()}
             agentInputActive={props.interacting}

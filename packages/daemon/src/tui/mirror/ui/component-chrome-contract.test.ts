@@ -16,6 +16,11 @@ const PRESENTATION_SOURCES = [
   "runtime/application-shell-sidebar.tsx",
   "runtime/application-terminal-workspace-policy.ts",
   "ui/agent-badge.tsx",
+  "ui/agent-row.tsx",
+  "ui/status-presentation.ts",
+  "ui/pane-interaction.tsx",
+  "ui/pane-interaction-presentation.ts",
+  "ui/pane-mode-control.tsx",
   "ui/badge.tsx",
   "ui/button.tsx",
   "ui/dialog.tsx",
@@ -49,16 +54,12 @@ function runtimeImports(source: string): string[] {
 }
 
 describe("OpenTUI component and chrome contract", () => {
-  it("shares working-session presentation with the production sidebar and gallery", () => {
-    expect(
-      readFileSync(join(mirrorRoot, "runtime/application-machine-sidebar.tsx"), "utf8"),
-    ).toContain("<WorkingSessions");
-    expect(
-      readFileSync(
-        join(mirrorRoot, "../../../../../scripts/tui-gallery/working-sessions.tsx"),
-        "utf8",
-      ),
-    ).toContain("<WorkingSessions");
+  it("shares agent presentation between Home and the production sidebar", () => {
+    for (const path of [
+      "runtime/application-machine-sidebar.tsx",
+      "runtime/application-home-agent-roster.tsx",
+    ])
+      expect(readFileSync(join(mirrorRoot, path), "utf8")).toContain("<AgentRow");
   });
 
   it.each([

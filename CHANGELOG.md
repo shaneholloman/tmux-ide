@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2.9.0-beta.45
+
+- Unify agent and interaction status presentation across pane headers, Home and the sidebar, with explicit unknown and unavailable states.
+- Show pending reads and input separately from observed interactions; name verified actors and keep receipt details available without implying message comprehension.
+- Share delayed, reduced-motion-aware interaction animation and preserve urgent agent states in compact rows.
+- Add explicit Back to live and Restore controls for scrollback and expanded panes while preserving terminal geometry.
+- Scope interaction feedback to its daemon and session, and isolate Details dialogs from terminal input.
+
 ## 2.9.0-beta.44
 
 - Group agents across machines in one sidebar section, with shared rows and quiet machine/session context. Keep separate destinations for agents in the same session.

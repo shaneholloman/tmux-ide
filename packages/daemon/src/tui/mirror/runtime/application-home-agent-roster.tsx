@@ -1,3 +1,4 @@
+import type { PaneInteractionEvent } from "../ui/pane-interaction-presentation.ts";
 /* @jsxImportSource @opentui/solid */
 import {
   HOME_ACTIONS,
@@ -20,6 +21,8 @@ import { type HomeAgentRow, type HomeAgentSnapshot } from "./application-home-ag
 import type { HomeAgentSelectionSnapshot } from "./application-home-agent-selection.ts";
 
 export interface HomeAgentRosterProps {
+  readonly interactionForAgent?: (row: HomeAgentRow) => PaneInteractionEvent | undefined;
+  readonly paneName?: (id: string) => string | undefined;
   readonly query?: string;
   readonly onQueryChange?: (query: string) => void;
   readonly filterLabel?: string;
@@ -337,6 +340,8 @@ export function HomeAgentRoster(props: HomeAgentRosterProps) {
                       .join(" · ")}
                     width={width()}
                     compact={rowHeight() === 1}
+                    interaction={props.interactionForAgent?.(row())}
+                    paneName={props.paneName}
                     activity={row().activity}
                     attention={row().attention}
                     unavailable={row().paneId === null || stale(row())}
