@@ -1,7 +1,6 @@
 import {
   NativeJournalCapabilitySchemaZ,
   NativeJournalCursorSchemaZ,
-  NativeJournalReadSchemaZ,
   type NativeJournalCapability,
   type NativeJournalBatch,
   type NativeJournalCursor,
@@ -12,6 +11,8 @@ import {
 } from "./tmux-server-generation-runner.ts";
 import type { WorkspacePaneTmuxAuthority } from "./workspace-pane-creation.ts";
 import { NativeJournalControlConnection } from "./native-journal-control-connection.ts";
+
+import { parseNativeJournalResponse } from "./native-journal-validation.ts";
 
 class NativeJournalLeaseExpired extends Error {}
 class NativeJournalCleanupFailed extends Error {}
@@ -356,7 +357,7 @@ export class NativeTmuxInteractionObserver {
           ],
           this.#waitMs,
         );
-        const response = NativeJournalReadSchemaZ.parse(JSON.parse(raw));
+        const response = parseNativeJournalResponse(raw);
         if (response.serverEpoch !== cursor.serverEpoch) {
           this.#state("retired");
           return;

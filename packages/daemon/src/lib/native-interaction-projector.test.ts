@@ -1,3 +1,7 @@
+import {
+  parseNativeJournalResponse,
+  parseNativeJournalBatch,
+} from "./native-journal-validation.ts";
 import { describe, expect, it } from "vitest";
 import {
   NativeInteractionProjector,
@@ -249,5 +253,71 @@ describe("bounded native evidence projection", () => {
       cursor: { sequence: "18446744073709551613" },
     });
     expect(p.consume(input)).toEqual([]);
+  });
+});
+
+describe("immutable native batch structural proof", () => {
+  const parsed = (value: NativeJournalBatch) => {
+    const result = parseNativeJournalResponse(JSON.stringify(value));
+    if (result.type !== "batch") throw new Error("Expected batch");
+    return result;
+  };
+  it("reuses only the exact parsed immutable object, not clones or caller freezes", () => {
+    const input = parsed(batch([record("1")]));
+    expect(parseNativeJournalBatch(input)).toBe(input);
+    expect(Object.isFrozen(input)).toBe(true);
+    expect(Object.isFrozen(input.records)).toBe(true);
+    expect(Object.isFrozen(input.records[0])).toBe(true);
+    expect(() => {
+      input.records[0]!.issuerId = "999";
+    }).toThrow();
+    expect(() => {
+      input.records.push(record("2"));
+    }).toThrow();
+    expect(() => {
+      input.serverEpoch = otherEpoch;
+    }).toThrow();
+    const copy = structuredClone(input);
+    expect(parseNativeJournalBatch(copy)).not.toBe(copy);
+    const fake = Object.freeze({ ...copy, unexpected: true });
+    expect(() => parseNativeJournalBatch(fake)).toThrow();
+    const badRecord = Object.freeze({
+      ...copy,
+      records: [Object.freeze({ ...record("1"), issuerId: "18446744073709551616" })],
+    });
+    expect(() => parseNativeJournalBatch(badRecord)).toThrow();
+    expect(() => parseNativeJournalResponse(JSON.stringify(fake))).toThrow();
+  });
+  it("preserves consumer server, range, order, reset and replay checks for proven shapes", () => {
+    expect(() =>
+      projector().consume(parsed(batch([record("1")], { serverEpoch: otherEpoch }))),
+    ).toThrow("Foreign");
+    expect(() => projector().consume(parsed(batch([record("2"), record("1")])))).toThrow(
+      "ordering",
+    );
+    expect(() => projector().consume(parsed(batch([record("1")], { next: "2" })))).toThrow();
+    const p = projector();
+    const input = parsed(batch([record("1")]));
+    expect(p.consume(input)).toHaveLength(1);
+    expect(p.consume(input)).toEqual([]);
+    expect(() => p.consume(parsed(batch([record("2")], { journalEpoch: otherEpoch })))).toThrow(
+      "reset",
+    );
+    p.dispose();
+    expect(() => p.consume(input)).toThrow("disposed");
+  });
+  it("freezes gap metadata before sharing it and preserves ordinary input isolation", () => {
+    const input = parsed(batch([record("3")], { oldest: "3", gap: { from: "1", through: "2" } }));
+    expect(Object.isFrozen(input.gap)).toBe(true);
+    expect(() => {
+      input.gap!.from = "0";
+    }).toThrow();
+    const untrusted = batch([record("1", 5)], { newest: "2" });
+    const p = projector();
+    p.consume(untrusted);
+    untrusted.records[0]!.issuerId = "999";
+    const result = p.consume(batch([record("2")]));
+    expect(result[0]!.native.uncertainty).toBeNull();
+    expect(result[0]!.native.record.issuerId).toBe("7");
   });
 });

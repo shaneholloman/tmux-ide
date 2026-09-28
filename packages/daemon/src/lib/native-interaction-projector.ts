@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import {
   EnvironmentIdSchema,
   InteractionEvidenceSchemaZ,
-  NativeJournalBatchSchemaZ,
   NativeJournalCursorSchemaZ,
   TmuxServerScopeSchemaZ,
   type InteractionEvidence,
@@ -12,6 +11,8 @@ import {
   type NativeJournalRecord,
   type TmuxServerScope,
 } from "@tmux-ide/contracts";
+
+import { parseNativeJournalBatch } from "./native-journal-validation.ts";
 
 export type NativeProjectionUncertainty =
   | "zero-command-id"
@@ -218,7 +219,7 @@ export class NativeInteractionProjector {
   }
   consume(input: NativeJournalBatch): NativeInteractionProjection[] {
     if (this.#disposed) throw new Error("Native projector disposed");
-    const batch = NativeJournalBatchSchemaZ.parse(input);
+    const batch = parseNativeJournalBatch(input);
     const oldest = BigInt(batch.oldest),
       newest = BigInt(batch.newest);
     if (
