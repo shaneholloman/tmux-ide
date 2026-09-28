@@ -3,6 +3,7 @@ import {
   TerminalAttachmentSemanticPaneIdSchemaZ,
   SessionRuntimeSemanticIntentSchemaZ,
   type SessionRuntimeControllerLease,
+  type WorkspaceMultiplexerMutationResult,
   type SessionRuntimeActivityKind,
   type SessionRuntimeAuthorityKind,
   type SessionRuntimeAuthorityLease,
@@ -358,7 +359,14 @@ export class SessionRuntimeTransportBinding {
       );
       this.#intentHandles.set(scopeKey, handle);
     }
-    return this.#binder.registry.submitAuthenticatedIntent(handle, operationId, intent);
+    // Existing viewer transport protocol acknowledges reads without returning contents.
+    // Private snapshots are available only through the dedicated automation boundary.
+    return this.#binder.registry
+      .submitAuthenticatedIntent(handle, operationId, intent)
+      .then((result): WorkspaceMultiplexerMutationResult | void => {
+        if (!result || result.verb === "workspace.pane.read") return;
+        return result;
+      });
   }
 
   sendInput(

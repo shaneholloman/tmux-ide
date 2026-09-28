@@ -139,7 +139,8 @@ export function createSessionRuntimeMultiplexerBackend(
             request.intent as SessionRuntimeSemanticIntent,
           ),
         );
-        if (!result) throw new Error("Session mutation completed without a mutation result");
+        if (!result || result.verb === "workspace.pane.read")
+          throw new Error("Session mutation completed without a mutation result");
         return result;
       }
       const credentialSource = options.resolvePaneSourceCredential?.(
@@ -167,7 +168,8 @@ export function createSessionRuntimeMultiplexerBackend(
             },
           ),
         );
-        if (!result) throw new Error("Session mutation completed without a mutation result");
+        if (!result || result.verb === "workspace.pane.read")
+          throw new Error("Session mutation completed without a mutation result");
         return result;
       }
       if (!ownerAuthorized) {
@@ -197,7 +199,8 @@ export function createSessionRuntimeMultiplexerBackend(
             request.intent as SessionRuntimeSemanticIntent,
           ),
         );
-        if (!result) throw new Error("Session mutation completed without a mutation result");
+        if (!result || result.verb === "workspace.pane.read")
+          throw new Error("Session mutation completed without a mutation result");
         return result;
       } finally {
         await releaseOwner(session, owner);
