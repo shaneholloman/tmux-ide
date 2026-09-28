@@ -172,6 +172,26 @@ it("drops late batches after removal and never subscribes to legacy client opera
   f.dispose();
 });
 
+it("fault injection: an old same-owner callback cannot resurrect a replaced SSH source", async () => {
+  const original = source();
+  const f = rig([original]);
+  await Promise.resolve();
+  try {
+    f.calls[0]!.emit([1]);
+    f.setSources([{ ...original, baseUrl: "http://127.0.0.1:43210" }]);
+    await Promise.resolve();
+    expect(f.calls[0]!.close).toHaveBeenCalledOnce();
+    expect(f.activity.activity()).toEqual([]);
+    f.calls[1]!.emit([2]);
+    // Explicit bounded transport fault: deliver a saved callback after its owner was stopped.
+    // This is separate from the real OpenSSH integration case.
+    f.calls[0]!.emit([99]);
+    expect(f.activity.activity().map((entry) => entry.sequence)).toEqual([2]);
+  } finally {
+    f.dispose();
+  }
+});
+
 it("keeps coverage scoped, updates it while idle and clears disconnected ownership", async () => {
   const a = source(),
     b = source(1);
