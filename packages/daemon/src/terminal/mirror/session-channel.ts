@@ -74,6 +74,8 @@ import type {
   AtomicPaneSnapshotFailureReason,
   AtomicPaneSnapshotProgress,
   AtomicPaneSnapshotResult,
+  ControlReply,
+  ControlReplyLimits,
   MirrorChannelHandlers,
   MirrorChannelIo,
   MirrorOutputTiming,
@@ -563,6 +565,45 @@ export class SessionChannel {
     );
   }
 
+  private captureWithViewer(
+    runtime: string,
+    flags: readonly string[],
+    onStockMarker: (marker: string) => void,
+    onReply: (reply: ControlReply) => void,
+    limits?: ControlReplyLimits,
+  ): void {
+    const command = ["capture-pane", "-p", ...flags, "-t", runtime];
+    const birth = this.panesByRuntime.get(runtime)?.descriptor?.nativePaneBirthId;
+    if (
+      birth &&
+      this.opts.ownedViewer?.tryDispatch(
+        this.io,
+        {
+          paneId: runtime,
+          paneBirthId: birth,
+          commands: [command],
+          resultIndex: 0,
+          limits: limits ?? {
+            maxBytes: RECOVERY_CAPTURE_MAX_BYTES,
+            maxLines: RECOVERY_CAPTURE_MAX_LINES,
+          },
+        },
+        onReply,
+      )
+    )
+      return;
+    // Install compatibility metadata only after native dispatch declined without
+    // writing. Publish it to the caller before a synchronous error callback.
+    const marker = registerInternalReadOperation(runtime);
+    onStockMarker(marker);
+    const stock = `set-option -p -t ${runtime} ${INTERNAL_READ_OPERATION_OPTION} ${marker} ; ${command.join(" ")}`;
+    if (limits && this.io.commandListBoundedInline) {
+      this.io.commandListBoundedInline(stock, 2, 1, limits, onReply);
+    } else {
+      this.io.commandListInline(stock, 2, 1, onReply);
+    }
+  }
+
   constructor(opts: SessionChannelOptions) {
     this.opts = opts;
     this.io = opts.createIo({
@@ -579,16 +620,18 @@ export class SessionChannel {
               onReply({ ok: false, lines: [] });
               return;
             }
-            const marker = registerInternalReadOperation(runtime);
-            this.io.commandListBoundedInline!(
-              `set-option -p -t ${runtime} ${INTERNAL_READ_OPERATION_OPTION} ${marker} ; ${command}`,
-              2,
-              1,
-              limits,
+            let marker: string | null = null;
+            this.captureWithViewer(
+              runtime,
+              ["-R", "-S", "-"],
+              (value) => {
+                marker = value;
+              },
               (reply) => {
-                if (!reply.ok) this.retireInternalReadMarker(runtime, marker);
+                if (!reply.ok && marker) this.retireInternalReadMarker(runtime, marker);
                 onReply(reply);
               },
+              limits,
             );
           }
         : undefined,
@@ -1292,11 +1335,11 @@ export class SessionChannel {
     // Keystroke ordering: pending coalesced input leaves before the probes.
     this.input.flush();
     const history = this.opts.historyLines ?? "";
-    const internalReadMarker = registerInternalReadOperation(runtime);
+    let internalReadMarker: string | null = null;
     const retireMarker = (): void => {
       if (markerRetired) return;
       markerRetired = true;
-      this.retireInternalReadMarker(runtime, internalReadMarker);
+      if (internalReadMarker) this.retireInternalReadMarker(runtime, internalReadMarker);
     };
     lease.cancelRecipe = () => {
       if (settled) return;
@@ -1318,10 +1361,12 @@ export class SessionChannel {
     // Keep retired reply slots in the control FIFO; their callbacks become
     // no-ops so late responses cannot publish or consume a newer capture.
     // Both probes ride one write burst; the FIFO reply order is the seam.
-    this.io.commandListInline(
-      `set-option -p -t ${runtime} ${INTERNAL_READ_OPERATION_OPTION} ${internalReadMarker} ; capture-pane -p ${sub.nativeBootstrap ? "-R" : "-e -J"} -S -${history} -t ${runtime}`,
-      2,
-      1,
+    this.captureWithViewer(
+      runtime,
+      [...(sub.nativeBootstrap ? ["-R"] : ["-e", "-J"]), "-S", `-${history}`],
+      (marker) => {
+        internalReadMarker = marker;
+      },
       (reply) => {
         if (settled) return;
         const native =
@@ -1839,7 +1884,7 @@ export class SessionChannel {
     // across both FIFO replies so no subscriber can join half a snapshot.
     this.input.flush();
     const history = this.opts.historyLines ?? "";
-    const internalReadMarker = registerInternalReadOperation(pane.runtimeId);
+    let internalReadMarker: string | null = null;
     const participantsExact = (): boolean => {
       if (
         this.recoveryPane(recovery) !== pane ||
@@ -1858,7 +1903,7 @@ export class SessionChannel {
     const retireMarker = (): void => {
       if (markerRetired) return;
       markerRetired = true;
-      this.retireInternalReadMarker(pane.runtimeId, internalReadMarker);
+      if (internalReadMarker) this.retireInternalReadMarker(pane.runtimeId, internalReadMarker);
     };
     const fail = (): void => {
       if (settled) return;
@@ -1867,10 +1912,12 @@ export class SessionChannel {
       for (const { sub } of participants) sub.feed.abortCurrent();
       done(FAILED_RESEED_RESULT);
     };
-    this.io.commandListInline(
-      `set-option -p -t ${pane.runtimeId} ${INTERNAL_READ_OPERATION_OPTION} ${internalReadMarker} ; capture-pane -p ${nativeCapture ? "-R" : "-e -J"} -S -${history} -t ${pane.runtimeId}`,
-      2,
-      1,
+    this.captureWithViewer(
+      pane.runtimeId,
+      [...(nativeCapture ? ["-R"] : ["-e", "-J"]), "-S", `-${history}`],
+      (marker) => {
+        internalReadMarker = marker;
+      },
       (reply) => {
         if (!reply.ok) {
           if (nativeCapture && nativeBootstrapUnsupported(false, reply.lines, null)) {

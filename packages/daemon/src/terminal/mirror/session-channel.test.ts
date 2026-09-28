@@ -24,6 +24,7 @@ import type { SessionChannelOptions } from "./session-channel.ts";
 import type { MirrorOutputTiming } from "./control-channel.ts";
 import type { AtomicPaneSnapshotCollector } from "./control-channel.ts";
 import {
+  INTERNAL_READ_OPERATION_OPTION,
   consumeInternalReadOperation,
   registerInternalReadOperation,
 } from "../../lib/tmux-interaction-options.ts";
@@ -2955,6 +2956,43 @@ describe("window viewport scope", () => {
 });
 
 describe("input path", () => {
+  it("uses direct viewer captures without stock read markers or metadata-error replay", async () => {
+    const adapter = {
+      bindIo: vi.fn(),
+      dispose: vi.fn(),
+      tryDispatch: vi.fn<NonNullable<SessionChannelOptions["ownedViewer"]>["tryDispatch"]>(
+        (_io, request, reply) => {
+          reply({
+            ok: true,
+            lines: request.commands[0]!.includes("-R")
+              ? ["invalid native backing"]
+              : ["viewer snapshot"],
+          });
+          return true;
+        },
+      ),
+    };
+    const rig = await startedRig({ ownedViewer: adapter, nativeBirth: "11" });
+    const before = rig.sim.written.length;
+    const handle = rig.channel.subscribePane("pane.alpha", () => {});
+    rig.sim.reply(["0 0 100 50"]);
+    expect(adapter.tryDispatch.mock.calls[0]![1].commands).toEqual([
+      ["capture-pane", "-p", "-e", "-J", "-S", "-", "-t", "%1"],
+    ]);
+    await handle.captureNativeBacking();
+    expect(adapter.tryDispatch.mock.calls[1]![1].commands).toEqual([
+      ["capture-pane", "-p", "-R", "-S", "-", "-t", "%1"],
+    ]);
+    expect(
+      rig.sim.written
+        .slice(before)
+        .some(
+          (command) =>
+            command.includes("capture-pane") || command.includes(INTERNAL_READ_OPERATION_OPTION),
+        ),
+    ).toBe(false);
+    await rig.channel.dispose();
+  });
   it.each([true, false])(
     "preserves coalescing and single dispatch when native accepts=%s",
     async (accepted) => {
@@ -2966,6 +3004,7 @@ describe("input path", () => {
         }),
         tryDispatch: vi.fn<NonNullable<SessionChannelOptions["ownedViewer"]>["tryDispatch"]>(
           (_io, request, reply) => {
+            if (request.commands[0]?.[0] !== "send-keys") return false;
             events.push(request.commands[0]!.join(" "));
             if (accepted) reply({ ok: false, lines: [] });
             return accepted;
