@@ -1,3 +1,7 @@
+import {
+  OwnerInteractionObservation,
+  nativeInteractionObservationRequested,
+} from "./owner-interaction-observation.ts";
 import { createNativeTmuxSessionCreator } from "./tmux-server-session-create.ts";
 import { createTmuxSessionMutationFence } from "./tmux-session-mutation-fence.ts";
 import { createNativeTmuxSessionOpener } from "./tmux-server-session-open.ts";
@@ -1252,16 +1256,29 @@ async function startEmbeddedDaemonGeneration(
     const interactionReceipts = new InteractionReceiptJournal();
     let interactionEvidence: InteractionEvidenceAuthority | null = null;
     let interactionObservation: InteractionObservationStatusStore | null = null;
+    const nativeObservationRequested = nativeInteractionObservationRequested();
+    let observationSelector: OwnerInteractionObservation | null = null;
     let sessionRuntimeRegistry: SessionRuntimeRegistry | null = null;
     let workspaceOpenHandoff: WorkspaceOpenHandoffCoordinator | null = null;
     let terminalInventoryRuntime: WorkspaceTerminalInventoryRuntime | null = null;
     let sessionMonitor: DaemonSessionMonitor | null = null;
     const externalInteractionObserver = new TmuxExternalInteractionObserver({
       daemonInstanceId: instanceId,
-      onAvailability: (available) => interactionObservation?.setStockAvailable(available),
+      onAvailability: (available) => {
+        if (observationSelector) observationSelector.stockAvailable(available);
+        else interactionObservation?.setStockAvailable(available);
+      },
       onGap: (gap) => {
         terminalInventoryRuntime?.invalidate();
-        if (interactionObservation?.getSnapshot().method !== "native-journal")
+        if (observationSelector)
+          observationSelector.stockGap(
+            gap.reason === "overflow"
+              ? "retention-overflow"
+              : gap.reason === "hooks-replaced"
+                ? "hooks-replaced"
+                : "uncertain-consume",
+          );
+        else
           interactionObservation?.noteGap(
             gap.reason === "overflow"
               ? "retention-overflow"
@@ -1276,8 +1293,8 @@ async function startEmbeddedDaemonGeneration(
         return endpoint?.kind === "pane" ? endpoint : null;
       },
       onUnresolvedObservation: () => {
-        if (interactionObservation?.getSnapshot().method !== "native-journal")
-          interactionObservation?.noteGap("unresolved-target", 1);
+        if (observationSelector) observationSelector.stockGap("unresolved-target", 1);
+        else interactionObservation?.noteGap("unresolved-target", 1);
         terminalInventoryRuntime?.invalidate();
       },
       io: { runTmux: fleetFactsTmuxRunner },
@@ -1293,6 +1310,12 @@ async function startEmbeddedDaemonGeneration(
             operationId: observation.operationId!,
           }) ?? false,
         publishExternal: (observation) => {
+          if (
+            observationSelector
+              ? !observationSelector.allowStockPublication()
+              : nativeObservationRequested
+          )
+            return;
           if (!interactionEvidence) throw new Error("Scoped interaction evidence is unavailable");
           const draft = externalTmuxInteractionDraft(
             observation,
@@ -1308,6 +1331,10 @@ async function startEmbeddedDaemonGeneration(
         },
       }),
     });
+    const disposeInteractionObservation = async () => {
+      await observationSelector?.dispose();
+      await externalInteractionObserver.dispose();
+    };
     let terminalAttachmentRuntime: NativeTerminalAttachmentRuntime | null = null;
     let paneStreamRuntime: PaneStreamRuntime | null = null;
     let serverOwners: Awaited<ReturnType<typeof createEmbeddedTmuxServerOwners>> | null = null;
@@ -1612,7 +1639,20 @@ async function startEmbeddedDaemonGeneration(
         onDefaultScope: async (scope) => {
           interactionEvidence = new InteractionEvidenceAuthority(environmentId, scope);
           interactionObservation = new InteractionObservationStatusStore(environmentId, scope);
-          interactionObservation.setStockAvailable(externalInteractionObserver.available);
+          observationSelector = new OwnerInteractionObservation({
+            environmentId,
+            serverScope: scope,
+            tmuxAuthority,
+            nativeServerIdentity: initialNativeServerIdentity,
+            enabled: nativeObservationRequested,
+            status: interactionObservation,
+            publishEvidence: (evidence) => {
+              interactionReceipts.publishEvidence(evidence);
+            },
+          });
+          observationSelector.stockAvailable(externalInteractionObserver.available);
+          if (nativeObservationRequested) interactionObservation.noteGap("uncertain-consume");
+          await observationSelector.start();
           await terminalInventoryRuntime!.discoverTerminalInventory();
         },
         defaultAuthority: tmuxAuthority,
@@ -1706,7 +1746,7 @@ async function startEmbeddedDaemonGeneration(
               ),
               Promise.resolve().then(() => appWindowMutation.dispose()),
               Promise.resolve().then(() => workspaceMultiplexer.dispose()),
-              Promise.resolve().then(() => externalInteractionObserver.dispose()),
+              Promise.resolve().then(() => disposeInteractionObservation()),
             ]);
             try {
               await sessionRuntimeRegistry!.dispose();
@@ -1789,7 +1829,7 @@ async function startEmbeddedDaemonGeneration(
         ]).then(() => {}),
         appWindowMutation.dispose(),
         workspaceMultiplexer.dispose(),
-        externalInteractionObserver.dispose(),
+        disposeInteractionObservation(),
         closeRuntimeTraceStream(),
       ]);
       // The pane-stream coordinator may still hold runtime consumers while it
@@ -1846,7 +1886,7 @@ async function startEmbeddedDaemonGeneration(
         workspaceMultiplexer.dispose(),
       );
       const externalInteractionDisposal = Promise.resolve().then(() =>
-        externalInteractionObserver.dispose(),
+        disposeInteractionObservation(),
       );
       const closePromise = Promise.resolve()
         .then(() => waitForServerClose(server))
@@ -2108,7 +2148,7 @@ async function startEmbeddedDaemonGeneration(
             );
             await capture(() => appWindowMutation.dispose());
             await capture(() => workspaceMultiplexer.dispose());
-            await capture(() => externalInteractionObserver.dispose());
+            await capture(() => disposeInteractionObservation());
 
             let closePromise: Promise<void>;
             try {

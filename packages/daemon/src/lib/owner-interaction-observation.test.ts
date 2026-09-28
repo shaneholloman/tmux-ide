@@ -1,0 +1,223 @@
+import { expect, it, vi } from "vitest";
+import type { NativeJournalCapability } from "@tmux-ide/contracts";
+import { OwnerInteractionObservation } from "./owner-interaction-observation.ts";
+import { InteractionObservationStatusStore } from "./interaction-observation-status.ts";
+import { InteractionReceiptJournal } from "./interaction-receipt-journal.ts";
+import type {
+  NativeJournalObserverEvent,
+  NativeTmuxInteractionObserverOptions,
+} from "./native-tmux-interaction-observer.ts";
+const id = "00000000-0000-4000-8000-000000000001",
+  epoch = "00000000-0000-4000-8000-000000000002";
+const scope = { serverId: `tmux-server.${"a".repeat(32)}`, generation: id };
+const cap: NativeJournalCapability = {
+  schemaVersion: 1,
+  type: "capability",
+  serverEpoch: id,
+  journalEpoch: epoch,
+  enabled: true,
+  coverage: [
+    "command-outcome-v1",
+    "pty-enqueue-v1",
+    "capture-produced-v1",
+    "cooperative-operation-v1",
+  ],
+  capacity: 4096,
+  maxBatch: 256,
+  maxWaiters: 4,
+  waitingReaders: 0,
+  degraded: 0,
+};
+function rig(enabled = true, other = false) {
+  const serverScope = other ? { ...scope, serverId: `tmux-server.${"b".repeat(32)}` } : scope;
+  const status = new InteractionObservationStatusStore(id, serverScope),
+    journal = new InteractionReceiptJournal();
+  let event!: (event: NativeJournalObserverEvent) => void;
+  let finish!: (status: "ready" | "unavailable") => void;
+  const dispose = vi.fn(async () => {});
+  const factory = vi.fn((options: NativeTmuxInteractionObserverOptions) => {
+    event = options.onEvent;
+    return {
+      start: () =>
+        new Promise<"ready" | "unavailable">((resolve) => {
+          finish = resolve;
+        }),
+      dispose,
+    };
+  });
+  const selector = new OwnerInteractionObservation({
+    environmentId: id,
+    serverScope,
+    tmuxAuthority: {
+      executablePath: "/test/tmux",
+      socketSelector: { kind: "path", path: "/test/tmux.sock" },
+    },
+    nativeServerIdentity: { pid: "1", startTime: "1" },
+    enabled,
+    status,
+    publishEvidence: (evidence) => journal.publishEvidence(evidence),
+    readerFactory: factory,
+  });
+  return {
+    selector,
+    status,
+    journal,
+    factory,
+    dispose,
+    event: (value: NativeJournalObserverEvent) => event(value),
+    finish: (value: "ready" | "unavailable") => finish(value),
+  };
+}
+it("never probes without explicit opt-in and preserves stock availability", async () => {
+  const r = rig(false);
+  r.selector.stockAvailable(true);
+  await r.selector.start();
+  expect(r.factory).not.toHaveBeenCalled();
+  expect(r.selector.allowStockPublication()).toBe(true);
+  expect(r.status.getSnapshot().method).toBe("stock-hooks");
+  await r.selector.dispose();
+});
+it("selects stock once on capability failure and reports withheld startup coverage", async () => {
+  const r = rig();
+  r.selector.stockAvailable(true);
+  const start = r.selector.start();
+  expect(r.selector.allowStockPublication()).toBe(false);
+  expect(r.status.getSnapshot().lastGap?.reason).toBe("uncertain-consume");
+  r.event({ type: "state", status: "unavailable", capability: null });
+  r.finish("unavailable");
+  await start;
+  expect(r.selector.selection).toBe("stock");
+  expect(r.selector.allowStockPublication()).toBe(true);
+  expect(r.dispose).toHaveBeenCalledTimes(1);
+  await r.selector.dispose();
+});
+it("keeps native ownership through retry/degradation and ignores late callbacks", async () => {
+  const r = rig();
+  const start = r.selector.start();
+  r.event({ type: "state", status: "ready", capability: cap });
+  r.finish("ready");
+  await start;
+  expect(r.selector.allowStockPublication()).toBe(false);
+  r.selector.stockAvailable(true);
+  expect(r.status.getSnapshot().method).toBe("native-journal");
+  r.event({ type: "state", status: "retrying", capability: cap });
+  expect(r.status.getSnapshot().method).toBe("unavailable");
+  expect(r.selector.allowStockPublication()).toBe(false);
+  r.event({ type: "state", status: "ready", capability: cap });
+  expect(r.status.getSnapshot().method).toBe("native-journal");
+  r.event({ type: "state", status: "degraded", capability: { ...cap, degraded: 1 } });
+  r.event({ type: "state", status: "ready", capability: cap });
+  expect(r.status.getSnapshot().method).toBe("unavailable");
+  await r.selector.dispose();
+  r.event({ type: "state", status: "ready", capability: cap });
+  expect(r.status.getSnapshot().method).toBe("unavailable");
+});
+it("publishes unresolved native evidence in the same scoped journal without guessing an alias", async () => {
+  for (const other of [false, true]) {
+    const r = rig(true, other);
+    const start = r.selector.start();
+    r.event({ type: "state", status: "ready", capability: cap });
+    r.finish("ready");
+    await start;
+    r.event({
+      type: "batch",
+      batch: {
+        schemaVersion: 1,
+        type: "batch",
+        serverEpoch: id,
+        journalEpoch: epoch,
+        oldest: "1",
+        newest: "1",
+        next: "1",
+        gap: null,
+        degraded: 0,
+        records: [
+          {
+            sequence: "1",
+            commandId: "1",
+            issuerId: "1",
+            requestId: "1",
+            parentCommandId: "0",
+            monotonicUs: "1",
+            count: "0",
+            targetId: 0,
+            kind: 1,
+            outcome: 1,
+            flags: 1,
+            transport: 1,
+            derivation: 0,
+            correlation: null,
+          },
+        ],
+      },
+    });
+    const entry = r.journal.read(0).receipts[0]!;
+    expect(entry.type).toBe("interaction.evidence");
+    expect(entry.evidence?.endpoints.destination).toMatchObject({
+      kind: "unresolved-pane",
+      serverScope: { serverId: other ? `tmux-server.${"b".repeat(32)}` : scope.serverId },
+    });
+    expect(entry).not.toHaveProperty("workspaceName");
+    expect(r.status.getSnapshot().cursor).toEqual({ epoch, sequence: "1" });
+    await r.selector.dispose();
+  }
+});
+it("records native retention gaps and aborts selection before late readiness", async () => {
+  const r = rig();
+  const start = r.selector.start();
+  r.event({ type: "state", status: "ready", capability: cap });
+  r.finish("ready");
+  await start;
+  r.event({
+    type: "gap",
+    cursor: { serverEpoch: id, journalEpoch: epoch, sequence: "0" },
+    missing: { from: "1", through: "3" },
+  });
+  expect(r.status.getSnapshot()).toMatchObject({
+    droppedCount: "3",
+    lastGap: { reason: "native-range-dropped", range: { epoch, from: "1", to: "3" } },
+  });
+  await r.selector.dispose();
+  expect(r.selector.allowStockPublication()).toBe(false);
+});
+it("keeps authored hook completion independent from passive native selection", async () => {
+  const { createTmuxInteractionObservationHandler } =
+    await import("./tmux-interaction-observation-handler.ts");
+  const r = rig();
+  const start = r.selector.start();
+  r.event({ type: "state", status: "ready", capability: cap });
+  r.finish("ready");
+  await start;
+  const publish = vi.fn(),
+    consume = vi.fn(() => true),
+    invalidate = vi.fn();
+  const observe = createTmuxInteractionObservationHandler({
+    consumeAuthored: consume,
+    publishExternal: () => {
+      if (r.selector.allowStockPublication()) publish();
+    },
+    invalidateInventory: invalidate,
+    reportPublicationFailure: vi.fn(),
+  });
+  expect(
+    observe({
+      operationId: id,
+      operationKind: "workspace.pane.send",
+      workspaceName: "alpha",
+      semanticPaneId: "pane.alpha",
+      capturedTarget: null,
+    }),
+  ).toBe(true);
+  expect(consume).toHaveBeenCalledTimes(1);
+  expect(publish).not.toHaveBeenCalled();
+  observe({
+    operationId: null,
+    operationKind: "workspace.pane.send",
+    workspaceName: "alpha",
+    semanticPaneId: "pane.alpha",
+    capturedTarget: null,
+  });
+  expect(publish).not.toHaveBeenCalled();
+  expect(invalidate).toHaveBeenCalledTimes(2);
+  await r.selector.dispose();
+});

@@ -1,3 +1,7 @@
+import {
+  OwnerInteractionObservation,
+  nativeInteractionObservationRequested,
+} from "./owner-interaction-observation.ts";
 import type { SessionRuntimeAutomationAuthority } from "../terminal/session-runtime/semantic-mutation-executor.ts";
 import type { SessionRuntimeSemanticIntent } from "@tmux-ide/contracts";
 import {
@@ -167,6 +171,17 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
     serverId: options.serverId,
     generation,
   });
+  const observationSelector = new OwnerInteractionObservation({
+    environmentId: options.environmentId,
+    serverScope: { serverId: options.serverId, generation },
+    tmuxAuthority: authority,
+    nativeServerIdentity,
+    enabled: nativeInteractionObservationRequested(),
+    status: interactionObservation,
+    publishEvidence: (evidence) => {
+      interactionReceipts.publishEvidence(evidence);
+    },
+  });
   const assertOpen = () => {
     if (disposed) throw new Error("Tmux server owner is retired");
   };
@@ -263,17 +278,16 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
   });
   const observer: TmuxExternalInteractionObserver = new TmuxExternalInteractionObserver({
     daemonInstanceId: generation,
-    onAvailability: (available) => interactionObservation.setStockAvailable(available),
+    onAvailability: (available) => observationSelector.stockAvailable(available),
     onGap: (gap) => {
       terminalInventoryRuntime.invalidate();
-      if (interactionObservation.getSnapshot().method !== "native-journal")
-        interactionObservation.noteGap(
-          gap.reason === "overflow"
-            ? "retention-overflow"
-            : gap.reason === "hooks-replaced"
-              ? "hooks-replaced"
-              : "uncertain-consume",
-        );
+      observationSelector.stockGap(
+        gap.reason === "overflow"
+          ? "retention-overflow"
+          : gap.reason === "hooks-replaced"
+            ? "hooks-replaced"
+            : "uncertain-consume",
+      );
     },
     internalReadOwnerToken: randomUUID(),
     registry: workspaceRegistry,
@@ -284,8 +298,7 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
       return endpoint.kind === "pane" ? endpoint : null;
     },
     onUnresolvedObservation: () => {
-      if (interactionObservation.getSnapshot().method !== "native-journal")
-        interactionObservation.noteGap("unresolved-target", 1);
+      observationSelector.stockGap("unresolved-target", 1);
       terminalInventoryRuntime.invalidate();
     },
     onObserved: createTmuxInteractionObservationHandler({
@@ -296,6 +309,7 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
           operationId: observation.operationId!,
         }),
       publishExternal: (observation) => {
+        if (!observationSelector.allowStockPublication()) return;
         interactionReceipts.publish(
           externalTmuxInteractionDraft(
             observation,
@@ -362,7 +376,9 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
     disposed = true;
     credentialLifetime.abort();
     sourceCredentials.dispose();
+    const observationDisposal = observationSelector.dispose();
     disposePromise = (async () => {
+      await observationDisposal;
       await sessionOpener.dispose();
       await sessionCreator.dispose();
       await paneCreation.dispose();
@@ -404,6 +420,7 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
         // A failed grant is unavailable; request-time reconciliation can retry.
       }
     }
+    await observationSelector.start();
     observerStarted ??= observer.start();
     await observerStarted;
   } catch (error) {
