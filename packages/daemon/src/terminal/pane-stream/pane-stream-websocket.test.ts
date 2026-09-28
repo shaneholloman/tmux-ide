@@ -668,7 +668,7 @@ describe("PaneStreamAdmissionCoordinator", () => {
     const state = fixtureState();
     state.truthRows = ["%1\t1\t@1\t1"];
     state.windowRows = FIXTURE.windowRows("aaaa,100x50,0,0,1", FIXTURE.layoutW2).slice(0, 1);
-    state.descriptorRows = [state.descriptorRows[0]!.replace(/\t2\t2$/u, "\t1\t1")];
+    state.descriptorRows = [state.descriptorRows[0]!.replace(/\t2\t2(\t[^\t]*)?$/u, "\t1\t1$1")];
     const observability = createSessionRuntimeObservability({ nowMicros: () => 1_000 });
     const registry = new SessionRuntimeRegistry({
       generation: INSTANCE,

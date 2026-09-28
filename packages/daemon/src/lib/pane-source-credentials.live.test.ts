@@ -155,6 +155,21 @@ describe.skipIf(!hasTmux).sequential("pane source credentials, live tmux", () =>
       resolveSession: (workspaceName) => (workspaceName === "alpha" ? session : null),
       resolvePaneSourceCredential: (credential, resolvedSession, claimedSource) =>
         authority.resolve(credential, resolvedSession, claimedSource),
+      resolvePaneSourceBinding: (credential, resolvedSession, claimedSource) => {
+        const grant = authority.resolveBinding(credential, resolvedSession, claimedSource);
+        return grant
+          ? {
+              endpoint: testInteractionContext({
+                verb: "workspace.pane.read",
+                workspaceName: "alpha",
+                semanticPaneId: grant.semanticPaneId,
+                origin: "cli",
+              }).destination,
+              bindingId: grant.bindingId,
+              agentRunId: null,
+            }
+          : null;
+      },
     });
     const sendIntent = (text: string): SessionRuntimeSemanticIntent => ({
       verb: "workspace.pane.send",
@@ -192,6 +207,14 @@ describe.skipIf(!hasTmux).sequential("pane source credentials, live tmux", () =>
         { phase: "accepted", sourceSemanticPaneId: null },
         { phase: "observed", sourceSemanticPaneId: "pane.editor" },
       ]);
+
+      expect(receipts.at(-1)?.evidence).toMatchObject({
+        endpoints: { source: { workspaceName: "alpha", semanticPaneId: "pane.editor" } },
+        actor: {
+          kind: "cooperative",
+          bindingId: authority.resolveBinding(oldCredential, session, "pane.editor")!.bindingId,
+        },
+      });
 
       // A daemon generation restart replaces the in-memory authority and
       // rotates pane options without owning or restarting the tmux server.
