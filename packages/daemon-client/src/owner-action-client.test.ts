@@ -178,3 +178,68 @@ describe("owner action client", () => {
     await expect(result).rejects.toThrow("Cannot close the last pane");
   });
 });
+
+describe("owner transport ambiguous responses", () => {
+  const options = {
+    baseUrl: "http://localhost:4000/",
+    ownerToken: "token",
+    name: "workspace.pane.kill" as const,
+    input: { workspaceName: "project", semanticPaneId: "pane.editor" },
+  };
+  it("does not retry a refusal even with an operation ID", async () => {
+    const request = mock(async () =>
+      Response.json({ ok: false, error: { code: "refused", message: "Denied" } }),
+    );
+    await expect(
+      dispatchOwnerAction({ ...options, operationId, fetch: request as typeof fetch }),
+    ).rejects.toMatchObject({ code: "refused" });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+  it.each(["invalid json", "invalid result"])(
+    "retries %s with identical operation and body",
+    async (kind) => {
+      const request = mock()
+        .mockResolvedValueOnce(
+          kind === "invalid json" ? new Response("{") : Response.json({ ok: true, result: {} }),
+        )
+        .mockResolvedValueOnce(
+          Response.json({
+            ok: true,
+            result: {
+              ...mutation,
+              verb: "workspace.pane.kill",
+              windowClosed: false,
+              remainingWindowCount: 1,
+            },
+          }),
+        );
+      await expect(
+        dispatchOwnerAction({ ...options, operationId, fetch: request as typeof fetch }),
+      ).resolves.toMatchObject({ outcome: "applied" });
+      expect(request).toHaveBeenCalledTimes(2);
+      expect(request.mock.calls[0]![1].body).toBe(request.mock.calls[1]![1].body);
+      expect(request.mock.calls[0]![1].headers).toEqual(request.mock.calls[1]![1].headers);
+    },
+  );
+  it("does not retry ambiguity without an operation ID", async () => {
+    const request = mock(async () => new Response("{"));
+    await expect(
+      dispatchOwnerAction({ ...options, maximumAttempts: 3, fetch: request as typeof fetch }),
+    ).resolves.toBeNull();
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+  it.each(["http://localhost:4000", "http://localhost:4000/", "http://localhost:4000/prefix/"])(
+    "normalizes endpoint slash for %s",
+    async (baseUrl) => {
+      const request = mock(async () =>
+        Response.json({ ok: false, error: { code: "refused", message: "Denied" } }),
+      );
+      await expect(
+        dispatchOwnerAction({ ...options, baseUrl, fetch: request as typeof fetch }),
+      ).rejects.toThrow("Denied");
+      expect(request.mock.calls[0]![0]).toBe(
+        baseUrl.replace(/\/$/u, "") + "/api/v2/action/workspace.pane.kill",
+      );
+    },
+  );
+});

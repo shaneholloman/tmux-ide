@@ -14,6 +14,7 @@ export interface OwnerActionClientOptions<Name extends ActionName> {
   /** Stable renderer principal for generation-scoped multi-client handoffs. */
   readonly hostClientId?: string | null;
   readonly fetch?: typeof fetch;
+  /** Timeout for each attempt; a retry receives a fresh timeout. */
   readonly timeoutMs?: number;
   /**
    * Total transport attempts for an idempotent operation. Every attempt keeps
@@ -54,6 +55,8 @@ export async function dispatchOwnerAction<Name extends ActionName>(
   const contract = ActionContractsZ[options.name];
   const input = contract.input.parse(options.input);
   const operationId = options.operationId ?? null;
+  const endpoint = `${options.baseUrl.replace(/\/+$/u, "")}/api/v2/action/${encodeURIComponent(options.name)}`;
+  const serializedInput = JSON.stringify(input);
   const requestedAttempts = options.maximumAttempts ?? 2;
   const maximumAttempts = operationId
     ? Number.isSafeInteger(requestedAttempts) && requestedAttempts > 0
@@ -66,20 +69,17 @@ export async function dispatchOwnerAction<Name extends ActionName>(
   for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
     let body: unknown;
     try {
-      const response = await request(
-        `${options.baseUrl}/api/v2/action/${encodeURIComponent(options.name)}`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${options.ownerToken}`,
-            ...(operationId ? { "X-Tmux-Ide-Operation-Id": operationId } : {}),
-            ...(options.hostClientId ? { "X-Tmux-Ide-Host-Client-Id": options.hostClientId } : {}),
-          },
-          body: JSON.stringify(input),
-          signal: AbortSignal.timeout(options.timeoutMs ?? 2_000),
+      const response = await request(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${options.ownerToken}`,
+          ...(operationId ? { "X-Tmux-Ide-Operation-Id": operationId } : {}),
+          ...(options.hostClientId ? { "X-Tmux-Ide-Host-Client-Id": options.hostClientId } : {}),
         },
-      );
+        body: serializedInput,
+        signal: AbortSignal.timeout(options.timeoutMs ?? 2_000),
+      });
       body = await response.json();
     } catch {
       if (attempt + 1 < maximumAttempts) {
