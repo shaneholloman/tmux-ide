@@ -1,3 +1,4 @@
+import { createBackgroundNativeCapture } from "./background-native-capture.ts";
 import { createOwnedViewerAdapterFactory } from "./owned-viewer-factory.ts";
 import { publishOwnerInteractionReceipt } from "./interaction-receipt-publication.ts";
 import { createAuthoredNativeCommandRunner } from "./authored-native-command-runner.ts";
@@ -1265,6 +1266,7 @@ async function startEmbeddedDaemonGeneration(
     let interactionObservation: InteractionObservationStatusStore | null = null;
     const nativeObservationRequested = nativeInteractionObservationRequested();
     let observationSelector: OwnerInteractionObservation | null = null;
+    let backgroundCapture: ReturnType<typeof createBackgroundNativeCapture> | null = null;
     let ownedViewerFactory: ReturnType<typeof createOwnedViewerAdapterFactory> | null = null;
     const authoredReceiptEnricher = new AuthoredNativeReceiptEnricher({
       journal: interactionReceipts,
@@ -1607,7 +1609,19 @@ async function startEmbeddedDaemonGeneration(
               }
             : {}),
         },
-        agentStatusProbeFactory: ({ run }) => createTmuxAgentStatusProbe({ run }),
+        agentStatusProbeFactory: ({ run }) =>
+          createTmuxAgentStatusProbe({
+            run,
+            captureNative: (pane, signal) =>
+              backgroundCapture?.(
+                {
+                  paneId: pane.runtimePaneId,
+                  nativeIdentity: pane.nativeIdentity ?? null,
+                  mode: "agent-status",
+                },
+                signal,
+              ) ?? Promise.resolve(null),
+          }),
         nativeServerEpoch: () => observationSelector?.nativeServerEpoch ?? null,
         resolveInteractionEndpoint: (workspaceName, semanticPaneId) =>
           interactionEvidence?.captureAuthoredEndpoint(workspaceName, semanticPaneId) ?? null,
@@ -1689,6 +1703,12 @@ async function startEmbeddedDaemonGeneration(
             serverScope: scope,
             observation: observationSelector,
             status: interactionObservation,
+          });
+          backgroundCapture = createBackgroundNativeCapture({
+            environmentId,
+            serverScope: scope,
+            observation: () => observationSelector,
+            runPinnedTmux: fleetFactsTmuxRunner,
           });
           authoredNativeRunner = createAuthoredNativeCommandRunner({
             environmentId,
@@ -1858,9 +1878,11 @@ async function startEmbeddedDaemonGeneration(
                 : null,
             () => observationSelector?.nativeServerEpoch ?? null,
           ),
-        fleetPreviewCapture: createFleetPreviewCapture(
-          createPinnedWorkspaceTmuxAsyncRunner(tmuxAuthority),
-        ),
+        fleetPreviewCapture: createFleetPreviewCapture(fleetFactsTmuxRunner, {
+          serverEpoch: () => observationSelector?.nativeServerEpoch ?? null,
+          capture: (request, signal) =>
+            backgroundCapture?.(request, signal) ?? Promise.resolve(null),
+        }),
         sessionRuntimeRegistry,
       });
     } catch (error) {

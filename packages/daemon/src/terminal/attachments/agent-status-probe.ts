@@ -1,3 +1,4 @@
+import type { NativePaneIdentity } from "@tmux-ide/contracts";
 /**
  * Agent-status probe for the application-shell inventory — the IO half of the
  * desktop projection's ground-truth agent detection.
@@ -58,6 +59,7 @@ export interface AgentStatusPaneFacts {
 
 /** One pane the probe reasons over. */
 export interface AgentStatusProbePane {
+  readonly nativeIdentity?: NativePaneIdentity | null;
   /** Live `%N` pane id — the capture/option target (never crosses the wire). */
   readonly runtimePaneId: string;
   /** `pane_current_command` — the manifest fast-path seed. */
@@ -166,6 +168,11 @@ function parseAgentOptions(stdout: string): ReadonlyMap<string, RawPaneOptions> 
 }
 
 export interface TmuxAgentStatusProbeDeps {
+  /** null proves no native dispatch; failures must never retry through stock capture. */
+  readonly captureNative?: (
+    pane: AgentStatusProbePane,
+    signal?: AbortSignal,
+  ) => Promise<{ output: string } | null>;
   /** Pinned tmux runner: returns stdout, or null when the session is gone/unavailable. */
   readonly run: (argv: readonly string[], signal?: AbortSignal) => Promise<string | null>;
   /** Process-table reader for the scrape fallback (default: real `ps`). */
@@ -406,7 +413,10 @@ export function createTmuxAgentStatusProbe(deps: TmuxAgentStatusProbeDeps): Agen
         continue;
       }
       capturesUsed += 1;
-      const captured = await capture(pane.runtimePaneId, SCRAPE_LINES, signal);
+      const native = await deps.captureNative?.(pane, signal);
+      const captured = native
+        ? native.output
+        : await capture(pane.runtimePaneId, SCRAPE_LINES, signal);
       throwIfAborted(signal);
       const snapshot = parseSnapshot(captured ?? "", { lines: SCRAPE_LINES });
       const verdict = classifyInstant({ ...snapshot, title: pane.title }, manifest);

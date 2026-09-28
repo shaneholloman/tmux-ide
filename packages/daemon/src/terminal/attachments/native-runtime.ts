@@ -1896,6 +1896,7 @@ export class WorkspaceTerminalInventoryRuntime {
               nowSec: Math.floor(Date.now() / 1000),
               panes: session.panes.map((pane) => ({
                 runtimePaneId: pane.runtimePaneId,
+                nativeIdentity: pane.nativeIdentity ?? null,
                 currentCommand: pane.currentCommand,
                 title: pane.title,
               })),
@@ -2350,6 +2351,7 @@ export class NativeTerminalAttachmentRuntime {
             nowSec: Math.floor(Date.now() / 1000),
             panes: panes.map((pane) => ({
               runtimePaneId: pane.runtimePaneId,
+              nativeIdentity: pane.nativeIdentity ?? null,
               currentCommand: pane.currentCommand,
               title: pane.title,
             })),

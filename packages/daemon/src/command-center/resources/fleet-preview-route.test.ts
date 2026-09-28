@@ -241,3 +241,58 @@ it("previews the requested inactive pane, rejects foreign panes, and fences move
   });
   expect(await capture.snapshot(id, undefined, undefined, "%2")).toBeNull();
 });
+it("uses current birth/session guards for passive native preview and never replays failed captures", async () => {
+  const epoch = "11111111-1111-4111-8111-111111111111";
+  const run = vi.fn(async (args: string[]) =>
+    args.includes("-a")
+      ? "1\t$1\t123\tsession"
+      : args[0] === "list-windows"
+        ? "@1\tmain"
+        : args[0] === "capture-pane"
+          ? "stock"
+          : "%1\t1\t1\t@1\t0\t7",
+  );
+  const id = discoverLiveSessionSummaries(() => "1\t$1\t123\tsession")[0]!.liveSessionId;
+  const captureNative = vi.fn(async () => ({ output: "native\n" }));
+  const preview = createFleetPreviewCapture(run, {
+    serverEpoch: () => epoch,
+    capture: captureNative,
+  });
+  expect(await preview(id)).toBe("native\n");
+  expect(captureNative).toHaveBeenCalledWith(
+    {
+      paneId: "%1",
+      nativeIdentity: { serverEpoch: epoch, paneBirthId: "7" },
+      sessionGuard: { id: "$1", created: "123", name: "session" },
+      mode: "fleet-preview",
+    },
+    undefined,
+  );
+  expect(run.mock.calls.every(([args]) => ["list-panes", "list-windows"].includes(args[0]!))).toBe(
+    true,
+  );
+  captureNative.mockRejectedValueOnce(Error("attempted failure"));
+  await expect(preview(id)).rejects.toThrow("attempted failure");
+  expect(run.mock.calls.some(([args]) => args[0] === "capture-pane")).toBe(false);
+});
+it.each(["", "0"])(
+  "keeps unsupported birth %j on stock capture without native proof",
+  async (birth) => {
+    const epoch = "11111111-1111-4111-8111-111111111111";
+    const run = vi.fn(async (args: string[]) =>
+      args.includes("-a")
+        ? "1\t$1\t123\tsession"
+        : args[0] === "list-windows"
+          ? "@1\tmain"
+          : args[0] === "capture-pane"
+            ? "stock"
+            : `%1\t1\t1\t@1\t0\t${birth}`,
+    );
+    const id = discoverLiveSessionSummaries(() => "1\t$1\t123\tsession")[0]!.liveSessionId,
+      capture = vi.fn();
+    expect(await createFleetPreviewCapture(run, { serverEpoch: () => epoch, capture })(id)).toBe(
+      "stock",
+    );
+    expect(capture).not.toHaveBeenCalled();
+  },
+);

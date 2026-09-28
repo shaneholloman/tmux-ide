@@ -1,3 +1,4 @@
+import { createBackgroundNativeCapture } from "./background-native-capture.ts";
 import { createOwnedViewerAdapterFactory } from "./owned-viewer-factory.ts";
 import { createAuthoredNativeCommandRunner } from "./authored-native-command-runner.ts";
 import { AuthoredNativeReceiptEnricher } from "./authored-native-receipt-staging.ts";
@@ -291,11 +292,29 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
       internalReadHookEmission: (pane, marker) => observer.internalReadHookEmission(pane, marker),
     },
   });
+  const backgroundCapture = createBackgroundNativeCapture({
+    environmentId: options.environmentId,
+    serverScope: { serverId: options.serverId, generation },
+    observation: () => observationSelector,
+    runPinnedTmux: generationRunAsync,
+  });
   const terminalInventoryRuntime = new WorkspaceTerminalInventoryRuntime({
     registry: workspaceRegistry,
     sessionRuntimeRegistry,
     tmuxAuthority: { ...authority, trustedCwd: options.stateDirectory, nativeServerIdentity },
-    agentStatusProbeFactory: ({ run }) => createTmuxAgentStatusProbe({ run }),
+    agentStatusProbeFactory: ({ run }) =>
+      createTmuxAgentStatusProbe({
+        run,
+        captureNative: (pane, signal) =>
+          backgroundCapture(
+            {
+              paneId: pane.runtimePaneId,
+              nativeIdentity: pane.nativeIdentity ?? null,
+              mode: "agent-status",
+            },
+            signal,
+          ),
+      }),
     nativeServerEpoch: () => observationSelector.nativeServerEpoch ?? null,
     resolveInteractionEndpoint: (workspaceName, semanticPaneId) =>
       interactionEvidence?.captureAuthoredEndpoint(workspaceName, semanticPaneId) ?? null,

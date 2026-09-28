@@ -534,3 +534,60 @@ describe("createTmuxAgentStatusProbe", () => {
     expect(captures).toEqual(["%3", "%4", "%3", "%4"]);
   });
 });
+it("uses native viewer capture without stock marker writes, preserving scrape cache", async () => {
+  let nativeCalls = 0,
+    stockCalls = 0;
+  const nativeIdentity = { serverEpoch: "11111111-1111-4111-8111-111111111111", paneBirthId: "7" };
+  const probe = createTmuxAgentStatusProbe({
+    run: async () => optionsLine("%3", { pid: "4242" }),
+    readProcessTable: async () => [],
+    manifests: MANIFESTS,
+    capture: async () => {
+      stockCalls++;
+      return "";
+    },
+    captureNative: async (pane) => {
+      nativeCalls++;
+      expect(pane.nativeIdentity).toEqual(nativeIdentity);
+      return { output: "PROMPT? waiting\n" };
+    },
+  });
+  const input = {
+    sessionId: "$1",
+    nowSec: NOW,
+    panes: [{ runtimePaneId: "%3", currentCommand: "claude", title: "Agent", nativeIdentity }],
+  };
+  expect((await probe.probe(input)).get("%3")?.agentScrapeState).toBe("blocked");
+  await probe.probe({ ...input, nowSec: NOW + 1 });
+  expect(nativeCalls).toBe(1);
+  expect(stockCalls).toBe(0);
+});
+it("falls back only for predispatch native unavailability and never on capture failure", async () => {
+  let stockCalls = 0,
+    failed = false;
+  const probe = createTmuxAgentStatusProbe({
+    run: async () => optionsLine("%3", { pid: "4242" }),
+    readProcessTable: async () => [],
+    manifests: MANIFESTS,
+    capture: async () => {
+      stockCalls++;
+      return "PROMPT?";
+    },
+    captureNative: async () => {
+      if (failed) throw Error("attempted native failure");
+      return null;
+    },
+  });
+  const input = {
+    sessionId: "$1",
+    nowSec: NOW,
+    panes: [{ runtimePaneId: "%3", currentCommand: "claude", title: "Agent" }],
+  };
+  await probe.probe(input);
+  expect(stockCalls).toBe(1);
+  failed = true;
+  await expect(probe.probe({ ...input, nowSec: NOW + 10 })).rejects.toThrow(
+    "attempted native failure",
+  );
+  expect(stockCalls).toBe(1);
+});
