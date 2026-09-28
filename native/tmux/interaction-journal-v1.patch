@@ -1,21 +1,152 @@
 diff --git a/Makefile.am b/Makefile.am
-index ba9142f..a99d83e 100644
+index ba9142f..e56a4fc 100644
 --- a/Makefile.am
 +++ b/Makefile.am
-@@ -124,6 +124,8 @@ dist_tmux_SOURCES = \
+@@ -124,6 +124,9 @@ dist_tmux_SOURCES = \
  	cmd-paste-buffer.c \
  	cmd-pipe-pane.c \
  	cmd-queue.c \
 +	tmux-ide-journal.c \
 +	tmux-ide-journal.h \
++	tmux-ide-snapshot-buffer.h \
  	cmd-refresh-client.c \
  	cmd-rename-session.c \
  	cmd-rename-window.c \
 diff --git a/cmd-capture-pane.c b/cmd-capture-pane.c
-index ee91f05..180f183 100644
+index ee91f05..ba44dfc 100644
 --- a/cmd-capture-pane.c
 +++ b/cmd-capture-pane.c
-@@ -404,5 +404,6 @@ cmd_capture_pane_exec(struct cmd *self, struct cmdq_item *item)
+@@ -22,6 +22,7 @@
+ #include <string.h>
+ 
+ #include "tmux.h"
++#include "tmux-ide-snapshot-buffer.h"
+ 
+ /*
+  * Write the entire contents of a pane to a buffer or stdout.
+@@ -147,6 +148,71 @@ cmd_capture_pane_hyperlinks(struct grid *gd, struct screen *s, u_int py,
+ 	return (line);
+ }
+ 
++/* Shared physical-grid serializer. Bounded callers supply their payload cap.
++ * Ordinary -R retains its existing output and no new size policy. */
++static char *
++cmd_capture_pane_native(struct cmdq_item *item, struct window_pane *wp,
++    struct screen *s, struct grid *gd, u_int top, u_int bottom,
++    size_t limit, size_t *len)
++{
++	struct grid_cell cell;
++	const struct grid_line *gl;
++	struct ti_snapshot_buffer buffer = { .limit = limit };
++	u_int i;
++	int n;
++	u_int x, k;
++	char record[512], hex[sizeof cell.data.data * 2 + 1], attrs[128];
++
++	if (s == &wp->base) {
++		input_current_cell(wp->ictx, &cell);
++		snprintf(attrs, sizeof attrs, "[%u,%d,%d,%d]",
++		    cell.attr, cell.fg, cell.bg, cell.us);
++	} else
++		snprintf(attrs, sizeof attrs, "null");
++	n = snprintf(record, sizeof record,
++	    "{\"version\":2,\"cols\":%u,\"rows\":%u,"
++	    "\"history\":%u,\"hscrolled\":%u,\"limit\":%u,"
++	    "\"cursor\":[%u,%u],\"currentAttributes\":%s}\n",
++	    gd->sx, gd->sy, gd->hsize, gd->hscrolled, gd->hlimit,
++	    s->cx, s->cy, attrs);
++	if (n < 0 || (size_t)n >= sizeof record ||
++	    ti_snapshot_append(&buffer, record, (size_t)n) != 0)
++		goto fail;
++	for (i = top; i <= bottom; i++) {
++		gl = grid_peek_line(gd, i);
++		n = snprintf(record, sizeof record,
++		    "{\"row\":%u,\"flags\":%d,\"used\":%u,\"cells\":[",
++		    i, gl->flags, gl->cellused);
++		if (n < 0 || (size_t)n >= sizeof record ||
++		    ti_snapshot_append(&buffer, record, (size_t)n) != 0)
++			goto fail;
++		for (x = 0; x < gl->cellsize; x++) {
++			grid_get_cell(gd, x, i, &cell);
++			for (k = 0; k < cell.data.size; k++)
++				snprintf(hex + k * 2, 3, "%02x", cell.data.data[k]);
++			hex[cell.data.size * 2] = '\0';
++			n = snprintf(record, sizeof record,
++			    "%s[%d,%u,\"%s\",%u,%d,%d,%d,%u,%d]",
++			    x ? "," : "", cell.flags, cell.data.width, hex,
++			    cell.attr, cell.fg, cell.bg, cell.us, cell.link,
++			    gl->celldata[x].flags);
++			if (n < 0 || (size_t)n >= sizeof record ||
++			    ti_snapshot_append(&buffer, record, (size_t)n) != 0)
++				goto fail;
++		}
++		if (ti_snapshot_append(&buffer, "]}\n", 3) != 0)
++			goto fail;
++	}
++	*len = buffer.length;
++	return (buffer.data);
++
++fail:
++	free(buffer.data);
++	*len = 0;
++	cmdq_error(item, "native snapshot exceeds budget or allocation failed");
++	return (NULL);
++}
++
+ static char *
+ cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
+     struct window_pane *wp, size_t *len)
+@@ -235,46 +301,9 @@ cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
+ 
+ 
+ 	/* Read-only physical grid export for tmux-ide replica backing. */
+-	if (args_has(args, 'R')) {
+-		struct grid_cell cell;
+-		u_int x, k;
+-		char record[512], hex[sizeof cell.data.data * 2 + 1], attrs[128];
+-
+-		if (s == &wp->base) {
+-			input_current_cell(wp->ictx, &cell);
+-			snprintf(attrs, sizeof attrs, "[%u,%d,%d,%d]",
+-			    cell.attr, cell.fg, cell.bg, cell.us);
+-		} else
+-			snprintf(attrs, sizeof attrs, "null");
+-		n = snprintf(record, sizeof record,
+-		    "{\"version\":2,\"cols\":%u,\"rows\":%u,"
+-		    "\"history\":%u,\"hscrolled\":%u,\"limit\":%u,"
+-		    "\"cursor\":[%u,%u],\"currentAttributes\":%s}\n",
+-		    gd->sx, gd->sy, gd->hsize, gd->hscrolled, gd->hlimit,
+-		    s->cx, s->cy, attrs);
+-		buf = cmd_capture_pane_append(buf, len, record, n);
+-		for (i = top; i <= bottom; i++) {
+-			gl = grid_peek_line(gd, i);
+-			n = snprintf(record, sizeof record,
+-			    "{\"row\":%u,\"flags\":%d,\"used\":%u,\"cells\":[",
+-			    i, gl->flags, gl->cellused);
+-			buf = cmd_capture_pane_append(buf, len, record, n);
+-			for (x = 0; x < gl->cellsize; x++) {
+-				grid_get_cell(gd, x, i, &cell);
+-				for (k = 0; k < cell.data.size; k++)
+-					snprintf(hex + k * 2, 3, "%02x", cell.data.data[k]);
+-				hex[cell.data.size * 2] = '\0';
+-				n = snprintf(record, sizeof record,
+-				    "%s[%d,%u,\"%s\",%u,%d,%d,%d,%u,%d]",
+-				    x ? "," : "", cell.flags, cell.data.width, hex,
+-				    cell.attr, cell.fg, cell.bg, cell.us, cell.link,
+-				    gl->celldata[x].flags);
+-				buf = cmd_capture_pane_append(buf, len, record, n);
+-			}
+-			buf = cmd_capture_pane_append(buf, len, "]}\n", 3);
+-		}
+-		return (buf);
+-	}
++	if (args_has(args, 'R'))
++		return (cmd_capture_pane_native(item, wp, s, gd, top, bottom,
++		    SIZE_MAX - 1, len));
+ 
+ 	join_lines = args_has(args, 'J');
+ 	if (args_has(args, 'e'))
+@@ -404,5 +433,6 @@ cmd_capture_pane_exec(struct cmd *self, struct cmdq_item *item)
  		}
  	}
  
@@ -1714,6 +1845,81 @@ index 0000000..5fd589b
 +		return NULL;
 +	return &r->records[(seq - 1) % TI_CAPACITY];
 +}
++#endif
+diff --git a/tmux-ide-snapshot-buffer.h b/tmux-ide-snapshot-buffer.h
+new file mode 100644
+index 0000000..bc05baa
+--- /dev/null
++++ b/tmux-ide-snapshot-buffer.h
+@@ -0,0 +1,69 @@
++/* $OpenBSD$ */
++
++/*
++ * Copyright (c) 2009 Jonathan Alvarado <radobobo@users.sourceforge.net>
++ *
++ * Permission to use, copy, modify, and distribute this software for any
++ * purpose with or without fee is hereby granted, provided that the above
++ * copyright notice and this permission notice appear in all copies.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
++ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
++ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
++ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
++ * WHATSOEVER RESULTING FROM LOSS OF MIND, USE, DATA OR PROFITS, WHETHER
++ * IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
++ * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
++ */
++
++#ifndef TMUX_IDE_SNAPSHOT_BUFFER_H
++#define TMUX_IDE_SNAPSHOT_BUFFER_H
++
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++
++#ifndef TI_SNAPSHOT_REALLOC
++#define TI_SNAPSHOT_REALLOC realloc
++#endif
++
++/* Payload limit excludes the terminating NUL; allocated capacity includes it. */
++struct ti_snapshot_buffer {
++	char	*data;
++	size_t	 length, capacity, limit;
++};
++
++static inline int
++ti_snapshot_append(struct ti_snapshot_buffer *b, const char *data, size_t length)
++{
++	char	*next;
++	size_t	 needed, capacity;
++
++	if (b->limit == SIZE_MAX || b->length > b->limit ||
++	    length > b->limit - b->length)
++		return (-1);
++	needed = b->length + length + 1;
++	if (needed > b->capacity) {
++		capacity = b->capacity;
++		if (capacity == 0)
++			capacity = b->limit < 4095 ? b->limit + 1 : 4096;
++		while (capacity < needed) {
++			if (capacity > (b->limit + 1) / 2)
++				capacity = b->limit + 1;
++			else
++				capacity *= 2;
++		}
++		next = TI_SNAPSHOT_REALLOC(b->data, capacity);
++		if (next == NULL)
++			return (-1);
++		b->data = next;
++		b->capacity = capacity;
++	}
++	if (length != 0)
++		memcpy(b->data + b->length, data, length);
++	b->length += length;
++	b->data[b->length] = '\0';
++	return (0);
++}
++
 +#endif
 diff --git a/tmux.h b/tmux.h
 index c9f8a32..cd281b9 100644

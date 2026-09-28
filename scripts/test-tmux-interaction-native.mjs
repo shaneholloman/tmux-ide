@@ -56,6 +56,21 @@ try {
     scratch,
   );
   run(join(scratch, "journal-ring"), [], scratch);
+  run(
+    "cc",
+    [
+      "-std=c11",
+      "-g",
+      "-fsanitize=address,undefined",
+      "-fno-omit-frame-pointer",
+      `-I${scratch}`,
+      join(root, "native/tmux/tests/snapshot-buffer.c"),
+      "-o",
+      join(scratch, "snapshot-buffer"),
+    ],
+    scratch,
+  );
+  run(join(scratch, "snapshot-buffer"), [], scratch);
   run("sh", ["autogen.sh"], scratch);
   run(
     "./configure",
