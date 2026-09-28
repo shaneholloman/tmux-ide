@@ -147,6 +147,9 @@ try {
   let finalSource = null;
   try {
     finalSource = snapshot();
+    if (provenance && JSON.stringify(finalSource) !== JSON.stringify(provenance))
+      failures.push(new Error("Frozen source or artifact identity changed during qualification"));
+    if (finalSource.dirty) failures.push(new Error("Qualification ended with a dirty source tree"));
   } catch (error) {
     failures.push(error);
   }

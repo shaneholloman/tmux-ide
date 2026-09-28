@@ -125,6 +125,17 @@ export async function startDaemon(fleet: ScratchFleet): Promise<RunningDaemon> {
     },
     detail: "the daemon to publish its canonical record",
     timeoutMs: DAEMON_READY_TIMEOUT_MS,
+  }).catch(async (error: unknown) => {
+    // Startup has not returned its owner handle yet. Retire only the harness
+    // that this invocation spawned, never a PID read from a stale info file.
+    try {
+      await harness.stop();
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], "Daemon startup and cleanup failed", {
+        cause: cleanupError,
+      });
+    }
+    throw error;
   });
 
   let baseUrl = `http://127.0.0.1:${record.port}`;
