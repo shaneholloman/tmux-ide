@@ -17,6 +17,7 @@ import {
 import { tmpdir, availableParallelism } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readTmuxNativePatches } from "./lib/tmux-native-patches.mjs";
 import {
   parseLddDependencies,
   isSystemGlibc,
@@ -58,9 +59,7 @@ const run = (command, args, options = {}) =>
 const hash = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
 if (text("git", ["-C", source, "rev-parse", "HEAD"]) !== provenance.commit)
   throw new Error("tmux source commit mismatch");
-const patchPath = join(root, "native/tmux", provenance.patch);
-if (hash(patchPath) !== provenance.patchSha256)
-  throw new Error("tmux source patch checksum mismatch");
+const patches = readTmuxNativePatches(provenance, join(root, "native/tmux"));
 const scratch = mkdtempSync(join(tmpdir(), "tmux-ide-native-build-"));
 try {
   const archive = execFileSync("git", ["-C", source, "archive", provenance.commit], {
@@ -68,11 +67,13 @@ try {
     env: childEnv,
   });
   execFileSync("tar", ["-xf", "-", "-C", scratch], { input: archive, env: childEnv });
-  execFileSync("git", ["apply", "-"], {
-    cwd: scratch,
-    input: readFileSync(patchPath),
-    env: childEnv,
-  });
+  for (const patch of patches) {
+    execFileSync("git", ["apply", "-"], {
+      cwd: scratch,
+      input: patch.bytes,
+      env: childEnv,
+    });
+  }
   run("sh", ["autogen.sh"], { cwd: scratch });
   run("./configure", ["--enable-utf8proc", "--disable-jemalloc"], { cwd: scratch });
   run("make", ["-j", String(jobs)], { cwd: scratch });
@@ -86,6 +87,11 @@ try {
   const names = new Map();
   const licenseFiles = [];
   mkdirSync(join(stage, "licenses"));
+  if (provenance.experimentalExtensions?.includes("tmux-ide-interaction-journal-v1")) {
+    const name = "licenses/interaction-journal.txt";
+    copyFileSync(join(root, "native/tmux/interaction-journal.LICENSE"), join(stage, name));
+    licenseFiles.push(name);
+  }
   const relocate = (binary, isExecutable) => {
     const ownId = isExecutable ? null : text("otool", ["-D", binary]).split("\n")[1];
     const dependencies = text("otool", ["-L", binary])
@@ -287,6 +293,21 @@ try {
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
       if (!captured) throw new Error("Patched native-grid capture qualification failed");
+      if (provenance.experimentalExtensions?.includes("tmux-ide-interaction-journal-v1")) {
+        const capability = JSON.parse(text(executable, ["-S", socket, "tmux-ide-events", "-V"]));
+        if (capability.schemaVersion !== 1 || capability.enabled !== false)
+          throw new Error("Native journal must ship disabled");
+        text(executable, ["-S", socket, "tmux-ide-events", "-e"]);
+        let testCommandAccepted = false;
+        try {
+          text(executable, ["-S", socket, "tmux-ide-events", "-T"]);
+          testCommandAccepted = true;
+        } catch {
+          /* Production parser must reject test-only injection. */
+        }
+        if (testCommandAccepted)
+          throw new Error("Native journal test instrumentation in release build");
+      }
       nativeGridProbe = {
         version: captured.version,
         cols: captured.cols,

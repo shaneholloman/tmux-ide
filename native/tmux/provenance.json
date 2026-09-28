@@ -5,5 +5,16 @@
   "version": "3.7c",
   "extension": "tmux-ide-native-grid-v2",
   "patch": "native-grid.patch",
-  "patchSha256": "b0bedabf8e2bd055662f796609b8e8b9a8c8746c6f2a655b0d017872d4827f4f"
+  "patchSha256": "b0bedabf8e2bd055662f796609b8e8b9a8c8746c6f2a655b0d017872d4827f4f",
+  "patches": [
+    {
+      "patch": "native-grid.patch",
+      "patchSha256": "b0bedabf8e2bd055662f796609b8e8b9a8c8746c6f2a655b0d017872d4827f4f"
+    },
+    {
+      "patch": "interaction-journal-v1.patch",
+      "patchSha256": "2c5e643250217199b43838a3a350b05094c94a5eae03819c7d4332db551db251"
+    }
+  ],
+  "experimentalExtensions": ["tmux-ide-interaction-journal-v1"]
 }

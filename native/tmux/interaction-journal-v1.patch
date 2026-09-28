@@ -1,0 +1,441 @@
+diff --git a/Makefile.am b/Makefile.am
+index ba9142f..a99d83e 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -124,6 +124,8 @@ dist_tmux_SOURCES = \
+ 	cmd-paste-buffer.c \
+ 	cmd-pipe-pane.c \
+ 	cmd-queue.c \
++	tmux-ide-journal.c \
++	tmux-ide-journal.h \
+ 	cmd-refresh-client.c \
+ 	cmd-rename-session.c \
+ 	cmd-rename-window.c \
+diff --git a/cmd-queue.c b/cmd-queue.c
+index 2a22151..a6d0428 100644
+--- a/cmd-queue.c
++++ b/cmd-queue.c
+@@ -39,6 +39,7 @@ enum cmdq_type {
+ 
+ /* Command queue item. */
+ struct cmdq_item {
++	struct client *origin_client;
+ 	char			*name;
+ 	struct cmdq_list	*queue;
+ 	struct cmdq_item	*next;
+@@ -155,6 +156,12 @@ cmdq_get_client(struct cmdq_item *item)
+ }
+ 
+ /* Get item target client. */
++struct client *
++cmdq_get_origin_client(struct cmdq_item *item)
++{
++ return (item->origin_client);
++}
++
+ struct client *
+ cmdq_get_target_client(struct cmdq_item *item)
+ {
+@@ -453,6 +460,7 @@ cmdq_continue(struct cmdq_item *item)
+ static void
+ cmdq_remove(struct cmdq_item *item)
+ {
++	tmux_ide_interaction_forget(item);
+ 	if (item->client != NULL)
+ 		server_client_unref(item->client);
+ 	if (item->cmdlist != NULL)
+@@ -607,6 +615,8 @@ cmdq_fire_command(struct cmdq_item *item)
+ 	int			 flags, quiet = 0;
+ 	char			*tmp;
+ 
++	/* Capture the real queue issuer before target-client fallback. */
++	item->origin_client = saved;
+ 	if (cfg_finished)
+ 		cmdq_add_message(item);
+ 	if (log_get_level() > 1) {
+diff --git a/cmd.c b/cmd.c
+index 6916da7..807a1cd 100644
+--- a/cmd.c
++++ b/cmd.c
+@@ -118,6 +118,7 @@ extern const struct cmd_entry cmd_switch_client_entry;
+ extern const struct cmd_entry cmd_unbind_key_entry;
+ extern const struct cmd_entry cmd_unlink_window_entry;
+ extern const struct cmd_entry cmd_wait_for_entry;
++extern const struct cmd_entry cmd_tmux_ide_events_entry;
+ 
+ const struct cmd_entry *cmd_table[] = {
+ 	&cmd_attach_session_entry,
+@@ -211,6 +212,7 @@ const struct cmd_entry *cmd_table[] = {
+ 	&cmd_unbind_key_entry,
+ 	&cmd_unlink_window_entry,
+ 	&cmd_wait_for_entry,
++	&cmd_tmux_ide_events_entry,
+ 	NULL
+ };
+ 
+diff --git a/server-client.c b/server-client.c
+index 52886f0..259edb3 100644
+--- a/server-client.c
++++ b/server-client.c
+@@ -292,6 +292,7 @@ server_client_create(int fd)
+ 
+ 	c = xcalloc(1, sizeof *c);
+ 	c->references = 1;
++	c->tmux_ide_connection_id = tmux_ide_interaction_connection();
+ 	c->peer = proc_add_peer(server_proc, fd, server_client_dispatch, c);
+ 
+ 	if (gettimeofday(&c->creation_time, NULL) != 0)
+@@ -438,6 +439,7 @@ server_client_lost(struct client *c)
+ 	struct client_window	*cw, *cw1;
+ 
+ 	c->flags |= CLIENT_DEAD;
++	tmux_ide_interaction_client_lost(c);
+ 
+ 	server_client_clear_overlay(c);
+ 	status_prompt_clear(c);
+diff --git a/server.c b/server.c
+index 49cac8b..3517036 100644
+--- a/server.c
++++ b/server.c
+@@ -252,6 +252,7 @@ server_start(struct tmuxproc *client, uint64_t flags, struct event_base *base,
+ 
+ 	server_add_accept(0);
+ 	proc_loop(server_proc, server_loop);
++	tmux_ide_interaction_free();
+ 
+ 	job_kill_all();
+ 	status_prompt_save_history();
+diff --git a/tmux-ide-journal.c b/tmux-ide-journal.c
+new file mode 100644
+index 0000000..82d1c87
+--- /dev/null
++++ b/tmux-ide-journal.c
+@@ -0,0 +1,244 @@
++/*
++ * Copyright (c) 2026 wavyrai
++ *
++ * Permission to use, copy, modify, and distribute this software for any
++ * purpose with or without fee is hereby granted, provided that the above
++ * copyright notice and this permission notice appear in all copies.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
++ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
++ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
++ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
++ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
++ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
++ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
++ */
++#include <sys/types.h>
++#include <errno.h>
++#include <inttypes.h>
++#include <stdarg.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include "tmux.h"
++#include "tmux-ide-journal.h"
++
++static struct ti_ring *ti_journal;
++static char ti_server_epoch[37], ti_journal_epoch[37];
++static uint64_t ti_connection_counter;
++static struct event ti_wakeup;
++static int ti_wakeup_initialized, ti_wakeup_pending;
++struct ti_waiter {
++ struct cmdq_item *item;
++ struct client *client;
++ uint64_t after;
++ unsigned limit;
++ char epoch[37];
++};
++static struct ti_waiter ti_waiters[TI_MAX_WAITERS];
++static enum cmd_retval ti_exec(struct cmd *, struct cmdq_item *);
++static void ti_wake(int, short, void *);
++static void ti_read(struct cmdq_item *, const char *, uint64_t, unsigned);
++
++const struct cmd_entry cmd_tmux_ide_events_entry = {
++ .name = "tmux-ide-events", .alias = NULL,
++#ifdef TMUX_IDE_JOURNAL_TEST
++ .args = { "VeirwE:a:n:TFX", 0, 0, NULL },
++#else
++ .args = { "VeirwE:a:n:", 0, 0, NULL },
++#endif
++ .usage = "-V | -e | -i | -r [-w] -E epoch -a cursor [-n limit]",
++ .flags = 0, .exec = ti_exec
++};
++
++static void ti_uuid(char *out) {
++ unsigned char b[16];
++ arc4random_buf(b, sizeof b);
++ b[6] = (b[6] & 15) | 64;
++ b[8] = (b[8] & 63) | 128;
++ snprintf(out, 37,
++  "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
++  b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7],b[8],b[9],b[10],b[11],b[12],b[13],b[14],b[15]);
++}
++static void ti_initialize(void) {
++ if (*ti_server_epoch) return;
++ ti_uuid(ti_server_epoch);
++ ti_uuid(ti_journal_epoch);
++ evtimer_set(&ti_wakeup, ti_wake, NULL);
++ ti_wakeup_initialized = 1;
++}
++uint64_t tmux_ide_interaction_connection(void) {
++ ti_initialize();
++ /* Exhaustion cannot recycle a connection identity within the server epoch. */
++ if (ti_connection_counter == UINT64_MAX) return 0;
++ return ++ti_connection_counter;
++}
++void tmux_ide_interaction_forget(struct cmdq_item *item) {
++ unsigned i;
++ for (i = 0; i < TI_MAX_WAITERS; i++)
++  if (ti_waiters[i].item == item) memset(&ti_waiters[i], 0, sizeof ti_waiters[i]);
++}
++void tmux_ide_interaction_client_lost(struct client *client) {
++ unsigned i;
++ for (i = 0; i < TI_MAX_WAITERS; i++) {
++  if (ti_waiters[i].client != client) continue;
++  cmdq_continue(ti_waiters[i].item);
++  memset(&ti_waiters[i], 0, sizeof ti_waiters[i]);
++ }
++}
++void tmux_ide_interaction_free(void) {
++ if (ti_wakeup_initialized) evtimer_del(&ti_wakeup);
++ memset(ti_waiters, 0, sizeof ti_waiters);
++ free(ti_journal);
++ ti_journal = NULL;
++}
++void tmux_ide_interaction_append(const struct ti_record *record) {
++ if (ti_journal == NULL) return;
++ if (!ti_append(ti_journal, record)) {
++  memset(ti_journal, 0, sizeof *ti_journal);
++  ti_uuid(ti_journal_epoch);
++  (void)ti_append(ti_journal, record);
++ }
++ /* Serialization occurs on a later event-loop turn, never on the producer. */
++ if (!ti_wakeup_pending) {
++  ti_wakeup_pending = 1;
++  event_active(&ti_wakeup, EV_TIMEOUT, 1);
++ }
++}
++static int ti_decimal(const char *text, uint64_t *value) {
++ char *end;
++ const char *p;
++ unsigned long long parsed;
++ if (text == NULL || !*text || strlen(text) > 20) return 0;
++ for (p = text; *p; p++) if (*p < '0' || *p > '9') return 0;
++ errno = 0;
++ parsed = strtoull(text, &end, 10);
++ if (errno || *end || parsed > UINT64_MAX) return 0;
++ *value = parsed;
++ return 1;
++}
++static void ti_capability(struct cmdq_item *item) {
++ unsigned i, waiting = 0;
++ for (i = 0; i < TI_MAX_WAITERS; i++) if (ti_waiters[i].item) waiting++;
++ cmdq_print(item, "{\"schemaVersion\":1,\"type\":\"capability\","
++  "\"serverEpoch\":\"%s\",\"journalEpoch\":\"%s\",\"enabled\":%s,"
++  "\"coverage\":[],\"capacity\":%u,\"maxBatch\":%u,\"maxWaiters\":%u,\"waitingReaders\":%u}",
++  ti_server_epoch, ti_journal_epoch, ti_journal ? "true" : "false",
++  TI_CAPACITY, TI_MAX_BATCH, TI_MAX_WAITERS, waiting);
++}
++/* All fields are numbers/enums or internally minted UUIDs. No arbitrary text. */
++static int ti_format(char *out, size_t capacity, size_t *used, const char *fmt, ...) {
++ int n;
++ va_list ap;
++ if (*used >= capacity) return 0;
++ va_start(ap, fmt);
++ n = vsnprintf(out + *used, capacity - *used, fmt, ap);
++ va_end(ap);
++ if (n < 0 || (size_t)n >= capacity - *used) return 0;
++ *used += n;
++ return 1;
++}
++static void ti_read(struct cmdq_item *item, const char *epoch, uint64_t after, unsigned limit) {
++ char out[131072];
++ size_t used = 0;
++ uint64_t oldest, first, last, seq;
++ const struct ti_record *record;
++ if (strcmp(epoch, ti_journal_epoch)) {
++  cmdq_print(item, "{\"schemaVersion\":1,\"type\":\"reset\",\"serverEpoch\":\"%s\",\"journalEpoch\":\"%s\"}", ti_server_epoch, ti_journal_epoch);
++  return;
++ }
++ if (after > ti_journal->newest) { cmdq_error(item, "invalid journal cursor"); return; }
++ oldest = ti_oldest(ti_journal);
++ first = after == UINT64_MAX ? UINT64_MAX : after + 1;
++ if (first < oldest) first = oldest;
++ last = after;
++#define TI_OUT(...) do { if (!ti_format(out, sizeof out, &used, __VA_ARGS__)) goto too_large; } while (0)
++ TI_OUT("{\"schemaVersion\":1,\"type\":\"batch\",\"serverEpoch\":\"%s\",\"journalEpoch\":\"%s\",\"oldest\":\"%"PRIu64"\",\"newest\":\"%"PRIu64"\",\"gap\":",ti_server_epoch,ti_journal_epoch,oldest,ti_journal->newest);
++ if (after < oldest - 1) TI_OUT("{\"from\":\"%"PRIu64"\",\"through\":\"%"PRIu64"\"}",after+1,oldest-1);
++ else TI_OUT("null");
++ TI_OUT(",\"records\":[");
++ for (seq = first; seq <= ti_journal->newest && limit && seq > after; seq++, limit--) {
++  record = ti_at(ti_journal, seq);
++  if (record == NULL) break;
++  TI_OUT("%s{\"sequence\":\"%"PRIu64"\",\"commandId\":\"%"PRIu64"\",\"issuerId\":\"%"PRIu64"\",\"monotonicUs\":\"%"PRIu64"\",\"count\":\"%"PRIu64"\",\"targetId\":%u,\"kind\":%u,\"outcome\":%u,\"flags\":%u}",seq==first?"":",",record->sequence,record->command_id,record->issuer_id,record->monotonic_us,record->count,record->target_id,record->kind,record->outcome,record->flags);
++  last = seq;
++  if (seq == UINT64_MAX) break;
++ }
++ TI_OUT("],\"next\":\"%"PRIu64"\"}",last);
++ cmdq_print(item, "%s", out);
++ return;
++too_large:
++ cmdq_error(item, "journal serialization limit exceeded");
++#undef TI_OUT
++}
++static void ti_wake(__unused int fd, __unused short events, __unused void *arg) {
++ unsigned i;
++ struct ti_waiter waiter;
++ ti_wakeup_pending = 0;
++ for (i = 0; i < TI_MAX_WAITERS; i++) {
++  if (!ti_waiters[i].item) continue;
++  waiter = ti_waiters[i];
++  memset(&ti_waiters[i], 0, sizeof ti_waiters[i]);
++  if (!(waiter.client->flags & CLIENT_DEAD)) ti_read(waiter.item, waiter.epoch, waiter.after, waiter.limit);
++  cmdq_continue(waiter.item);
++ }
++}
++static enum cmd_retval ti_exec(struct cmd *cmd, struct cmdq_item *item) {
++ struct args *args = cmd_get_args(cmd);
++ struct client *client = cmdq_get_origin_client(item);
++ uint64_t after, limit = TI_MAX_BATCH;
++ const char *epoch;
++ unsigned i;
++ int modes = args_has(args,'V') + args_has(args,'e') + args_has(args,'i') + args_has(args,'r');
++ ti_initialize();
++#ifdef TMUX_IDE_JOURNAL_TEST
++ if (args_has(args,'X')) {
++  struct ti_record record = {0};
++  if (!ti_journal) { cmdq_error(item,"journal disabled"); return CMD_RETURN_ERROR; }
++  ti_journal->newest = UINT64_MAX;
++  tmux_ide_interaction_append(&record);
++  return CMD_RETURN_NORMAL;
++ }
++ if (args_has(args,'T')) {
++  struct ti_record record = {0};
++  if (!ti_journal) { cmdq_error(item,"journal disabled"); return CMD_RETURN_ERROR; }
++  record.kind = 255;
++  record.issuer_id = client ? client->tmux_ide_connection_id : 0;
++  tmux_ide_interaction_append(&record);
++  return CMD_RETURN_NORMAL;
++ }
++#endif
++ if (modes != 1 || (!args_has(args,'r') && (args_has(args,'w') || args_has(args,'E') || args_has(args,'a') || args_has(args,'n')))) {
++  cmdq_error(item,"invalid journal arguments"); return CMD_RETURN_ERROR;
++ }
++ if (args_has(args,'e') && !ti_journal) {
++#ifdef TMUX_IDE_JOURNAL_TEST
++  if (args_has(args,'F')) ti_journal = NULL;
++  else
++#endif
++  ti_journal = calloc(1,sizeof *ti_journal);
++  if (!ti_journal) { cmdq_error(item,"journal allocation unavailable; terminal operation unaffected"); return CMD_RETURN_ERROR; }
++ }
++ if (args_has(args,'V') || args_has(args,'e')) { ti_capability(item); return CMD_RETURN_NORMAL; }
++ if (args_has(args,'i')) {
++  cmdq_print(item,"{\"schemaVersion\":1,\"type\":\"identity\",\"serverEpoch\":\"%s\",\"connectionId\":\"%"PRIu64"\"}",ti_server_epoch,client?client->tmux_ide_connection_id:0);
++  return CMD_RETURN_NORMAL;
++ }
++ if (!ti_journal) { cmdq_error(item,"journal disabled"); return CMD_RETURN_ERROR; }
++ epoch = args_get(args,'E');
++ if (!epoch || strlen(epoch)!=36 || !ti_decimal(args_get(args,'a'),&after) ||
++  (args_has(args,'n') && (!ti_decimal(args_get(args,'n'),&limit) || limit < 1 || limit > TI_MAX_BATCH))) {
++  cmdq_error(item,"invalid journal cursor arguments"); return CMD_RETURN_ERROR;
++ }
++ if (strcmp(epoch,ti_journal_epoch) || !args_has(args,'w') || after != ti_journal->newest) {
++  ti_read(item,epoch,after,(unsigned)limit); return CMD_RETURN_NORMAL;
++ }
++ if (!client) { cmdq_error(item,"journal wait requires originating client"); return CMD_RETURN_ERROR; }
++ for (i=0;i<TI_MAX_WAITERS;i++) if (!ti_waiters[i].item) {
++  ti_waiters[i].item=item; ti_waiters[i].client=client;
++  ti_waiters[i].after=after; ti_waiters[i].limit=(unsigned)limit;
++  memcpy(ti_waiters[i].epoch,epoch,37);
++  return CMD_RETURN_WAIT;
++ }
++ cmdq_error(item,"journal waiter limit exceeded"); return CMD_RETURN_ERROR;
++}
+diff --git a/tmux-ide-journal.h b/tmux-ide-journal.h
+new file mode 100644
+index 0000000..4f7ae1e
+--- /dev/null
++++ b/tmux-ide-journal.h
+@@ -0,0 +1,50 @@
++/*
++ * Copyright (c) 2026 wavyrai
++ *
++ * Permission to use, copy, modify, and distribute this software for any
++ * purpose with or without fee is hereby granted, provided that the above
++ * copyright notice and this permission notice appear in all copies.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
++ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
++ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
++ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
++ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
++ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
++ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
++ */
++#ifndef TMUX_IDE_JOURNAL_H
++#define TMUX_IDE_JOURNAL_H
++#include <stddef.h>
++#include <stdint.h>
++#include <string.h>
++#define TI_CAPACITY 4096
++#define TI_MAX_BATCH 256
++#define TI_MAX_WAITERS 4
++/* Metadata only. Zero ids mean unavailable, never an inferred target client. */
++struct ti_record {
++ uint64_t sequence, command_id, issuer_id, monotonic_us, count;
++ uint32_t target_id, kind, outcome, flags;
++};
++struct ti_ring {
++ uint64_t newest;
++ struct ti_record records[TI_CAPACITY];
++};
++_Static_assert(sizeof(struct ti_ring) <= 2 * 1024 * 1024, "journal memory bound");
++static inline uint64_t ti_oldest(const struct ti_ring *r) {
++ return r->newest < TI_CAPACITY ? 1 : r->newest - TI_CAPACITY + 1;
++}
++/* No allocation, callbacks or I/O. Caller resets epoch on counter exhaustion. */
++static inline int ti_append(struct ti_ring *r, const struct ti_record *record) {
++ struct ti_record copy;
++ if (r->newest == UINT64_MAX) return 0;
++ copy = *record;
++ copy.sequence = ++r->newest;
++ r->records[(copy.sequence - 1) % TI_CAPACITY] = copy;
++ return 1;
++}
++static inline const struct ti_record *ti_at(const struct ti_ring *r, uint64_t seq) {
++ if (!seq || seq < ti_oldest(r) || seq > r->newest) return NULL;
++ return &r->records[(seq - 1) % TI_CAPACITY];
++}
++#endif
+diff --git a/tmux.h b/tmux.h
+index c9f8a32..9d0341a 100644
+--- a/tmux.h
++++ b/tmux.h
+@@ -2032,6 +2032,7 @@ typedef int (*overlay_key_cb)(struct client *, void *, struct key_event *);
+ typedef void (*overlay_free_cb)(struct client *, void *);
+ typedef void (*overlay_resize_cb)(struct client *, void *);
+ struct client {
++	uint64_t tmux_ide_connection_id;
+ 	const char		*name;
+ 	struct tmuxpeer		*peer;
+ 	const char		*user;
+@@ -2935,6 +2936,15 @@ struct cmd_parse_result *cmd_parse_from_buffer(const void *, size_t,
+ struct cmd_parse_result *cmd_parse_from_arguments(struct args_value *, u_int,
+ 		     struct cmd_parse_input *);
+ 
++/* tmux-ide-journal.c: optional metadata observer, never input authority. */
++struct ti_record;
++uint64_t tmux_ide_interaction_connection(void);
++void tmux_ide_interaction_forget(struct cmdq_item *);
++void tmux_ide_interaction_client_lost(struct client *);
++void tmux_ide_interaction_free(void);
++void tmux_ide_interaction_append(const struct ti_record *);
++struct client *cmdq_get_origin_client(struct cmdq_item *);
++
+ /* cmd-queue.c */
+ struct cmdq_state *cmdq_new_state(struct cmd_find_state *, struct key_event *,
+ 		     int);

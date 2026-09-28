@@ -57,7 +57,17 @@ stock native library merely because the JavaScript package version matches.
 `e476c1230b958df0cb12977517d24b3dc931375b` and the checksum of
 [native-grid.patch](../native/tmux/native-grid.patch). This is the native grid
 capability consumed by canonical terminal capture. The
-[builder](../scripts/build-bundled-tmux.mjs) verifies both source and patch identity.
+[builder](../scripts/build-bundled-tmux.mjs) verifies the source and every ordered
+patch identity. The second patch,
+[interaction-journal-v1.patch](../native/tmux/interaction-journal-v1.patch), adds an
+experimental bounded metadata journal foundation. It ships disabled and currently
+advertises no command/effect coverage; enabling it does not instrument input yet.
+It must not be treated as evidence of agent attribution. Its ISC notice is included
+in native bundles. Run `node scripts/test-tmux-interaction-native.mjs --source
+/path/to/pinned/tmux` for the ASan/UBSan ring and disposable-server lifecycle gate.
+Production bundle qualification rejects test-only journal injection commands.
+The journal adds in-process C code: observer overflow/disconnect is isolated from
+input, but a native memory-safety failure cannot be isolated from the tmux server.
 
 Regression evidence includes
 [native-grid capture](../packages/daemon/src/terminal/mirror/native-grid-capture.test.ts),
