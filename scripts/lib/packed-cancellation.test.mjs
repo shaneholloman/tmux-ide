@@ -89,3 +89,21 @@ for (const mode of ["signal", "failure"])
       await closed;
     }
   });
+
+test("command deadline escalates a TERM-resistant retained child and keeps uncertainty", async () => {
+  const c = createPackedCancellation({ signals: new EventEmitter(), commandKillGraceMs: 30 });
+  try {
+    const result = await c.command(
+      process.execPath,
+      ["-e", "process.on('SIGTERM',()=>{});process.stdout.write('ready');setInterval(()=>{},1000)"],
+      { timeout: 200 },
+    );
+    assert.equal(result.stdout, "ready");
+    assert.equal(result.signal, "SIGKILL");
+    assert.equal(c.facts().uncertainCommand, true);
+    assert.equal(c.facts().commands[0].settled, true);
+    assert.throws(() => process.kill(result.pid, 0), { code: "ESRCH" });
+  } finally {
+    c.dispose();
+  }
+});

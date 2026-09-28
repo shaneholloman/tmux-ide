@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 
 /** Cooperative fixture cancellation. Never kills an npm/compiler process tree by inference. */
-export function createPackedCancellation({ signals = process } = {}) {
+export function createPackedCancellation({ signals = process, commandKillGraceMs = 1000 } = {}) {
   const controller = new AbortController();
   const commands = [];
   let cleanupDepth = 0,
@@ -82,6 +82,8 @@ export function createPackedCancellation({ signals = process } = {}) {
     async command(file, args, options = {}) {
       check();
       let child;
+      let escalation;
+      let escalated = false;
       const result = await new Promise((resolve) => {
         child = execFile(
           file,
@@ -92,15 +94,37 @@ export function createPackedCancellation({ signals = process } = {}) {
             timeout: options.timeout ?? 180000,
             maxBuffer: options.maxBuffer ?? 8 * 1024 * 1024,
           },
-          (error, stdout, stderr) =>
+          (error, stdout, stderr) => {
+            clearTimeout(escalation);
             resolve({
               status: error ? (typeof error.code === "number" ? error.code : null) : 0,
               signal: error?.signal ?? null,
               error: error ?? undefined,
               stdout,
               stderr,
-            }),
+            });
+          },
         );
+        // execFile sends TERM at its deadline, but npm may defer TERM while
+        // network requests drain. Escalate only this retained child handle.
+        // Forced root exit never proves descendants retired: evidence stays
+        // uncertain and the outer gate must retain the private fixture roots.
+        escalation = setTimeout(
+          () => {
+            if (child.exitCode !== null || child.signalCode !== null) return;
+            uncertainCommand = true;
+            escalated = true;
+            child.kill("SIGKILL");
+          },
+          (options.timeout ?? 180000) + commandKillGraceMs,
+        );
+        child.once("exit", () => {
+          if (!escalated) return;
+          // An inherited pipe must not keep execFile waiting after root exit.
+          // Do not infer authority to signal an unidentified descendant.
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+        });
         if (options.stdio === "inherit") {
           child.stdout?.pipe(process.stdout, { end: false });
           child.stderr?.pipe(process.stderr, { end: false });
