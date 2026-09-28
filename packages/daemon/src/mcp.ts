@@ -47,7 +47,7 @@ export function createTmuxIdeMcpServer(client: AutomationClient): McpServer {
       inputSchema: z.object({}).strict(),
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
-    async () => call(() => client.discover()),
+    async (_args, context) => call(() => client.discover({ signal: context.mcpReq.signal })),
   );
   server.registerTool(
     "tmux_prepare",
@@ -57,7 +57,8 @@ export function createTmuxIdeMcpServer(client: AutomationClient): McpServer {
       inputSchema: z.object({ intent: AutomationOperationIntentSchemaZ }).strict(),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
     },
-    async ({ intent }) => call(() => client.reserve(intent)),
+    async ({ intent }, context) =>
+      call(() => client.reserve(intent, { signal: context.mcpReq.signal })),
   );
   server.registerTool(
     "tmux_execute",
@@ -72,7 +73,8 @@ export function createTmuxIdeMcpServer(client: AutomationClient): McpServer {
         .strict(),
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
     },
-    async ({ handle, intent }) => call(() => client.execute(handle, intent)),
+    async ({ handle, intent }, context) =>
+      call(() => client.execute(handle, intent, { signal: context.mcpReq.signal })),
   );
   server.registerTool(
     "tmux_operation_status",
@@ -82,7 +84,8 @@ export function createTmuxIdeMcpServer(client: AutomationClient): McpServer {
       inputSchema: z.object({ handle: AutomationOperationHandleSchemaZ }).strict(),
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
-    async ({ handle }) => call(() => client.status(handle)),
+    async ({ handle }, context) =>
+      call(() => client.status(handle, { signal: context.mcpReq.signal })),
   );
   server.registerTool(
     "tmux_interactions",

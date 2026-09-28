@@ -134,3 +134,66 @@ describe("shared automation transport", () => {
     expect(bodies).toHaveLength(1);
   });
 });
+
+describe("automation cancellation", () => {
+  it("prevents dispatch when already cancelled", async () => {
+    let calls = 0;
+    const controller = new AbortController();
+    controller.abort();
+    const api = client((async () => {
+      calls++;
+      return Response.json(sent);
+    }) as typeof fetch);
+    await expect(api.execute(handle, intent, { signal: controller.signal })).rejects.toMatchObject({
+      code: "request-cancelled",
+      handle,
+    });
+    expect(calls).toBe(0);
+  });
+  it("keeps the original handle and never retries cancellation after dispatch", async () => {
+    let calls = 0;
+    const controller = new AbortController();
+    const api = client((async (_input, init) => {
+      calls++;
+      controller.abort();
+      init?.signal?.throwIfAborted();
+      return Response.json(sent);
+    }) as typeof fetch);
+    await expect(api.execute(handle, intent, { signal: controller.signal })).rejects.toMatchObject({
+      code: "response-unconfirmed",
+      handle,
+    });
+    expect(calls).toBe(1);
+  });
+  it("cancels a stalled response body without retaining or exposing received chunks", async () => {
+    const controller = new AbortController();
+    let cancelCount = 0;
+    let connected!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      connected = resolve;
+    });
+    let calls = 0;
+    const api = client((async () => {
+      calls++;
+      return new Response(
+        new ReadableStream({
+          start(stream) {
+            stream.enqueue(new TextEncoder().encode("private partial content"));
+            connected();
+          },
+          cancel() {
+            cancelCount++;
+          },
+        }),
+      );
+    }) as typeof fetch);
+    const execution = api.execute(handle, intent, { signal: controller.signal });
+    await ready;
+    controller.abort();
+    const error = await execution.catch((reason: unknown) => reason);
+    expect(error).toMatchObject({ code: "response-unconfirmed", handle });
+    expect(String(error)).not.toContain("private partial content");
+    expect(calls).toBe(1);
+    expect(cancelCount).toBe(1);
+  });
+});

@@ -16,6 +16,10 @@ import {
   type TmuxInteractionSubscriptionOptions,
 } from "./tmux-server-interaction-events.ts";
 
+export interface AutomationRequestOptions {
+  readonly signal?: AbortSignal;
+}
+
 export interface AutomationClientOptions {
   readonly baseUrl: string;
   readonly ownerToken: string;
@@ -39,20 +43,31 @@ export class AutomationInvocationError extends Error {
   }
 }
 
-async function boundedResponse(response: Response, limit: number): Promise<unknown> {
+async function boundedResponse(
+  response: Response,
+  limit: number,
+  signal: AbortSignal,
+): Promise<unknown> {
   if (!response.body) throw new Error("Missing automation response");
   const reader = response.body.getReader();
+  const cancel = () => {
+    void reader.cancel().catch(() => undefined);
+  };
+  signal.addEventListener("abort", cancel, { once: true });
   const chunks: Uint8Array[] = [];
   let size = 0;
   try {
+    signal.throwIfAborted();
     for (;;) {
       const next = await reader.read();
+      signal.throwIfAborted();
       if (next.done) break;
       size += next.value.byteLength;
       if (size > limit) throw new Error("Automation response exceeds bound");
       chunks.push(next.value);
     }
   } finally {
+    signal.removeEventListener("abort", cancel);
     await reader.cancel().catch(() => undefined);
     reader.releaseLock();
   }
@@ -85,24 +100,33 @@ export function createAutomationClient(options: AutomationClientOptions) {
     schema: { parse(value: unknown): T },
     body?: unknown,
     handle: AutomationOperationHandle | null = null,
+    signal?: AbortSignal,
   ): Promise<T> {
+    if (signal?.aborted) throw new AutomationInvocationError("request-cancelled", handle);
     const serialized = body === undefined ? undefined : JSON.stringify(body);
+    let dispatched = false;
     // Reservation is single-shot. Only execution retries, with the exact minted
     // handle/body; expiry and restart are terminal daemon refusals.
     const attempts = path === "/execute" ? 2 : 1;
     for (let attempt = 0; attempt < attempts; attempt++) {
       try {
+        signal?.throwIfAborted();
+        const requestSignal = signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
+          : AbortSignal.timeout(timeoutMs);
+        dispatched = true;
         const response = await requestFetch(`${baseUrl}${AUTOMATION_API_PATH}${path}`, {
           method: serialized === undefined ? "GET" : "POST",
           headers,
           body: serialized,
-          signal: AbortSignal.timeout(timeoutMs),
+          signal: requestSignal,
           redirect: "error",
           cache: "no-store",
         });
         const result = await boundedResponse(
           response,
           path === "/panes" ? 8 * 1024 * 1024 : 128 * 1024,
+          requestSignal,
         );
         const failure = AutomationErrorResponseSchemaZ.safeParse(result);
         if (failure.success) throw new AutomationInvocationError(failure.data.error.code, handle);
@@ -120,6 +144,11 @@ export function createAutomationClient(options: AutomationClientOptions) {
         }
         return parsed;
       } catch (error) {
+        if (signal?.aborted)
+          throw new AutomationInvocationError(
+            dispatched ? "response-unconfirmed" : "request-cancelled",
+            handle,
+          );
         if (error instanceof AutomationInvocationError) throw error;
         if (attempt + 1 === attempts)
           throw new AutomationInvocationError("response-unconfirmed", handle);
@@ -129,33 +158,42 @@ export function createAutomationClient(options: AutomationClientOptions) {
   }
 
   return {
-    discover: () => request("/panes", AutomationPanesResponseSchemaZ),
-    reserve(intent: AutomationOperationIntent) {
+    discover: (requestOptions: AutomationRequestOptions = {}) =>
+      request("/panes", AutomationPanesResponseSchemaZ, undefined, null, requestOptions.signal),
+    reserve(intent: AutomationOperationIntent, requestOptions: AutomationRequestOptions = {}) {
       return request(
         "/reserve",
         AutomationReserveResponseSchemaZ,
         AutomationReserveRequestSchemaZ.parse({ version: 1, intent }),
+        null,
+        requestOptions.signal,
       );
     },
-    async execute(handle: AutomationOperationHandle, intent: AutomationOperationIntent) {
+    async execute(
+      handle: AutomationOperationHandle,
+      intent: AutomationOperationIntent,
+      requestOptions: AutomationRequestOptions = {},
+    ) {
       const parsed = AutomationExecuteRequestSchemaZ.parse({ version: 1, handle, intent });
       const result = await request(
         "/execute",
         AutomationExecuteResponseSchemaZ,
         parsed,
         parsed.handle,
+        requestOptions.signal,
       );
       if (result.result.kind !== parsed.intent.kind)
         throw new AutomationInvocationError("response-unconfirmed", parsed.handle);
       return result;
     },
-    status(handle: AutomationOperationHandle) {
+    status(handle: AutomationOperationHandle, requestOptions: AutomationRequestOptions = {}) {
       const parsed = AutomationOperationHandleSchemaZ.parse(handle);
       return request(
         `/operations/${parsed.generation}/${parsed.operationId}`,
         AutomationStatusResponseSchemaZ,
         undefined,
         parsed,
+        requestOptions.signal,
       );
     },
     subscribe(

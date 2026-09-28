@@ -76,6 +76,10 @@ async function connect(client: AutomationClient) {
   input.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
   return {
     rpc,
+    cancelLatest: () =>
+      input.write(
+        `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: sequence } })}\n`,
+      ),
     close: async () => {
       await server.close();
       input.destroy();
@@ -107,7 +111,9 @@ describe("MCP stdio adapter", () => {
     const wire = await connect(client);
     try {
       await wire.rpc("tools/call", { name: "tmux_prepare", arguments: { intent } });
-      expect(client.reserve).toHaveBeenCalledExactlyOnceWith(intent);
+      expect(client.reserve).toHaveBeenCalledExactlyOnceWith(intent, {
+        signal: expect.any(AbortSignal),
+      });
       expect(client.execute).not.toHaveBeenCalled();
       await wire.rpc("tools/call", {
         name: "tmux_execute",
@@ -115,7 +121,9 @@ describe("MCP stdio adapter", () => {
       });
       expect(client.execute).not.toHaveBeenCalled();
       await wire.rpc("tools/call", { name: "tmux_execute", arguments: { handle, intent } });
-      expect(client.execute).toHaveBeenCalledExactlyOnceWith(handle, intent);
+      expect(client.execute).toHaveBeenCalledExactlyOnceWith(handle, intent, {
+        signal: expect.any(AbortSignal),
+      });
     } finally {
       await wire.close();
     }
@@ -162,6 +170,31 @@ describe("MCP stdio adapter", () => {
       const result = response.result as { content: { text: string }[] };
       expect(JSON.parse(result.content[0]!.text)).toEqual({ cursor: resume, batch: null });
       expect(close).toHaveBeenCalledOnce();
+    } finally {
+      await wire.close();
+    }
+  });
+});
+
+describe("MCP request cancellation", () => {
+  it("passes cancellation to a dispatched automation operation", async () => {
+    let signal: AbortSignal | undefined;
+    const execute: AutomationClient["execute"] = async (_handle, _intent, options) => {
+      signal = options?.signal;
+      return new Promise((_resolve, reject) => {
+        signal!.addEventListener(
+          "abort",
+          () => reject(new AutomationInvocationError("response-unconfirmed", handle)),
+          { once: true },
+        );
+      });
+    };
+    const wire = await connect({ ...fakeClient(), execute });
+    try {
+      void wire.rpc("tools/call", { name: "tmux_execute", arguments: { handle, intent } });
+      await vi.waitFor(() => expect(signal).toBeInstanceOf(AbortSignal));
+      wire.cancelLatest();
+      await vi.waitFor(() => expect(signal!.aborted).toBe(true));
     } finally {
       await wire.close();
     }
