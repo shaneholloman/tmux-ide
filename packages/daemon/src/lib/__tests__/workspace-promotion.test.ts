@@ -218,6 +218,14 @@ class MockTmux {
 
 class FakeRegistry {
   readonly workspaces: Workspace[] = [];
+  readonly volatile = new Set<string>();
+  isVolatile(name: string): boolean {
+    return this.volatile.has(name);
+  }
+  persist(name: string): Workspace {
+    this.volatile.delete(name);
+    return this.workspaces.find((workspace) => workspace.name === name)!;
+  }
   list(): Workspace[] {
     return [...this.workspaces];
   }
@@ -235,6 +243,7 @@ class FakeRegistry {
       hasWorkspaceConfig: input.hasWorkspaceConfig,
       addedAt: new Date(NOW_MS).toISOString(),
     };
+    if (input.persistence === "volatile") this.volatile.add(workspace.name);
     this.workspaces.push(workspace);
     return workspace;
   }
@@ -749,6 +758,35 @@ describe("WorkspacePromotionAuthority", () => {
     expect(mock.paneOption("%2")!.options.get("@ide_name")).toBe("Terminal");
   });
 
+  it("explicitly promotes a previously discovered volatile session without changing its identity", async () => {
+    const mock = new MockTmux();
+    const session = mock.session("discovered", "$1");
+    const window = mock.window(session, "@1", "shell");
+    mock.pane(window, "%1", { active: true });
+    const registry = new FakeRegistry();
+    registry.add({
+      name: session.name,
+      sessionName: session.name,
+      projectDir: "/tmp/promote-project",
+      persistence: "volatile",
+    });
+    const authority = new WorkspacePromotionAuthority({
+      daemonInstanceId: DAEMON,
+      registry,
+      io: io(mock),
+    });
+    await expect(
+      authority.promote(request(fleetSessionIdForName(session.name))),
+    ).resolves.toMatchObject({ outcome: "promoted", resource: { workspaceName: session.name } });
+    expect(session.options.get("@tmux_ide_workspace_promoted_v1")).toBe("1");
+    expect(session.options.get("@tmux_ide_workspace_name")).toBe(session.name);
+    expect(registry.isVolatile(session.name)).toBe(false);
+    expect(registry.list()).toHaveLength(1);
+    await expect(
+      authority.promote(request(fleetSessionIdForName(session.name))),
+    ).resolves.toMatchObject({ outcome: "replayed" });
+  });
+
   it.each([false, true])(
     "reconciles catalog admission racing promotion, stamp failure=%s",
     async (failReconciliation) => {
@@ -796,11 +834,12 @@ describe("WorkspacePromotionAuthority", () => {
       }
       const result = await authority.promote(request(fleetSessionIdForName(session.name)));
       expect(result).toMatchObject({
-        outcome: "replayed",
+        outcome: "promoted",
         resource: { workspaceName: session.name },
       });
       expect(registry.list()).toEqual([discovered]);
       expect(session.options.get("@tmux_ide_workspace_name")).toBe(session.name);
+      expect(registry.isVolatile(session.name)).toBe(false);
       await expect(
         authority.promote(request(fleetSessionIdForName(session.name))),
       ).resolves.toMatchObject({ resource: { workspaceName: session.name } });

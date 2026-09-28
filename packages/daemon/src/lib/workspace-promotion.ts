@@ -168,6 +168,8 @@ export class WorkspacePromotionError extends Error {
 interface WorkspacePromotionRegistry {
   list(): Workspace[];
   add(input: AddWorkspaceInput): Workspace;
+  isVolatile(name: string): boolean;
+  persist(name: string): Workspace;
 }
 
 /**
@@ -561,7 +563,7 @@ export class WorkspacePromotionAuthority {
     try {
       const session = await this.#resolveSession(request.intent.sessionId);
 
-      // Already a registry workspace — including an app-created (m32) session —
+      // Already a durable registry workspace — including an app-created (m32) session —
       // is idempotent, not an error. It is NOT automatically attachable though:
       // the registry entry is keyed by session NAME and outlives the tmux
       // server, so a session re-created under a registered name carries none of
@@ -571,7 +573,7 @@ export class WorkspacePromotionAuthority {
       // before resolving to a `replayed` outcome. Stamping is additive and never
       // overwrites a valid stamp, so a healthy session is untouched.
       const alreadyRegistered = this.#registeredSession(session.sessionName);
-      if (alreadyRegistered) {
+      if (alreadyRegistered && !this.#registry.isVolatile(alreadyRegistered.name)) {
         const registeredIdentity: PromotionIdentity = {
           workspaceName: alreadyRegistered.name,
           sessionName: session.sessionName,
@@ -585,7 +587,11 @@ export class WorkspacePromotionAuthority {
         });
       }
 
-      const identity = derivePromotionIdentity(session.sessionName);
+      // Live discovery is not promotion intent. Keep its published identity,
+      // but stamp and durably admit it only after this explicit promotion.
+      const identity = alreadyRegistered
+        ? { workspaceName: alreadyRegistered.name, sessionName: session.sessionName }
+        : derivePromotionIdentity(session.sessionName);
       this.#assertConflictFreeIdentity(identity);
 
       const canonicalRoot = await this.#stampSession(request, session, identity);
@@ -625,8 +631,10 @@ export class WorkspacePromotionAuthority {
             workspaceName: discovered.name,
           });
         }
+        const wasVolatile = this.#registry.isVolatile(discovered.name);
+        this.#registry.persist(discovered.name);
         return this.#succeed(request, fingerprint, discovered.name, session.sessionName, {
-          replayed: true,
+          replayed: !wasVolatile,
         });
       }
       let registered: Workspace;
