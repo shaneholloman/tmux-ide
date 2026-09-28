@@ -11,7 +11,7 @@ const id = "00000000-0000-4000-8000-000000000001",
   epoch = "00000000-0000-4000-8000-000000000002";
 const scope = { serverId: `tmux-server.${"a".repeat(32)}`, generation: id };
 const cap: NativeJournalCapability = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   type: "capability",
   serverEpoch: id,
   journalEpoch: epoch,
@@ -21,6 +21,7 @@ const cap: NativeJournalCapability = {
     "pty-enqueue-v1",
     "capture-produced-v1",
     "cooperative-operation-v1",
+    "pane-identity-v1",
   ],
   capacity: 4096,
   maxBatch: 256,
@@ -122,7 +123,7 @@ it("publishes unresolved native evidence in the same scoped journal without gues
     r.event({
       type: "batch",
       batch: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         type: "batch",
         serverEpoch: id,
         journalEpoch: epoch,
@@ -141,6 +142,7 @@ it("publishes unresolved native evidence in the same scoped journal without gues
             monotonicUs: "1",
             count: "0",
             targetId: 0,
+            targetBirthId: "1",
             kind: 1,
             outcome: 1,
             flags: 1,
@@ -154,7 +156,7 @@ it("publishes unresolved native evidence in the same scoped journal without gues
     const entry = r.journal.read(0).receipts[0]!;
     expect(entry.type).toBe("interaction.evidence");
     expect(entry.evidence?.endpoints.destination).toMatchObject({
-      kind: "unresolved-pane",
+      kind: "native-pane",
       serverScope: { serverId: other ? `tmux-server.${"b".repeat(32)}` : scope.serverId },
     });
     expect(entry).not.toHaveProperty("workspaceName");
