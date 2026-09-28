@@ -73,3 +73,88 @@ export const AutomationOperationStatusSchemaZ = z.discriminatedUnion("status", [
 export type AutomationOperationHandle = z.infer<typeof AutomationOperationHandleSchemaZ>;
 export type AutomationOperationIntent = z.infer<typeof AutomationOperationIntentSchemaZ>;
 export type AutomationOperationSummary = z.infer<typeof AutomationOperationSummarySchemaZ>;
+
+const displayLabel = z
+  .string()
+  .max(160)
+  .refine((value) => !/[\u0000-\u001f\u007f-\u009f]/u.test(value));
+export const AutomationPanesResponseSchemaZ = z
+  .object({
+    version: z.literal(1),
+    panes: z
+      .array(
+        z
+          .object({
+            endpoint: AutomationPaneEndpointSchemaZ,
+            title: displayLabel.nullable(),
+            sessionName: displayLabel,
+          })
+          .strict(),
+      )
+      .max(4096),
+  })
+  .strict();
+export const AutomationReserveResponseSchemaZ = z
+  .object({
+    version: z.literal(1),
+    handle: AutomationOperationHandleSchemaZ,
+  })
+  .strict();
+const readContent = z.discriminatedUnion("availability", [
+  z
+    .object({
+      availability: z.literal("available"),
+      text: z
+        .string()
+        .max(16384)
+        .refine((text) => new TextEncoder().encode(text).byteLength <= 16384),
+    })
+    .strict(),
+  z.object({ availability: z.literal("replay-unavailable"), text: z.null() }).strict(),
+]);
+export const AutomationExecuteResponseSchemaZ = z
+  .object({
+    version: z.literal(1),
+    handle: AutomationOperationHandleSchemaZ,
+    result: AutomationOperationSummarySchemaZ,
+    read: readContent.optional(),
+  })
+  .strict()
+  .superRefine((response, ctx) => {
+    if (response.result.kind === "send" ? response.read !== undefined : response.read === undefined)
+      ctx.addIssue({ code: "custom", message: "Unexpected read payload" });
+    if (
+      response.result.kind === "read" &&
+      response.read?.availability === "available" &&
+      new TextEncoder().encode(response.read.text).byteLength !== response.result.returnedBytes
+    )
+      ctx.addIssue({ code: "custom", message: "Snapshot byte count mismatch" });
+  });
+export const AutomationStatusResponseSchemaZ = z.discriminatedUnion(
+  "status",
+  AutomationOperationStatusSchemaZ.options.map((schema) =>
+    schema.extend({ version: z.literal(1), handle: AutomationOperationHandleSchemaZ }),
+  ),
+);
+export const AutomationErrorResponseSchemaZ = z
+  .object({
+    error: z
+      .object({
+        code: z.enum([
+          "owner-required",
+          "invalid-request",
+          "invalid-source",
+          "invalid-target",
+          "capacity",
+          "server-unavailable",
+          "operation-unavailable",
+        ]),
+      })
+      .strict(),
+  })
+  .strict();
+export type AutomationPanesResponse = z.infer<typeof AutomationPanesResponseSchemaZ>;
+export type AutomationReserveResponse = z.infer<typeof AutomationReserveResponseSchemaZ>;
+export type AutomationExecuteResponse = z.infer<typeof AutomationExecuteResponseSchemaZ>;
+export type AutomationStatusResponse = z.infer<typeof AutomationStatusResponseSchemaZ>;
+export type AutomationErrorResponse = z.infer<typeof AutomationErrorResponseSchemaZ>;
