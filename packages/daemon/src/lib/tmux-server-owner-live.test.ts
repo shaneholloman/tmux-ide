@@ -1,3 +1,4 @@
+import { PANE_SOURCE_CREDENTIAL_OPTION } from "./pane-source-credentials.ts";
 import { Hono } from "hono";
 import { streamTmuxInteractions } from "../command-center/tmux-server-interaction-events.ts";
 import { subscribeTmuxServerInteractions } from "@tmux-ide/daemon-client/tmux-server-interaction-events";
@@ -57,6 +58,44 @@ describe.skipIf(!hasTmux).sequential("independent native tmux server owners", ()
         }),
       );
     }
+    const tokens = sockets.map((socket) =>
+      run(socket, ["show-options", "-p", "-v", "-t", "shared:0.0", PANE_SOURCE_CREDENTIAL_OPTION]),
+    );
+    expect(tokens[0]).not.toBe(tokens[1]);
+    expect(tokens.every((token) => token.length > 32)).toBe(true);
+    for (const index of [0, 1]) {
+      expect(
+        owners[index]!.resolveInteractionSource(tokens[index]!, "shared", "pane.shared"),
+      ).not.toBeNull();
+      expect(
+        owners[index]!.resolveInteractionSource(tokens[1 - index]!, "shared", "pane.shared"),
+      ).toBeNull();
+      expect(
+        owners[index]!.resolveInteractionSource(tokens[index]!, "missing", "pane.shared"),
+      ).toBeNull();
+      expect(
+        owners[index]!.resolveInteractionSource(tokens[index]!, "shared", "pane.wrong"),
+      ).toBeNull();
+    }
+    // A replaced installed credential invalidates the previous local grant.
+    run(sockets[0]!, [
+      "set-option",
+      "-p",
+      "-t",
+      "shared:0.0",
+      PANE_SOURCE_CREDENTIAL_OPTION,
+      "replaced",
+    ]);
+    expect(owners[0]!.resolveInteractionSource(tokens[0]!, "shared", "pane.shared")).toBeNull();
+    tokens[0] = run(sockets[0]!, [
+      "show-options",
+      "-p",
+      "-v",
+      "-t",
+      "shared:0.0",
+      PANE_SOURCE_CREDENTIAL_OPTION,
+    ]);
+    expect(owners[0]!.resolveInteractionSource(tokens[0]!, "shared", "pane.shared")).not.toBeNull();
     expect(owners[0]!.sessionRuntimeRegistry.sessionCount()).toBe(0);
     expect(owners[1]!.sessionRuntimeRegistry.sessionCount()).toBe(0);
     // Raw traffic must be visible before the first product mutation and must
@@ -158,6 +197,7 @@ describe.skipIf(!hasTmux).sequential("independent native tmux server owners", ()
     );
     await rename(owners[1]!, "beta");
     await owners[0]!.dispose();
+    expect(owners[0]!.resolveInteractionSource(tokens[0]!, "shared", "pane.shared")).toBeNull();
     expect(() => owners[0]!.interactionReceipts.read(beforeA)).toThrow("retired");
     await expect(owners[0]!.catalog()).rejects.toThrow("retired");
     await expect(rename(owners[0]!, "bad")).rejects.toThrow("retired");
@@ -254,9 +294,21 @@ describe.skipIf(!hasTmux).sequential("independent native tmux server owners", ()
       };
       const streamA = await open(oldA),
         streamB = await open(oldB);
+      const oldToken = run(a, [
+        "show-options",
+        "-p",
+        "-v",
+        "-t",
+        "managed:0.0",
+        PANE_SOURCE_CREDENTIAL_OPTION,
+      ]);
+      expect(oldA.resolveInteractionSource(oldToken, "managed", "pane.shared")).not.toBeNull();
       run(a, ["kill-server"]);
+      // The old in-memory grant cannot authorize when its generation runner fails.
+      expect(oldA.resolveInteractionSource(oldToken, "managed", "pane.shared")).toBeNull();
       run(a, ["new-session", "-d", "-s", "managed", "-n", "replacement", "sh"]);
       run(a, ["set-option", "-p", "-t", "managed:0.0", "@tmux_ide_pane_id", "pane.shared"]);
+      expect(oldA.resolveInteractionSource(oldToken, "managed", "pane.shared")).toBeNull();
       // A recreated socket immediately invalidates the old scope before refresh.
       await vi.waitFor(() =>
         expect(() =>

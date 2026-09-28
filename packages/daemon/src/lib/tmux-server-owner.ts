@@ -1,3 +1,7 @@
+import {
+  PaneSourceCredentialAuthority,
+  STARTUP_PANE_CREDENTIAL_TIMEOUT_MS,
+} from "./pane-source-credentials.ts";
 import { createNativeTmuxSessionCreator } from "./tmux-server-session-create.ts";
 import type { WorkspacePaneCreateMutationRequest } from "@tmux-ide/contracts";
 import { createTmuxSessionMutationFence } from "./tmux-session-mutation-fence.ts";
@@ -159,6 +163,22 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
   const assertOpen = () => {
     if (disposed) throw new Error("Tmux server owner is retired");
   };
+  const credentialLifetime = new AbortController();
+  const sourceCredentials = new PaneSourceCredentialAuthority({
+    run: (args) => {
+      assertOpen();
+      return generationRun(args);
+    },
+    runAsync: async (args, signal) => {
+      assertOpen();
+      const output = await generationRunAsync(
+        args,
+        AbortSignal.any([credentialLifetime.signal, ...(signal ? [signal] : [])]),
+      );
+      assertOpen();
+      return output;
+    },
+  });
   const sessionRuntimeRegistry: SessionRuntimeRegistry = new SessionRuntimeRegistry({
     generation,
     semanticMutations: {
@@ -286,6 +306,8 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
   const dispose = (): Promise<void> => {
     if (disposePromise) return disposePromise;
     disposed = true;
+    credentialLifetime.abort();
+    sourceCredentials.dispose();
     disposePromise = (async () => {
       await sessionOpener.dispose();
       await sessionCreator.dispose();
@@ -316,6 +338,17 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
     await terminalInventoryRuntime.whenReady();
     await catalog();
     await terminalInventoryRuntime.discoverTerminalInventory();
+    // One bounded startup pass, sequential to cap subprocess concurrency. New
+    // panes/sessions are reconciled on demand, never by a credential poller.
+    const startupSignal = AbortSignal.timeout(STARTUP_PANE_CREDENTIAL_TIMEOUT_MS);
+    for (const workspace of workspaceRegistry.list()) {
+      if (startupSignal.aborted) break;
+      try {
+        await sourceCredentials.reconcileSessionAsync(workspace.sessionName, startupSignal);
+      } catch {
+        // A failed grant is unavailable; request-time reconciliation can retry.
+      }
+    }
     observerStarted ??= observer.start();
     await observerStarted;
   } catch (error) {
@@ -369,12 +402,17 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
     get interactionEvidence(): InteractionEvidenceAuthority | null {
       return disposed ? null : interactionEvidence;
     },
-    // Nondefault owners do not yet issue source credentials. Unknown is deliberate.
     resolveInteractionSource: (
-      _credential: string,
-      _workspaceName: string,
-      _claimedSemanticPaneId: string,
-    ): ReturnType<InteractionEvidenceAuthority["captureSourceBinding"]> => null,
+      credential: string,
+      workspaceName: string,
+      claimedSemanticPaneId: string,
+    ): ReturnType<InteractionEvidenceAuthority["captureSourceBinding"]> => {
+      if (disposed) return null;
+      const session = workspaceRegistry.get(workspaceName)?.sessionName;
+      if (!session) return null;
+      const grant = sourceCredentials.resolveBinding(credential, session, claimedSemanticPaneId);
+      return grant ? interactionEvidence.captureSourceBinding(grant) : null;
+    },
     multiplexerBackend,
     sessionRuntimeRegistry,
     terminalInventoryRuntime,
