@@ -118,6 +118,12 @@ export class OwnerInteractionObservation {
       return permit;
     }, null);
   }
+  cancelUndispatchedOwnedOperation(permit: OwnedNativeOperation): void {
+    this.#withBindings((bindings) => {
+      this.#decisions(bindings.cancelUndispatchedOperation(permit));
+      this.#scheduleBindings();
+    }, undefined);
+  }
   acknowledgeOwnedOperation(
     permit: OwnedNativeOperation,
     connection: OwnedNativeConnection,

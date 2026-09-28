@@ -281,6 +281,14 @@ export class OwnedNativeInteractionBindings {
     });
     return token;
   }
+  /** Only a proven no-write refusal may call this. Exact tokens cannot cancel another attempt. */
+  cancelUndispatchedOperation(
+    token: OwnedNativeOperation,
+  ): readonly OwnedNativeInteractionDecision[] {
+    const permit = this.#permits.get(token.operationId);
+    if (!permit || permit.token !== token || permit.acknowledgement !== null) return [];
+    return this.#retire((candidate) => candidate === permit);
+  }
   acknowledge(
     token: OwnedNativeOperation,
     connectionToken: OwnedNativeConnection,
