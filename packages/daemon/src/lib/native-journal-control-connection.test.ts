@@ -1,9 +1,13 @@
 import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { NativeJournalControlConnection } from "./native-journal-control-connection.ts";
 
+// The fixture lifetime must not undercut the production five-second phase
+// watchdog while an actual Node child starts. Exact deadline behavior is tested
+// with explicit protocol barriers and a fake clock in the phase suite.
+const lifetime = () => AbortSignal.timeout(10_000);
 const epoch = "00000000-0000-4000-8000-000000000001";
 const journal = "00000000-0000-4000-8000-000000000002";
 const cursor = { serverEpoch: epoch, journalEpoch: journal, sequence: "0" };
@@ -27,7 +31,7 @@ const capability = {
   degraded: 0,
   readerTransport: "sessionless-control-v1",
 };
-function fixture(mode = "normal", replyMs = 5000) {
+function fixture(mode = "normal") {
   const directory = mkdtempSync(join(tmpdir(), "native-control-unit-"));
   const binary = join(directory, "peer");
   const pidPath = join(directory, "pid");
@@ -52,16 +56,6 @@ createInterface({input:process.stdin}).on('line',line=>{
  if(mode==='wait')return;
  n++;
  if(mode==='notify'){process.stdout.write('%sessions-changed\\n');return;}
- if(mode==='partial-begin'){process.stdout.write('%beg');return;}
- if(mode==='partial-payload'){process.stdout.write('%begin 2 '+n+' 1\\n{');return;}
- if(mode==='missing-end'){process.stdout.write('%begin 2 '+n+' 1\\n{}\\n');return;}
- if(mode==='trickle'){process.stdout.write('%begin 2 '+n+' 1\\n{');setInterval(()=>process.stdout.write(' '),100);return;}
- if(mode==='parked'){
-   process.stdout.write('%begin 2 '+n+' 1\\n');
-   setTimeout(()=>process.stdout.write(JSON.stringify({request:line})+'\\n%end 2 '+n+' 1\\n'),1800);
-   return;
- }
-
  const body=mode==='oversize'?'x'.repeat(65537):JSON.stringify({request:line});
  const end=mode==='guard'?n+1:n;
  process.stdout.write('%begin 2 '+n+' 1\\n'+body+'\\n%end 2 '+end+' 1\\n'+(mode==='trailing'?'%sessions-changed\\n':''));
@@ -72,7 +66,6 @@ createInterface({input:process.stdin}).on('line',line=>{
   const connection = new NativeJournalControlConnection(
     { executablePath: binary, socketSelector: { kind: "path", path: join(directory, "socket") } },
     epoch,
-    replyMs,
   );
   return {
     connection,
@@ -85,16 +78,17 @@ createInterface({input:process.stdin}).on('line',line=>{
 }
 
 describe("bounded sessionless native connection", () => {
+  vi.setConfig({ testTimeout: 12_000 });
   it("reuses one peer for sequential reads and retains its actual identity", async () => {
     const f = fixture();
     try {
-      await f.connection.start(AbortSignal.timeout(2000));
+      await f.connection.start(lifetime());
       const pid = f.pid();
       expect(f.connection.connectionId).toBe("8");
       for (const sequence of ["0", "1", "18446744073709551615"])
-        expect(
-          JSON.parse(await f.connection.read({ ...cursor, sequence }, AbortSignal.timeout(2000))),
-        ).toEqual({ request: `read ${journal} ${sequence} 64 1` });
+        expect(JSON.parse(await f.connection.read({ ...cursor, sequence }, lifetime()))).toEqual({
+          request: `read ${journal} ${sequence} 64 1`,
+        });
       expect(f.pid()).toBe(pid);
       await f.connection.dispose();
       expect(() => process.kill(pid, 0)).toThrow();
@@ -105,7 +99,7 @@ describe("bounded sessionless native connection", () => {
   it("rejects a different incarnation before any read", async () => {
     const f = fixture("foreign");
     try {
-      await expect(f.connection.start(AbortSignal.timeout(2000))).rejects.toThrow("incarnation");
+      await expect(f.connection.start(lifetime())).rejects.toThrow("incarnation");
     } finally {
       await f.close();
     }
@@ -115,9 +109,7 @@ describe("bounded sessionless native connection", () => {
     async (mode) => {
       const f = fixture(mode);
       try {
-        await expect(f.connection.read(cursor, AbortSignal.timeout(2000))).rejects.toThrow(
-          "protocol",
-        );
+        await expect(f.connection.read(cursor, lifetime())).rejects.toThrow("protocol");
         expect(() => process.kill(f.pid(), 0)).toThrow();
       } finally {
         await f.close();
@@ -128,12 +120,10 @@ describe("bounded sessionless native connection", () => {
     const f = fixture("wait");
     const abort = new AbortController();
     try {
-      await f.connection.start(AbortSignal.timeout(2000));
+      await f.connection.start(lifetime());
       const pending = f.connection.read(cursor, abort.signal);
       await Promise.resolve();
-      await expect(f.connection.read(cursor, AbortSignal.timeout(2000))).rejects.toThrow(
-        "in flight",
-      );
+      await expect(f.connection.read(cursor, lifetime())).rejects.toThrow("in flight");
       abort.abort();
       await expect(pending).rejects.toThrow("cancelled");
       expect(() => process.kill(f.pid(), 0)).toThrow();
@@ -141,40 +131,10 @@ describe("bounded sessionless native connection", () => {
       await f.close();
     }
   });
-  it.each(["wait", "partial-begin", "partial-payload", "missing-end", "trickle"])(
-    "bounds %s framing without waiting for lifetime cancellation",
-    async (mode) => {
-      const f = fixture(mode, 750);
-      try {
-        await f.connection.start(AbortSignal.timeout(2000));
-        await expect(f.connection.read(cursor, new AbortController().signal)).rejects.toThrow(
-          "phase deadline",
-        );
-        expect(() => process.kill(f.pid(), 0)).toThrow();
-        await expect(f.connection.read(cursor, new AbortController().signal)).rejects.toThrow();
-      } finally {
-        await f.close();
-      }
-    },
-  );
-  it("keeps a valid begun event wait on the same peer beyond reply deadlines", async () => {
-    const f = fixture("parked", 750);
-    try {
-      await f.connection.start(AbortSignal.timeout(2000));
-      const pid = f.pid();
-      expect(JSON.parse(await f.connection.read(cursor, new AbortController().signal))).toEqual({
-        request: `read ${journal} 0 64 1`,
-      });
-      expect(f.pid()).toBe(pid);
-      expect(f.connection.connectionId).toBe("8");
-    } finally {
-      await f.close();
-    }
-  });
   it("reaps a peer that ignores graceful shutdown and SIGTERM", async () => {
     const f = fixture("stubborn");
     try {
-      await f.connection.start(AbortSignal.timeout(2000));
+      await f.connection.start(lifetime());
       const pid = f.pid();
       await f.connection.dispose();
       expect(() => process.kill(pid, 0)).toThrow();
