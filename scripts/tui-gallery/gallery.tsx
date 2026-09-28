@@ -22,7 +22,7 @@ import {
 import { WorkingSessionsStory } from "./working-sessions.tsx";
 import { PaneModesStory } from "./pane-modes-story.tsx";
 import { PaneHeaderStory, FooterStory } from "./chrome-stories.tsx";
-import { GALLERY_STATES, galleryAgents, galleryMachines } from "./fixtures.ts";
+import { GALLERY_STATES, galleryAgents, galleryMachines, galleryEndpoint } from "./fixtures.ts";
 
 export function TuiGallery(props: {
   width: number;
@@ -213,6 +213,29 @@ function GalleryStory(props: {
                       },
                       at: "2026-09-28T09:00:00.000Z",
                       resourceRevision: null,
+                      evidence: {
+                        schemaVersion: 1,
+                        interactionId: "10000000-0000-4000-8000-000000000001",
+                        revision: 1,
+                        endpoints: {
+                          source: galleryEndpoint("pane.2"),
+                          destination: galleryEndpoint("pane.0"),
+                        },
+                        actor: {
+                          kind: "cooperative",
+                          bindingId: "10000000-0000-4000-8000-000000000002",
+                          agentRunId: null,
+                        },
+                        observation: {
+                          kind: "cooperative-completion",
+                          operationId: "10000000-0000-4000-8000-000000000001",
+                          verification: "daemon-snapshot",
+                        },
+                        effect: { kind: "snapshot-produced" },
+                        occurredAt: "2026-09-28T09:00:00.000Z",
+                        receivedAt: "2026-09-28T09:00:00.000Z",
+                        timeBasis: "daemon",
+                      },
                     },
                   ]
             }

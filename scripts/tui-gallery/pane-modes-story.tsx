@@ -7,6 +7,7 @@ import { OverlayFrame } from "../../packages/daemon/src/tui/mirror/ui/overlay-fr
 import { PaneInteraction } from "../../packages/daemon/src/tui/mirror/ui/pane-interaction.tsx";
 import { PaneModeControl } from "../../packages/daemon/src/tui/mirror/ui/pane-mode-control.tsx";
 import type { PaneInteractionEvent } from "../../packages/daemon/src/tui/mirror/ui/pane-interaction-presentation.ts";
+import { galleryEndpoint } from "./fixtures.ts";
 import { createInteractionPlayback } from "./pane-interaction-playback.ts";
 import { useKeyboardRoute } from "../../packages/daemon/src/tui/mirror/ui/keyboard-router.tsx";
 
@@ -48,11 +49,12 @@ const INTERACTIONS = [
     phase: "Read rejected",
   },
   {
-    label: "Input observed · sender unknown",
-    short: "Input · unknown sender",
-    detail: "Input was observed through external tmux.\nThere is no verified source agent to name.",
+    label: "Send command · sender unknown",
+    short: "Send command",
+    detail:
+      "A send command was observed through external tmux.\nDelivery and source agent are not verified.",
     source: "External tmux · unknown actor",
-    phase: "Observed input",
+    phase: "Command observed",
   },
   {
     label: "",
@@ -107,10 +109,19 @@ export function PaneModesStory(props: {
     origin: event() === 5 ? "external" : "tui",
     sourcePaneId: event() === 1 ? "codex" : event() === 3 ? "reviewer" : null,
     destinationPaneId: "claude",
+    sourceEndpoint:
+      event() === 1 ? galleryEndpoint("codex") : event() === 3 ? galleryEndpoint("reviewer") : null,
+    destinationEndpoint: galleryEndpoint("claude"),
+    effect:
+      event() === 1
+        ? { kind: "snapshot-produced" }
+        : event() === 3
+          ? { kind: "input-enqueued" }
+          : { kind: "unknown" },
     at: receiptAt(),
   });
-  const actorName = (id: string) =>
-    ({ codex: "Codex", reviewer: "Reviewer", claude: "Claude" })[id];
+  const actorName = (endpoint: ReturnType<typeof galleryEndpoint>) =>
+    ({ codex: "Codex", reviewer: "Reviewer", claude: "Claude" })[endpoint.semanticPaneId];
   const inspect = () => {
     setInspected(event() === 6 ? lastResult() : event());
     setDetails(true);

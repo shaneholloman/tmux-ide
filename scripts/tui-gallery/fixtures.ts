@@ -1,8 +1,38 @@
+import type { InteractionPaneEndpoint } from "@tmux-ide/contracts";
 import type {
   HomeAgentRow,
   HomeAgentSnapshot,
 } from "../../packages/daemon/src/tui/mirror/runtime/application-home-agents.ts";
 import type { ApplicationMachineGroup } from "../../packages/daemon/src/tui/mirror/runtime/application-machine-sidebar.tsx";
+
+/** Fictional scoped identities shared by gallery rows and activity examples. */
+export function galleryEndpoint(
+  semanticPaneId: string,
+  machine: "local" | "spark" = "local",
+): Extract<InteractionPaneEndpoint, { kind: "pane" }> {
+  const identities: Record<string, number> = {
+    "pane.0": 1,
+    "pane.1": 2,
+    "pane.2": 3,
+    codex: 4,
+    reviewer: 5,
+    claude: 6,
+  };
+  const identity = identities[semanticPaneId];
+  if (!identity) throw new Error("Unknown gallery pane");
+  const generation = `00000000-0000-4000-8000-${machine === "local" ? "000000000001" : "000000000002"}`;
+  return {
+    kind: "pane",
+    environmentId: generation,
+    serverScope: {
+      serverId: `tmux-server.${(machine === "local" ? "a" : "b").repeat(32)}`,
+      generation,
+    },
+    workspaceName: machine === "local" ? "tmux-ide" : "docs",
+    paneLifetimeId: `00000000-0000-4000-8000-${String(identity).padStart(12, "0")}`,
+    semanticPaneId,
+  };
+}
 
 export const GALLERY_STATES = [
   "mixed",
@@ -32,6 +62,8 @@ export function galleryAgents(state: GalleryState): HomeAgentSnapshot {
           daemonInstanceId: "fixture-daemon",
           agentId: `agent-${i}`,
           paneId: `pane.${i}`,
+          interactionEndpoint: galleryEndpoint(`pane.${i}`, i === 1 ? "spark" : "local"),
+          nativeIdentity: null,
           name,
           harness: i === 1 ? "claude" : "codex",
           activity:
@@ -92,6 +124,8 @@ export function galleryMachines(state: GalleryState): ApplicationMachineGroup[] 
         name: r.name,
         sessionName: r.sessionName,
         paneId: r.paneId,
+        interactionEndpoint: r.interactionEndpoint,
+        nativeIdentity: r.nativeIdentity,
         activity: r.activity,
         attention: r.attention,
         disabled: r.disabled,
