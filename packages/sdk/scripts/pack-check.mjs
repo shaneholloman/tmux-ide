@@ -19,6 +19,8 @@ try {
       root,
     ),
   );
+  if (!packed.files.some((file) => file.path === "LICENSE"))
+    throw new Error("SDK package omits its MIT license");
   for (const file of packed.files) {
     if (!/^(package\.json|README\.md|LICENSE|dist\/index\.(js|d\.ts))$/u.test(file.path))
       throw new Error(`Unexpected SDK package file: ${file.path}`);
@@ -33,6 +35,11 @@ try {
     "typescript@5.9.3",
   ]);
   const installed = join(directory, "node_modules/@tmux-ide/sdk");
+  if (
+    readFileSync(join(installed, "LICENSE"), "utf8") !==
+    readFileSync(resolve(root, "../../LICENSE"), "utf8")
+  )
+    throw new Error("SDK package license differs from bundled workspace code license");
   const metadata = JSON.parse(readFileSync(join(installed, "package.json"), "utf8"));
   for (const [name, version] of Object.entries(metadata.dependencies ?? {})) {
     if (name.startsWith("@tmux-ide/") || /^(workspace:|file:|link:)/u.test(version))

@@ -9,15 +9,27 @@ import { dts } from "rollup-plugin-dts";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const entry = resolve(root, "src/index.ts");
 mkdirSync(resolve(root, "dist"), { recursive: true });
-await build({
+const javascript = await build({
   entryPoints: [entry],
   outfile: resolve(root, "dist/index.js"),
   bundle: true,
+  metafile: true,
   format: "esm",
   platform: "browser",
   target: "es2022",
   external: ["zod", "zod/*"],
 });
+// Keep the bundled runtime limited to our MIT workspace code. A new external
+// implementation requires an explicit license review instead of silently shipping.
+for (const input of Object.keys(javascript.metafile.inputs)) {
+  const path = resolve(input);
+  if (
+    !["sdk", "contracts", "daemon-client"].some((name) =>
+      path.startsWith(resolve(root, "..", name, "src") + "/"),
+    )
+  )
+    throw new Error(`Unexpected bundled SDK dependency: ${input}`);
+}
 // Emit the workspace declaration graph once before bundling. Feeding every Zod
 // source module independently to the bundler multiplies compiler work.
 const stage = mkdtempSync(join(root, ".sdk-types-"));
