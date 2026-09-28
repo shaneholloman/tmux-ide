@@ -6,6 +6,7 @@ import { hostname, arch, cpus, platform, release, tmpdir, version as osVersion }
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { referenceWorkspaceIntent } from "./lib/performance-reference-workspace.mjs";
 import { referenceTarget } from "./lib/performance-reference-target.mjs";
 
 import {
@@ -158,10 +159,7 @@ async function launchReferenceWorkspace() {
     );
     const catalog = await responseJson(catalogResponse);
     lastCatalog = { status: catalogResponse.status, body: catalog };
-    const published = catalog?.intents?.some(
-      ({ workspaceName, sessionName, availability }) =>
-        workspaceName === target && sessionName === target && availability === "live",
-    );
+    const published = catalogResponse.ok ? referenceWorkspaceIntent(catalog, target) : null;
     if (published) {
       const panesResponse = await fetch(
         `http://${daemon.bindHostname}:${daemon.port}/api/project/${encodeURIComponent(target)}/panes`,
@@ -195,10 +193,7 @@ async function launchReferenceWorkspace() {
           attachable.length > 0
         ) {
           return {
-            catalogWorkspace: catalog.workspaces.find(
-              ({ workspaceName, sessionName }) =>
-                workspaceName === target && sessionName === target,
-            ),
+            catalogWorkspace: published,
             panes: paneResource.panes,
             terminalResources: attachable,
           };
