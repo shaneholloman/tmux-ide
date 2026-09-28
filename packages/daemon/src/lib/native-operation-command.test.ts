@@ -62,3 +62,22 @@ it("accepts the existing 256-byte input chunk while keeping an explicit argv bou
     nativeOperationWrapperArgs(id, [["send-keys", ...Array<string>(512).fill("ff")]], id),
   ).toThrow();
 });
+
+it("bounds exact session guards without changing names or creation seconds", () => {
+  const session = { id: "$0", created: "0", name: "space ; 雪" };
+  expect(
+    nativeOperationWrapperArgs(id, [["capture-pane"]], id, undefined, session).slice(4, 10),
+  ).toEqual(["-s", session.name, "-S", "$0", "-C", "0"]);
+  for (const invalid of [
+    { ...session, name: "x".repeat(4097) },
+    { ...session, name: "" },
+    { ...session, name: "x\0y" },
+    { ...session, id: "$01" },
+    { ...session, created: "01" },
+    { ...session, id: "$4294967296" },
+  ]) {
+    expect(() =>
+      nativeOperationWrapperArgs(id, [["capture-pane"]], id, undefined, invalid),
+    ).toThrow();
+  }
+});

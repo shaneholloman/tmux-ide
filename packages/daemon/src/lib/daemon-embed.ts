@@ -1683,7 +1683,7 @@ async function startEmbeddedDaemonGeneration(
           authoredNativeRunner = createAuthoredNativeCommandRunner({
             environmentId,
             serverScope: scope,
-            canDispatch: () => !sessionMutationFence.active,
+            sessionGuard: () => sessionMutationFence.snapshot(),
             observation: () => observationSelector,
             runPinnedTmux: createPinnedWorkspaceTmuxRunner(tmuxAuthority, { timeoutMs: 5_000 }),
           });

@@ -1,3 +1,4 @@
+import type { NativeOperationSessionGuard } from "./native-operation-command.ts";
 import { createTmuxSessionMutationFence } from "./tmux-session-mutation-fence.ts";
 import { liveSessionIdForNativeIdentity } from "../terminal/protocol/live-session-identity.ts";
 import { expect, it, vi } from "vitest";
@@ -16,11 +17,12 @@ const ack = {
   operationId: id,
 };
 const prefix = `${JSON.stringify(identity)}\n${JSON.stringify(ack)}\n`;
-function rig(canDispatch?: () => boolean) {
+function rig(canDispatch?: () => boolean, sessionGuard?: () => NativeOperationSessionGuard | null) {
   const observer = {
     ownedOperationTransport: true,
     ownedOperationEpochGuard: true,
     ownedOperationPaneGuard: true,
+    ownedOperationSessionGuard: false,
     nativeServerEpoch: id,
     admitOwnedOperation: vi.fn(() => ({ operationId: id })),
     registerOwnedConnection: vi.fn(() => ({ bindingId: id })),
@@ -31,6 +33,7 @@ function rig(canDispatch?: () => boolean) {
   const runTmux = vi.fn(() => prefix + "terminal\n\n");
   const run = createAuthoredNativeCommandRunner({
     canDispatch,
+    sessionGuard,
     environmentId: id,
     serverScope: scope,
     observation: () => observer as unknown as OwnerInteractionObservation,
@@ -122,3 +125,28 @@ it.each([false, true])(
     expect(r.runTmux).toHaveBeenCalledTimes(2);
   },
 );
+
+it("carries an immutable actual session fence into guarded dispatch only when supported", async () => {
+  const fence = createTmuxSessionMutationFence();
+  const r = rig(undefined, () => fence.snapshot());
+  await fence.execute({
+    liveSessionId: liveSessionIdForNativeIdentity("123", "$4", "567"),
+    sessionName: "w",
+    run: async () => "123\t$4\t567\tw\n",
+    mutate: async () => {
+      await Promise.resolve();
+      const captured = fence.snapshot()!;
+      expect(Object.isFrozen(captured)).toBe(true);
+      expect(captured).toEqual({ id: "$4", created: "567", name: "w" });
+      expect(r.run(r.request)).toBeNull();
+      expect(r.observer.admitOwnedOperation).not.toHaveBeenCalled();
+      r.observer.ownedOperationSessionGuard = true;
+      expect(r.run(r.request)).toEqual({ output: "terminal\n\n" });
+      expect(r.runTmux.mock.calls[0]![0]).toEqual(
+        expect.arrayContaining(["-s", "w", "-S", "$4", "-C", "567"]),
+      );
+    },
+  });
+  expect(fence.snapshot()).toBeNull();
+  expect(r.runTmux).toHaveBeenCalledOnce();
+});

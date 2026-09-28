@@ -3,7 +3,11 @@ import type { OwnerInteractionObservation } from "./owner-interaction-observatio
 import type { AuthoredNativeCommandRequest } from "./workspace-multiplexer-verbs.ts";
 import type { WorkspaceTmuxRunOptions } from "./workspace-pane-creation.ts";
 import { nativePaneIdentity } from "./native-pane-identity.ts";
-import { nativeOperationWrapperArgs } from "./native-operation-command.ts";
+import {
+  nativeOperationWrapperArgs,
+  supportsNativeSessionGuard,
+  type NativeOperationSessionGuard,
+} from "./native-operation-command.ts";
 import { decodeNativeOperationInvocation } from "./native-operation-reply.ts";
 
 /** Inspect only bounded private prefixes on a failed invocation, never retain its capture tail. */
@@ -31,6 +35,7 @@ function failurePrefix(error: unknown): string | null {
 export function createAuthoredNativeCommandRunner(options: {
   readonly environmentId: string;
   readonly serverScope: TmuxServerScope;
+  readonly sessionGuard?: () => NativeOperationSessionGuard | null;
   readonly canDispatch?: () => boolean;
   readonly observation: () => OwnerInteractionObservation | null;
   readonly runPinnedTmux: (args: readonly string[], options?: WorkspaceTmuxRunOptions) => string;
@@ -42,6 +47,9 @@ export function createAuthoredNativeCommandRunner(options: {
     if (options.canDispatch && !options.canDispatch()) return null;
     const observer = options.observation();
     if (!observer?.ownedOperationTransport || !observer.ownedOperationPaneGuard) return null;
+    const session = options.sessionGuard?.() ?? null;
+    if (session && (!observer.ownedOperationSessionGuard || !supportsNativeSessionGuard(session)))
+      return null;
     const native = nativePaneIdentity(observer.nativeServerEpoch, request.targetBirthId);
     const destination = request.context.interactionContext.destination;
     if (
@@ -102,10 +110,16 @@ export function createAuthoredNativeCommandRunner(options: {
           "tmux-ide-events",
           "-i",
           ";",
-          ...nativeOperationWrapperArgs(request.operationId, request.commands, native.serverEpoch, {
-            paneId: request.targetPaneId,
-            paneBirthId: native.paneBirthId,
-          }),
+          ...nativeOperationWrapperArgs(
+            request.operationId,
+            request.commands,
+            native.serverEpoch,
+            {
+              paneId: request.targetPaneId,
+              paneBirthId: native.paneBirthId,
+            },
+            session ?? undefined,
+          ),
         ],
         { preserveTrailingNewlines: true },
       );

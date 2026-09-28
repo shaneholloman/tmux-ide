@@ -159,7 +159,7 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
       runAuthoredNative: createAuthoredNativeCommandRunner({
         environmentId: options.environmentId,
         serverScope: { serverId: options.serverId, generation },
-        canDispatch: () => !sessionMutationFence.active,
+        sessionGuard: () => sessionMutationFence.snapshot(),
         observation: () => observationSelector,
         runPinnedTmux: createPinnedWorkspaceTmuxRunner(authority, { timeoutMs: 5_000 }),
       }),

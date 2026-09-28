@@ -7,6 +7,23 @@ const MAX_COMMAND_ARGUMENTS = 512;
 const MAX_COMMANDS = 64;
 const MAX_BODY_BYTES = 262_144;
 
+export interface NativeOperationSessionGuard {
+  readonly id: string;
+  readonly created: string;
+  readonly name: string;
+}
+export function supportsNativeSessionGuard(session: NativeOperationSessionGuard): boolean {
+  return (
+    typeof session.name === "string" &&
+    session.name.length > 0 &&
+    !session.name.includes("\0") &&
+    Buffer.byteLength(session.name, "utf8") <= 4096 &&
+    /^\$(0|[1-9][0-9]*)$/u.test(session.id) &&
+    BigInt(session.id.slice(1)) <= 4294967295n &&
+    NativeJournalUint64SchemaZ.safeParse(session.created).success
+  );
+}
+
 /**
  * Keep command boundaries separate from literal arguments. In particular, a
  * payload containing only `;` must never become a second tmux command.
@@ -17,9 +34,12 @@ export function nativeOperationWrapperArgs(
   commands: readonly (readonly string[])[],
   serverEpoch?: string,
   target?: Readonly<{ paneId: string; paneBirthId: string }>,
+  session?: NativeOperationSessionGuard,
 ): readonly string[] {
   z.uuid().parse(operationId);
   if (serverEpoch !== undefined) z.uuid().parse(serverEpoch);
+  if (session && (!serverEpoch || !supportsNativeSessionGuard(session)))
+    throw new Error("Invalid guarded native session identity");
   if (target) {
     if (
       !serverEpoch ||
@@ -57,6 +77,7 @@ export function nativeOperationWrapperArgs(
     "-I",
     ...(serverEpoch ? ["-E", serverEpoch] : []),
     ...(target ? ["-t", target.paneId, "-B", target.paneBirthId] : []),
+    ...(session ? ["-s", session.name, "-S", session.id, "-C", session.created] : []),
     "-O",
     operationId,
     body,

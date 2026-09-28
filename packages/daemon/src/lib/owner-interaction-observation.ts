@@ -70,6 +70,12 @@ export class OwnerInteractionObservation {
   get selection() {
     return this.#selection;
   }
+  get ownedOperationSessionGuard(): boolean {
+    return (
+      this.ownedOperationEpochGuard &&
+      this.#capability?.ownedOperationSessionGuard === "direct-session-v1"
+    );
+  }
   get ownedOperationPaneGuard(): boolean {
     return (
       this.ownedOperationEpochGuard &&

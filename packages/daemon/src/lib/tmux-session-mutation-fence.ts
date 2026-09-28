@@ -8,6 +8,10 @@ import { shellEscape } from "./shell.ts";
 export function createTmuxSessionMutationFence() {
   const context = new AsyncLocalStorage<{ id: string; created: string; name: string }>();
   return {
+    snapshot() {
+      const selected = context.getStore();
+      return selected ? Object.freeze({ ...selected }) : null;
+    },
     get active() {
       return context.getStore() !== undefined;
     },
