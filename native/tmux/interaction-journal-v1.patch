@@ -13,7 +13,7 @@ index ba9142f..e56a4fc 100644
  	cmd-rename-session.c \
  	cmd-rename-window.c \
 diff --git a/cmd-capture-pane.c b/cmd-capture-pane.c
-index ee91f05..ba44dfc 100644
+index ee91f05..d87f162 100644
 --- a/cmd-capture-pane.c
 +++ b/cmd-capture-pane.c
 @@ -22,6 +22,7 @@
@@ -24,7 +24,16 @@ index ee91f05..ba44dfc 100644
  
  /*
   * Write the entire contents of a pane to a buffer or stdout.
-@@ -147,6 +148,71 @@ cmd_capture_pane_hyperlinks(struct grid *gd, struct screen *s, u_int py,
+@@ -42,7 +43,7 @@ const struct cmd_entry cmd_capture_pane_entry = {
+ 	.name = "capture-pane",
+ 	.alias = "capturep",
+ 
+-	.args = { "ab:CeE:FHJLMNpPqRS:Tt:V", 0, 0, NULL },
++	.args = { "ab:CeE:FHJLMNpPqQRS:Tt:U:V", 0, 0, NULL },
+ 	.usage = "[-aCeFHJLMNpPqT] " CMD_BUFFER_USAGE " [-E end-line] "
+ 		 "[-S start-line] " CMD_TARGET_PANE_USAGE,
+ 
+@@ -147,6 +148,74 @@ cmd_capture_pane_hyperlinks(struct grid *gd, struct screen *s, u_int py,
  	return (line);
  }
  
@@ -33,7 +42,7 @@ index ee91f05..ba44dfc 100644
 +static char *
 +cmd_capture_pane_native(struct cmdq_item *item, struct window_pane *wp,
 +    struct screen *s, struct grid *gd, u_int top, u_int bottom,
-+    size_t limit, size_t *len)
++    size_t limit, const char *prefix, size_t *len)
 +{
 +	struct grid_cell cell;
 +	const struct grid_line *gl;
@@ -43,6 +52,9 @@ index ee91f05..ba44dfc 100644
 +	u_int x, k;
 +	char record[512], hex[sizeof cell.data.data * 2 + 1], attrs[128];
 +
++	if (prefix != NULL &&
++	    ti_snapshot_append(&buffer, prefix, strlen(prefix)) != 0)
++		goto fail;
 +	if (s == &wp->base) {
 +		input_current_cell(wp->ictx, &cell);
 +		snprintf(attrs, sizeof attrs, "[%u,%d,%d,%d]",
@@ -96,7 +108,7 @@ index ee91f05..ba44dfc 100644
  static char *
  cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
      struct window_pane *wp, size_t *len)
-@@ -235,46 +301,9 @@ cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
+@@ -235,46 +304,9 @@ cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
  
  
  	/* Read-only physical grid export for tmux-ide replica backing. */
@@ -142,11 +154,154 @@ index ee91f05..ba44dfc 100644
 -	}
 +	if (args_has(args, 'R'))
 +		return (cmd_capture_pane_native(item, wp, s, gd, top, bottom,
-+		    SIZE_MAX - 1, len));
++		    SIZE_MAX - 1, NULL, len));
  
  	join_lines = args_has(args, 'J');
  	if (args_has(args, 'e'))
-@@ -404,5 +433,6 @@ cmd_capture_pane_exec(struct cmd *self, struct cmdq_item *item)
+@@ -350,6 +382,128 @@ cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
+ 	return (buf);
+ }
+ 
++/* No caller-provided format or script is evaluated by atomic recovery. */
++static const char *cmd_capture_snapshot_modes =
++	"#{?#{==:#{cursor_x},},unknown,#{cursor_x}}"
++	" #{?#{==:#{cursor_y},},unknown,#{cursor_y}}"
++	" #{?#{==:#{pane_width},},unknown,#{pane_width}}"
++	" #{?#{==:#{pane_height},},unknown,#{pane_height}}"
++	" #{?#{==:#{alternate_on},},unknown,#{alternate_on}}"
++	" #{?#{==:#{cursor_flag},},unknown,#{cursor_flag}}"
++	" #{?#{==:#{insert_flag},},unknown,#{insert_flag}}"
++	" #{?#{==:#{keypad_cursor_flag},},unknown,#{keypad_cursor_flag}}"
++	" #{?#{==:#{keypad_flag},},unknown,#{keypad_flag}}"
++	" #{?#{==:#{mouse_any_flag},},unknown,#{mouse_any_flag}}"
++	" #{?#{==:#{mouse_button_flag},},unknown,#{mouse_button_flag}}"
++	" #{?#{==:#{mouse_standard_flag},},unknown,#{mouse_standard_flag}}"
++	" #{?#{==:#{origin_flag},},unknown,#{origin_flag}}"
++	" #{?#{==:#{wrap_flag},},unknown,#{wrap_flag}}"
++	" #{?#{==:#{history_size},},unknown,#{history_size}}"
++	" #{?#{==:#{history_limit},},unknown,#{history_limit}}"
++	" #{?#{==:#{bracket_paste_flag},},unknown,#{bracket_paste_flag}}"
++	" #{?#{==:#{mouse_all_flag},},unknown,#{mouse_all_flag}}"
++	" #{?#{==:#{mouse_sgr_flag},},unknown,#{mouse_sgr_flag}}"
++	" #{?#{==:#{mouse_utf8_flag},},unknown,#{mouse_utf8_flag}}"
++	" #{?#{==:#{scroll_region_upper},},unknown,#{scroll_region_upper}}"
++	" #{?#{==:#{scroll_region_lower},},unknown,#{scroll_region_lower}}"
++	" #{?#{==:#{scroll-on-clear},},unknown,#{scroll-on-clear}}";
++
++static int
++cmd_capture_snapshot_decimal(const char *text, size_t maximum, size_t *value)
++{
++	size_t n = 0;
++	const char *p;
++
++	if (text == NULL || *text == '\0' || (text[0] == '0' && text[1] != '\0'))
++		return (0);
++	for (p = text; *p != '\0'; p++) {
++		if (*p < '0' || *p > '9' || n > (maximum - (*p - '0')) / 10)
++			return (0);
++		n = n * 10 + (*p - '0');
++		if (n > maximum)
++			return (0);
++	}
++	*value = n;
++	return (1);
++}
++
++static enum cmd_retval
++cmd_capture_pane_snapshot(struct args *args, struct cmdq_item *item,
++    struct window_pane *wp)
++{
++	struct client *c = cmdq_get_origin_client(item);
++	struct args_entry *entry;
++	struct cmd_find_state *target = cmdq_get_target(item);
++	struct format_tree *ft;
++	struct grid *gd = wp->base.grid;
++	const char *history = args_get(args, 'S'), *p;
++	char *modes, *snapshot, header[1536];
++	size_t limit = 16 * 1024 * 1024, lines, length;
++	u_int top, bottom;
++	u_char flag;
++	int n;
++
++	for (flag = args_first(args, &entry); flag; flag = args_next(&entry)) {
++		if (strchr("pRQUSt", flag) == NULL || args_has(args, flag) != 1)
++			goto invalid;
++	}
++	if (!args_has(args, 'p') || !args_has(args, 'R') ||
++	    !args_has(args, 't') || history == NULL || *history != '-' ||
++	    !cmd_capture_snapshot_decimal(history + 1, 1000000, &lines) ||
++	    (args_has(args, 'U') &&
++	    (!cmd_capture_snapshot_decimal(args_get(args, 'U'), limit, &limit) || !limit)))
++		goto invalid;
++	if (!cmdq_guarded_snapshot_origin(item) || c == NULL ||
++	    !control_snapshot_ready(c, wp) || !input_snapshot_ready(wp->ictx)) {
++		cmdq_error(item, "atomic snapshot needs a paused guarded issuer and complete input state");
++		return (CMD_RETURN_ERROR);
++	}
++	ft = format_create(c, item, FORMAT_NONE, 0);
++	format_defaults(ft, c, target->s, target->wl, wp);
++	modes = format_expand(ft, cmd_capture_snapshot_modes);
++	format_free(ft);
++	if (strlen(modes) > 1024) {
++		free(modes);
++		goto invalid;
++	}
++	/* The fixed fields contain only scalar mode values. Reject unexpected
++	 * output rather than placing unescaped text into the private JSON header. */
++	for (p = modes; *p; p++) {
++		if (!(*p == ' ' || *p == '-' || (*p >= '0' && *p <= '9') ||
++		    (*p >= 'a' && *p <= 'z'))) {
++			free(modes);
++			goto invalid;
++		}
++	}
++	n = snprintf(header, sizeof header,
++	    "{\"snapshotVersion\":1,\"serverEpoch\":\"%s\","
++	    "\"paneId\":\"%%%u\",\"paneBirthId\":\"%llu\","
++	    "\"cursor\":\"%s\",\"resumed\":true}\n",
++	    tmux_ide_server_epoch(), wp->id,
++	    (unsigned long long)wp->tmux_ide_birth_id, modes);
++	free(modes);
++	if (n < 0 || (size_t)n >= sizeof header)
++		goto invalid;
++	top = lines > gd->hsize ? 0 : gd->hsize - lines;
++	bottom = gd->hsize + gd->sy - 1;
++	snapshot = cmd_capture_pane_native(item, wp, &wp->base, gd, top,
++	    bottom, limit, header, &length);
++	if (snapshot == NULL)
++		return (CMD_RETURN_ERROR);
++	if (control_snapshot_commit(c, wp, snapshot, length) != 0) {
++		free(snapshot);
++		cmdq_error(item, "atomic snapshot output budget unavailable");
++		return (CMD_RETURN_ERROR);
++	}
++	free(snapshot);
++	tmux_ide_interaction_effect(wp->id, wp->tmux_ide_birth_id, 6, length);
++	return (CMD_RETURN_NORMAL);
++
++invalid:
++	cmdq_error(item, "invalid atomic snapshot arguments or mode state");
++	return (CMD_RETURN_ERROR);
++}
++
+ static enum cmd_retval
+ cmd_capture_pane_exec(struct cmd *self, struct cmdq_item *item)
+ {
+@@ -360,6 +514,13 @@ cmd_capture_pane_exec(struct cmd *self, struct cmdq_item *item)
+ 	const char		*bufname;
+ 	size_t			 len;
+ 
++	if (args_has(args, 'Q'))
++		return (cmd_capture_pane_snapshot(args, item, wp));
++	if (args_has(args, 'U')) {
++		cmdq_error(item, "-U requires atomic snapshot mode");
++		return (CMD_RETURN_ERROR);
++	}
++
+ 	if (cmd_get_entry(self) == &cmd_clear_history_entry) {
+ 		window_pane_reset_mode_all(wp);
+ 		grid_clear_history(wp->base.grid);
+@@ -404,5 +565,6 @@ cmd_capture_pane_exec(struct cmd *self, struct cmdq_item *item)
  		}
  	}
  
@@ -231,7 +386,7 @@ index 7233b7d..6487b7d 100644
  		paste_free(pb);
  
 diff --git a/cmd-queue.c b/cmd-queue.c
-index 2a22151..a65da99 100644
+index 2a22151..51bfe4e 100644
 --- a/cmd-queue.c
 +++ b/cmd-queue.c
 @@ -38,7 +38,20 @@ enum cmdq_type {
@@ -263,9 +418,22 @@ index 2a22151..a65da99 100644
  	int			 references;
  	int			 flags;
  
-@@ -155,6 +169,11 @@ cmdq_get_client(struct cmdq_item *item)
+@@ -154,7 +168,24 @@ cmdq_get_client(struct cmdq_item *item)
+ 	return (item->client);
  }
  
++/* A snapshot may resume only the actual issuer of a direct guarded child. */
++int
++cmdq_guarded_snapshot_origin(struct cmdq_item *item)
++{
++	struct client *c = item->origin_client;
++
++	return (c != NULL && c->tmux_ide_connection_id != 0 &&
++	    item->origin.issuer_id == c->tmux_ide_connection_id &&
++	    item->origin.guard_wrapper_id != 0 &&
++	    item->origin.parent_id == item->origin.guard_wrapper_id);
++}
++
  /* Get item target client. */
 +struct client *cmdq_get_origin_client(struct cmdq_item *item)
 +{
@@ -275,7 +443,7 @@ index 2a22151..a65da99 100644
  struct client *
  cmdq_get_target_client(struct cmdq_item *item)
  {
-@@ -226,6 +245,91 @@ cmdq_new_state(struct cmd_find_state *current, struct key_event *event,
+@@ -226,6 +257,91 @@ cmdq_new_state(struct cmd_find_state *current, struct key_event *event,
  	return (state);
  }
  
@@ -367,7 +535,7 @@ index 2a22151..a65da99 100644
  /* Add a reference to a state. */
  struct cmdq_state *
  cmdq_link_state(struct cmdq_state *state)
-@@ -238,9 +342,11 @@ cmdq_link_state(struct cmdq_state *state)
+@@ -238,9 +354,11 @@ cmdq_link_state(struct cmdq_state *state)
  struct cmdq_state *
  cmdq_copy_state(struct cmdq_state *state, struct cmd_find_state *current)
  {
@@ -382,7 +550,7 @@ index 2a22151..a65da99 100644
  }
  
  /* Free a state. */
-@@ -324,11 +430,14 @@ cmdq_append(struct client *c, struct cmdq_item *item)
+@@ -324,11 +442,14 @@ cmdq_append(struct client *c, struct cmdq_item *item)
  struct cmdq_item *
  cmdq_insert_after(struct cmdq_item *after, struct cmdq_item *item)
  {
@@ -397,7 +565,7 @@ index 2a22151..a65da99 100644
  		next = item->next;
  		item->next = after->next;
  		after->next = item;
-@@ -353,6 +462,7 @@ void
+@@ -353,6 +474,7 @@ void
  cmdq_insert_hook(struct session *s, struct cmdq_item *item,
      struct cmd_find_state *current, const char *fmt, ...)
  {
@@ -405,7 +573,7 @@ index 2a22151..a65da99 100644
  	struct cmdq_state		*state = item->state;
  	struct cmd			*cmd = item->cmd;
  	struct args			*args = cmd_get_args(cmd);
-@@ -430,6 +540,7 @@ cmdq_insert_hook(struct session *s, struct cmdq_item *item,
+@@ -430,6 +552,7 @@ cmdq_insert_hook(struct session *s, struct cmdq_item *item,
  		cmdlist = options_array_item_value(a)->cmdlist;
  		if (cmdlist != NULL) {
  			new_item = cmdq_get_command(cmdlist, new_state);
@@ -413,7 +581,7 @@ index 2a22151..a65da99 100644
  			if (item != NULL)
  				item = cmdq_insert_after(item, new_item);
  			else
-@@ -453,6 +564,8 @@ cmdq_continue(struct cmdq_item *item)
+@@ -453,6 +576,8 @@ cmdq_continue(struct cmdq_item *item)
  static void
  cmdq_remove(struct cmdq_item *item)
  {
@@ -422,7 +590,7 @@ index 2a22151..a65da99 100644
  	if (item->client != NULL)
  		server_client_unref(item->client);
  	if (item->cmdlist != NULL)
-@@ -515,6 +628,7 @@ cmdq_get_command(struct cmd_list *cmdlist, struct cmdq_state *state)
+@@ -515,6 +640,7 @@ cmdq_get_command(struct cmd_list *cmdlist, struct cmdq_state *state)
  
  		item->group = cmd_get_group(cmd);
  		item->state = cmdq_link_state(state);
@@ -430,7 +598,7 @@ index 2a22151..a65da99 100644
  
  		item->cmdlist = cmdlist;
  		item->cmd = cmd;
-@@ -607,6 +721,9 @@ cmdq_fire_command(struct cmdq_item *item)
+@@ -607,6 +733,9 @@ cmdq_fire_command(struct cmdq_item *item)
  	int			 flags, quiet = 0;
  	char			*tmp;
  
@@ -440,7 +608,7 @@ index 2a22151..a65da99 100644
  	if (cfg_finished)
  		cmdq_add_message(item);
  	if (log_get_level() > 1) {
-@@ -646,7 +763,41 @@ cmdq_fire_command(struct cmdq_item *item)
+@@ -646,7 +775,41 @@ cmdq_fire_command(struct cmdq_item *item)
  	if (retval == CMD_RETURN_ERROR)
  		goto out;
  
@@ -483,7 +651,7 @@ index 2a22151..a65da99 100644
  	if (retval == CMD_RETURN_ERROR)
  		goto out;
  
-@@ -663,6 +814,43 @@ cmdq_fire_command(struct cmdq_item *item)
+@@ -663,6 +826,43 @@ cmdq_fire_command(struct cmdq_item *item)
  	}
  
  out:
@@ -527,7 +695,7 @@ index 2a22151..a65da99 100644
  	item->client = saved;
  	if (retval == CMD_RETURN_ERROR) {
  		fsp = NULL;
-@@ -672,10 +860,12 @@ out:
+@@ -672,10 +872,12 @@ out:
  			fsp = &item->state->current;
  		else if (cmd_find_from_client(&fs, item->client, 0) == 0)
  			fsp = &fs;
@@ -607,7 +775,7 @@ index 151f959..8524b3f 100644
  void
  control_notify_pane_mode_changed(int pane)
 diff --git a/control.c b/control.c
-index b88072d..d586a4c 100644
+index b88072d..1fe24ff 100644
 --- a/control.c
 +++ b/control.c
 @@ -113,6 +113,7 @@ RB_HEAD(control_subs, control_sub);
@@ -618,7 +786,71 @@ index b88072d..d586a4c 100644
  	struct control_panes		 panes;
  
  	TAILQ_HEAD(, control_pane)	 pending_list;
-@@ -390,6 +391,8 @@ control_pause_pane(struct client *c, struct window_pane *wp)
+@@ -376,6 +377,63 @@ control_continue_pane(struct client *c, struct window_pane *wp)
+ 	}
+ }
+ 
++/* Snapshot reply is prepared before changing offsets. Refuse a pending block
++ * queue rather than bypassing its existing output ordering. */
++int
++control_snapshot_ready(struct client *c, struct window_pane *wp)
++{
++	struct control_state *cs;
++	struct control_pane *cp;
++
++	if (!(c->flags & CLIENT_CONTROL) ||
++	    (c->flags & (CLIENT_JOURNAL_READER|CLIENT_DEAD|CLIENT_EXIT|
++	    CLIENT_CONTROL_NOOUTPUT)) || c->session == NULL ||
++	    c->control_state == NULL)
++		return (0);
++	cs = c->control_state;
++	cp = control_get_pane(c, wp);
++	return (cp != NULL && (cp->flags & CONTROL_PANE_PAUSED) &&
++	    !(cp->flags & CONTROL_PANE_OFF) &&
++	    winlink_find_by_window(&c->session->windows, wp->window) != NULL &&
++	    TAILQ_EMPTY(&cs->all_blocks) &&
++	    EVBUFFER_LENGTH(cs->write_event->output) <= 65536);
++}
++
++int
++control_snapshot_commit(struct client *c, struct window_pane *wp,
++    const char *snapshot, size_t length)
++{
++	struct control_state *cs = c->control_state;
++	struct control_pane *cp;
++	struct evbuffer *reply;
++	char continued[64];
++	int n;
++
++	if (!control_snapshot_ready(c, wp) || length > 16 * 1024 * 1024)
++		return (-1);
++	n = snprintf(continued, sizeof continued, "%%continue %%%u\n", wp->id);
++	if (n < 0 || (size_t)n >= sizeof continued)
++		return (-1);
++	reply = evbuffer_new();
++	if (reply == NULL)
++		return (-1);
++	if (evbuffer_add(reply, snapshot, length) != 0 ||
++	    evbuffer_add(reply, continued, (size_t)n) != 0 ||
++	    evbuffer_add_buffer(cs->write_event->output, reply) != 0) {
++		evbuffer_free(reply);
++		return (-1);
++	}
++	evbuffer_free(reply);
++	/* No callbacks or user commands run between this buffer commit and offset
++	 * commit. Later PTY bytes are delivered after this snapshot reply. */
++	cp = control_get_pane(c, wp);
++	cp->flags &= ~CONTROL_PANE_PAUSED;
++	memcpy(&cp->offset, &wp->offset, sizeof cp->offset);
++	memcpy(&cp->queued, &wp->offset, sizeof cp->queued);
++	bufferevent_enable(cs->write_event, EV_WRITE);
++	return (0);
++}
++
+ /* Pause a pane. */
+ void
+ control_pause_pane(struct client *c, struct window_pane *wp)
+@@ -390,6 +448,8 @@ control_pause_pane(struct client *c, struct window_pane *wp)
  	}
  }
  
@@ -627,7 +859,7 @@ index b88072d..d586a4c 100644
  /* Write a line. */
  static void printflike(2, 0)
  control_vwrite(struct client *c, const char *fmt, va_list ap)
-@@ -398,6 +401,12 @@ control_vwrite(struct client *c, const char *fmt, va_list ap)
+@@ -398,6 +458,12 @@ control_vwrite(struct client *c, const char *fmt, va_list ap)
  	char			*s;
  
  	xvasprintf(&s, fmt, ap);
@@ -640,7 +872,7 @@ index b88072d..d586a4c 100644
  	log_debug("%s: %s: writing line: %s", __func__, c->name, s);
  
  	bufferevent_write(cs->write_event, s, strlen(s));
-@@ -539,13 +548,117 @@ control_error(struct cmdq_item *item, void *data)
+@@ -539,13 +605,117 @@ control_error(struct cmdq_item *item, void *data)
  }
  
  /* Control client error callback. */
@@ -759,7 +991,7 @@ index b88072d..d586a4c 100644
  }
  
  /* Control client input callback. Read lines and fire commands. */
-@@ -559,6 +672,11 @@ control_read_callback(__unused struct bufferevent *bufev, void *data)
+@@ -559,6 +729,11 @@ control_read_callback(__unused struct bufferevent *bufev, void *data)
  	struct cmdq_state	*state;
  	enum cmd_parse_status	 status;
  
@@ -771,7 +1003,7 @@ index b88072d..d586a4c 100644
  	for (;;) {
  		line = evbuffer_readln(buffer, NULL, EVBUFFER_EOL_LF);
  		if (line == NULL)
-@@ -571,6 +689,7 @@ control_read_callback(__unused struct bufferevent *bufev, void *data)
+@@ -571,6 +746,7 @@ control_read_callback(__unused struct bufferevent *bufev, void *data)
  		}
  
  		state = cmdq_new_state(NULL, NULL, CMDQ_STATE_CONTROL);
@@ -779,7 +1011,7 @@ index b88072d..d586a4c 100644
  		status = cmd_parse_and_append(line, NULL, c, state, &error);
  		if (status == CMD_PARSE_ERROR)
  			cmdq_append(c, cmdq_get_callback(control_error, error));
-@@ -739,6 +858,12 @@ control_write_callback(__unused struct bufferevent *bufev, void *data)
+@@ -739,6 +915,12 @@ control_write_callback(__unused struct bufferevent *bufev, void *data)
  	struct evbuffer		*evb = cs->write_event->output;
  	size_t			 space, limit;
  
@@ -852,6 +1084,25 @@ index fdce540..6aeb4c8 100644
  }
  
  static void
+diff --git a/input.c b/input.c
+index 21980f1..86725fa 100644
+--- a/input.c
++++ b/input.c
+@@ -939,6 +939,14 @@ input_reset(struct input_ctx *ictx, int clear)
+ 	ictx->flags = 0;
+ }
+ 
++/* A grid bootstrap cannot restore an unfinished parser sequence. */
++int
++input_snapshot_ready(struct input_ctx *ictx)
++{
++	return (ictx->state == &input_state_ground && !ictx->utf8started &&
++	    !(ictx->wp->base.mode & MODE_SYNC));
++}
++
+ /* Return pending data. */
+ struct evbuffer *
+ input_pending(struct input_ctx *ictx)
 diff --git a/notify.c b/notify.c
 index 8605601..b1edb72 100644
 --- a/notify.c
@@ -1021,10 +1272,10 @@ index 49cac8b..d592a11 100644
  		return (0);
 diff --git a/tmux-ide-journal.c b/tmux-ide-journal.c
 new file mode 100644
-index 0000000..1365bd2
+index 0000000..c318e73
 --- /dev/null
 +++ b/tmux-ide-journal.c
-@@ -0,0 +1,740 @@
+@@ -0,0 +1,746 @@
 +/*
 + * Copyright (c) 2026 wavyrai
 + *
@@ -1338,6 +1589,12 @@ index 0000000..1365bd2
 +	*value = parsed;
 +	return 1;
 +}
++const char *
++tmux_ide_server_epoch(void)
++{
++	return ti_server_epoch;
++}
++
 +static void
 +ti_capability(struct cmdq_item *item)
 +{
@@ -1352,7 +1609,7 @@ index 0000000..1365bd2
 +	    "\"coverage\":[\"command-outcome-v1\",\"pty-enqueue-v1\",\"capture-"
 +	    "produced-v1\",\"cooperative-operation-v1\",\"pane-identity-v1\"],\"capacity\":%u,"
 +	    "\"maxBatch\":%u,\"maxWaiters\":%u,\"waitingReaders\":%u,"
-+	    "\"degraded\":%u,\"readerTransport\":\"sessionless-control-v1\",\"ownedOperationTransport\":\"direct-wrapper-v1\",\"ownedOperationEpochGuard\":\"server-epoch-v1\",\"ownedOperationPaneGuard\":\"direct-pane-v1\",\"ownedOperationSessionGuard\":\"direct-session-v1\"}",
++	    "\"degraded\":%u,\"readerTransport\":\"sessionless-control-v1\",\"ownedOperationTransport\":\"direct-wrapper-v1\",\"ownedOperationEpochGuard\":\"server-epoch-v1\",\"ownedOperationPaneGuard\":\"direct-pane-v1\",\"ownedOperationSessionGuard\":\"direct-session-v1\",\"atomicPaneSnapshot\":\"capture-resume-v1\"}",
 +	    ti_server_epoch, ti_journal_epoch, ti_journal ? "true" : "false",
 +	    TI_CAPACITY, TI_MAX_BATCH, TI_MAX_WAITERS, waiting, ti_degraded);
 +}
@@ -1922,7 +2179,7 @@ index 0000000..bc05baa
 +
 +#endif
 diff --git a/tmux.h b/tmux.h
-index c9f8a32..cd281b9 100644
+index c9f8a32..68dbecb 100644
 --- a/tmux.h
 +++ b/tmux.h
 @@ -1249,6 +1249,7 @@ struct visible_ranges {
@@ -1984,7 +2241,7 @@ index c9f8a32..cd281b9 100644
  /* cmd-queue.c */
  struct cmdq_state *cmdq_new_state(struct cmd_find_state *, struct key_event *,
  		     int);
-@@ -3649,6 +3680,7 @@ char	*parse_window_name(const char *);
+@@ -3649,10 +3680,16 @@ char	*parse_window_name(const char *);
  void	control_discard(struct client *);
  void	control_start(struct client *);
  void	control_ready(struct client *);
@@ -1992,6 +2249,15 @@ index c9f8a32..cd281b9 100644
  void	control_stop(struct client *);
  void	control_set_pane_on(struct client *, struct window_pane *);
  void	control_set_pane_off(struct client *, struct window_pane *);
+ void	control_continue_pane(struct client *, struct window_pane *);
++int control_snapshot_ready(struct client *, struct window_pane *);
++int control_snapshot_commit(struct client *, struct window_pane *, const char *, size_t);
++int cmdq_guarded_snapshot_origin(struct cmdq_item *);
++int input_snapshot_ready(struct input_ctx *);
++const char *tmux_ide_server_epoch(void);
+ void	control_pause_pane(struct client *, struct window_pane *);
+ struct window_pane_offset *control_pane_offset(struct client *,
+ 	   struct window_pane *, int *);
 diff --git a/window.c b/window.c
 index 87d6df4..749b7eb 100644
 --- a/window.c

@@ -125,6 +125,11 @@ try {
     [join(root, "native/tmux/tests/journal-session-guard.py"), join(scratch, "tmux")],
     scratch,
   );
+  run(
+    "python3",
+    [join(root, "native/tmux/tests/atomic-snapshot.py"), join(scratch, "tmux")],
+    scratch,
+  );
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }
