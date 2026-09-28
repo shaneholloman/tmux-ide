@@ -148,6 +148,12 @@ export class OwnerInteractionObservation {
       this.#scheduleBindings();
     }, undefined);
   }
+  abandonUnacknowledgedOwnedOperation(permit: OwnedNativeOperation): void {
+    this.#withBindings((bindings) => {
+      this.#decisions(bindings.abandonUnacknowledgedOperation(permit));
+      this.#scheduleBindings();
+    }, undefined);
+  }
   acknowledgeOwnedOperation(
     permit: OwnedNativeOperation,
     connection: OwnedNativeConnection,

@@ -94,6 +94,13 @@ export function createBackgroundNativeCapture(options: {
         /* Retire conservatively through owner expiry. */
       }
     };
+    const abandon = () => {
+      try {
+        observer.abandonUnacknowledgedOwnedOperation(permit);
+      } catch {
+        /* Bounded expiry remains the fallback for ambiguous proof. */
+      }
+    };
     const observe = (output: string) => {
       const decoded = decodeNativeOperationInvocation(output, {
         serverEpoch: native.serverEpoch,
@@ -146,7 +153,7 @@ export function createBackgroundNativeCapture(options: {
         candidate = value.cause;
       }
       uncertain();
-      cancel();
+      abandon();
       // Subprocess causes can contain captured terminal text and private prefixes.
       // eslint-disable-next-line preserve-caught-error
       throw new Error(
@@ -157,7 +164,7 @@ export function createBackgroundNativeCapture(options: {
       return { output: observe(raw) };
     } catch {
       uncertain();
-      cancel();
+      abandon();
       throw new Error("Background pane capture acknowledgement unavailable");
     }
   };

@@ -547,3 +547,23 @@ it("one-shot capture rejects copied permits, forged identity and input plans and
   expect(a.size).toMatchObject({ connections: 0, permits: 0, pending: 0 });
   expect(a.ingest(projection({}, true, true))[0]!.disposition).toBe("unknown");
 });
+it("ambiguous one-shot failure releases staged/late evidence as unknown without retiring acknowledged proof", () => {
+  const a = new OwnedNativeInteractionBindings({ environmentId, serverScope, serverEpoch });
+  const token = a.admitOneShotViewerCapture({ operationId, target })!;
+  const item = projection({}, true, true);
+  expect(a.ingest(item)).toEqual([]);
+  expect(a.abandonUnacknowledgedOperation({ ...token })).toEqual([]);
+  const released = a.abandonUnacknowledgedOperation(token);
+  expect(released).toHaveLength(1);
+  expect(released[0]!.disposition).toBe("unknown");
+  expect(a.ingest(item)[0]!.disposition).toBe("unknown");
+  expect(a.acknowledgeOneShotViewerCapture(token, identity, ack).acknowledged).toBe(false);
+  const fresh = a.admitOneShotViewerCapture({ operationId: id(80), target })!;
+  expect(
+    a.acknowledgeOneShotViewerCapture(fresh, identity, { ...ack, operationId: id(80) })
+      .acknowledged,
+  ).toBe(true);
+  expect(a.abandonUnacknowledgedOperation(token)).toEqual([]);
+  expect(a.abandonUnacknowledgedOperation(fresh)).toEqual([]);
+  expect(a.ingest(projection({ correlation: id(80) }, true, true))[0]!.disposition).toBe("viewer");
+});

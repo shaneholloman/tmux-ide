@@ -339,6 +339,14 @@ export class OwnedNativeInteractionBindings {
     if (!permit || permit.token !== token || permit.acknowledgement !== null) return [];
     return this.#retire((candidate) => candidate === permit);
   }
+  /** Ambiguous dispatched work stays unknown; a verified acknowledgement remains valid. */
+  abandonUnacknowledgedOperation(
+    token: OwnedNativeOperation,
+  ): readonly OwnedNativeInteractionDecision[] {
+    const permit = this.#permits.get(token.operationId);
+    if (!permit || permit.token !== token || permit.acknowledgement !== null) return [];
+    return this.#retire((candidate) => candidate === permit);
+  }
   acknowledge(
     token: OwnedNativeOperation,
     connectionToken: OwnedNativeConnection,

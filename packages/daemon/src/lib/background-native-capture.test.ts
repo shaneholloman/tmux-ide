@@ -18,6 +18,7 @@ function rig(output = "", failure?: "prefix" | "error") {
     })),
     acknowledgeOneShotViewerCapture: vi.fn(() => true),
     cancelUndispatchedOwnedOperation: vi.fn(),
+    abandonUnacknowledgedOwnedOperation: vi.fn(),
     noteOwnedOperationUncertainty: vi.fn(),
   };
   const run = vi.fn(async (args: readonly string[]) => {
@@ -93,7 +94,8 @@ it.each(["prefix", "error"] as const)(
       expect(String(e)).not.toContain("private content");
     }
     expect(r.run).toHaveBeenCalledTimes(2);
-    expect(r.observer.cancelUndispatchedOwnedOperation).toHaveBeenCalledTimes(2);
+    expect(r.observer.abandonUnacknowledgedOwnedOperation).toHaveBeenCalledTimes(2);
+    expect(r.observer.cancelUndispatchedOwnedOperation).not.toHaveBeenCalled();
   },
 );
 it("keeps caller cancellation and output bounds on the one dispatched runner", async () => {
