@@ -1,16 +1,23 @@
-import { InteractionReceiptSchemaZ, type InteractionReceipt } from "@tmux-ide/contracts";
+import {
+  InteractionReceiptSchemaZ,
+  InteractionEvidenceRecordSchemaZ,
+  type InteractionEvidence,
+  type InteractionEvidenceRecord,
+  type InteractionJournalEntry,
+  type InteractionReceipt,
+} from "@tmux-ide/contracts";
 
 export type InteractionReceiptDraft = Omit<InteractionReceipt, "type" | "sequence">;
 export interface InteractionReceiptReplay {
   readonly cursor: number;
   readonly gap: { readonly from: number; readonly through: number } | null;
-  readonly receipts: readonly InteractionReceipt[];
+  readonly receipts: readonly InteractionJournalEntry[];
 }
 
 /** One owner's bounded receipt history. Its cursor is NOT the global resource clock. */
 export class InteractionReceiptJournal {
   readonly #capacity: number;
-  readonly #receipts: InteractionReceipt[] = [];
+  readonly #receipts: InteractionJournalEntry[] = [];
   readonly #listeners = new Set<() => void>();
   #sequence = 0;
   #disposed = false;
@@ -34,11 +41,27 @@ export class InteractionReceiptJournal {
       type: "interaction.receipt",
       sequence: this.#sequence + 1,
     });
-    this.#sequence = receipt.sequence;
-    this.#receipts.push(receipt);
+    return this.#append(receipt);
+  }
+
+  publishEvidence(evidence: InteractionEvidence): InteractionEvidenceRecord {
+    this.#assertOpen();
+    if (!Number.isSafeInteger(this.#sequence + 1)) throw new Error("Receipt cursor exhausted");
+    return this.#append(
+      InteractionEvidenceRecordSchemaZ.parse({
+        type: "interaction.evidence",
+        sequence: this.#sequence + 1,
+        evidence,
+      }),
+    );
+  }
+
+  #append<T extends InteractionJournalEntry>(entry: T): T {
+    this.#sequence = entry.sequence;
+    this.#receipts.push(entry);
     if (this.#receipts.length > this.#capacity) this.#receipts.shift();
     this.#scheduleWake();
-    return structuredClone(receipt);
+    return structuredClone(entry);
   }
 
   #scheduleWake(): void {

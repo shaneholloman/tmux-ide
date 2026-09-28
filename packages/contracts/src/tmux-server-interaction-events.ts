@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { TmuxServerScopeSchemaZ } from "./tmux-server-scope.ts";
 import { InteractionObservationStatusSchemaZ } from "./interaction-evidence.ts";
-import { InteractionReceiptSchemaZ } from "./interaction-receipts.ts";
+import { InteractionJournalEntrySchemaZ } from "./interaction-journal.ts";
 
 export const TMUX_INTERACTION_BATCH_LIMIT = 64;
 const cursor = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
@@ -33,7 +33,7 @@ export const TmuxServerInteractionEventSchemaZ = z
         after: cursor,
         cursor,
         gap: z.object({ from: cursor, through: cursor }).strict().nullable(),
-        receipts: z.array(InteractionReceiptSchemaZ).min(1).max(TMUX_INTERACTION_BATCH_LIMIT),
+        receipts: z.array(InteractionJournalEntrySchemaZ).min(1).max(TMUX_INTERACTION_BATCH_LIMIT),
       })
       .strict(),
     z.object({ ...base, type: z.literal("retired") }).strict(),

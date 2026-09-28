@@ -24,6 +24,46 @@ const draft: InteractionReceiptDraft = {
   resourceRevision: null,
 };
 describe("owner receipt journal", () => {
+  it("retains unresolved native evidence in the same bounded cursor stream", () => {
+    const journal = new InteractionReceiptJournal(2);
+    journal.publish(draft);
+    const evidence = {
+      ...draft.evidence!,
+      endpoints: {
+        destination: {
+          kind: "unresolved-pane" as const,
+          environmentId: draft.evidence!.endpoints.destination.environmentId,
+          serverScope: draft.evidence!.endpoints.destination.serverScope,
+          observationRef: "00000000-0000-4000-8000-000000000009",
+        },
+        source: null,
+      },
+      actor: { kind: "unknown" as const, reason: "unavailable" as const },
+      observation: {
+        kind: "native-journal" as const,
+        command: "unknown" as const,
+        cursor: { epoch: "00000000-0000-4000-8000-000000000008", sequence: "1" },
+        commandId: null,
+        parentCommandId: null,
+        correlatedOperationId: null,
+      },
+      effect: { kind: "input-enqueued" as const },
+    };
+    const entry = journal.publishEvidence(evidence);
+    expect(entry.sequence).toBe(2);
+    expect(entry.type).toBe("interaction.evidence");
+    entry.evidence.revision = 999;
+    journal.publish(draft);
+    const replay = journal.read(0);
+    expect(replay.gap).toEqual({ from: 1, through: 1 });
+    expect(replay.receipts.map((row) => row.type)).toEqual([
+      "interaction.evidence",
+      "interaction.receipt",
+    ]);
+    expect(replay.receipts[0]!.evidence?.revision).toBe(0);
+    expect(() => journal.publishEvidence(draft.evidence!)).toThrow();
+    expect(journal.read(3).cursor).toBe(3);
+  });
   it("keeps equal workspace and pane names in separate owner histories", () => {
     const a = new InteractionReceiptJournal();
     const b = new InteractionReceiptJournal();
@@ -54,8 +94,10 @@ describe("owner receipt journal", () => {
     const receipt = journal.publish(draft);
     receipt.target = { kind: "session" };
     const replay = journal.read(0);
-    replay.receipts[0]!.target = { kind: "session" };
-    expect(journal.read(0).receipts[0]!.target).toEqual(draft.target);
+    const first = replay.receipts[0]!;
+    if (first.type !== "interaction.receipt") throw Error("Expected receipt");
+    first.target = { kind: "session" };
+    expect(journal.read(0).receipts[0]).toMatchObject({ target: draft.target });
   });
   it("isolates broken subscribers and retires idle subscribers", async () => {
     const journal = new InteractionReceiptJournal();

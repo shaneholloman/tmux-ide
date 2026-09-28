@@ -67,6 +67,7 @@ export * from "./workspace-promotion.ts";
 export * from "./workspace-multiplexer.ts";
 export * from "./window-links.ts";
 export * from "./interaction-receipts.ts";
+export * from "./interaction-journal.ts";
 export * from "./multiplexer-verbs.ts";
 export * from "./visual-tokens.ts";
 export * from "./visual-recipes.ts";
