@@ -110,7 +110,9 @@ it.skipIf(!hasTmux)(
     });
     const app = new Hono();
     mountAutomationRoutes(app, { ownerToken: "owner", owners });
-    const executionRequests: { operationId: string; origin: string }[] = [];
+    const executionRequests: { operationId: string; generation: string; origin: string }[] = [];
+    const preparedHandles: string[] = [];
+    let reserveRequests = 0;
     let disrupt: "drop" | "hold" | null = null;
     let committedResponse: ServerResponse | null = null;
     const server = createServer(async (req, res) => {
@@ -123,13 +125,15 @@ it.skipIf(!hasTmux)(
           if (bytes > 128 * 1024) throw new Error("request bound");
           chunks.push(data);
         }
+        if (req.url?.endsWith("/reserve")) reserveRequests++;
         if (req.url?.endsWith("/execute")) {
           const request = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
-            handle: { operationId: string };
+            handle: { operationId: string; generation: string };
             origin: string;
           };
           executionRequests.push({
             operationId: request.handle.operationId,
+            generation: request.handle.generation,
             origin: request.origin,
           });
         }
@@ -156,6 +160,7 @@ it.skipIf(!hasTmux)(
     try {
       const targetFile = join(root, "received");
       writeFileSync(targetFile, "");
+      writeFileSync(join(root, "source-input"), "");
       const program = join(root, "terminal.py");
       writeFileSync(
         program,
@@ -229,6 +234,7 @@ for line in sys.stdin.buffer:
         const prepared = AutomationReserveResponseSchemaZ.parse(
           toolValue(await callTool("tmux_prepare", { intent })),
         );
+        preparedHandles.push(JSON.stringify(prepared.handle));
         disrupt = mode === "drop" ? "drop" : "hold";
         committedResponse = null;
         const pending = callTool("tmux_execute", { handle: prepared.handle, intent });
@@ -299,6 +305,7 @@ for line in sys.stdin.buffer:
       const prepared = AutomationReserveResponseSchemaZ.parse(
         toolValue(await callTool("tmux_prepare", { intent })),
       );
+      preparedHandles.push(JSON.stringify(prepared.handle));
       const first = AutomationExecuteResponseSchemaZ.parse(
         toolValue(await callTool("tmux_execute", { handle: prepared.handle, intent })),
       );
@@ -325,6 +332,21 @@ for line in sys.stdin.buffer:
       );
       expect(readStatus).toMatchObject({ status: "completed" });
       expect(JSON.stringify(readStatus)).not.toContain("READ_PRIVATE_SENTINEL");
+      expect(reserveRequests).toBe(4);
+      expect(preparedHandles).toHaveLength(4);
+      expect(new Set(preparedHandles).size).toBe(4);
+      expect(
+        new Set(
+          executionRequests.map(({ generation, operationId }) =>
+            JSON.stringify({ generation, operationId }),
+          ),
+        ),
+      ).toEqual(new Set(preparedHandles));
+      expect(executionRequests.every((request) => request.origin === "mcp")).toBe(true);
+      expect(readFileSync(targetFile, "utf8")).toBe(
+        "MCP_PRIVATE_drop\nMCP_PRIVATE_cancel\nMCP_PRIVATE_disconnect\n",
+      );
+      expect(readFileSync(join(root, "source-input"), "utf8")).toBe("");
       expect(JSON.stringify(created[0]!.interactionReceipts.read(0))).not.toContain(
         "READ_PRIVATE_SENTINEL",
       );
