@@ -9,6 +9,7 @@ import type { ControlReply } from "./control-channel.ts";
 import type { OwnedViewerRequest } from "./owned-viewer-adapter.ts";
 
 export const NATIVE_ATOMIC_SNAPSHOT_MAX_BYTES = 16 * 1024 * 1024;
+export const NATIVE_ATOMIC_DUAL_MAX_RECORDS = 100000;
 const MAX_LINES = NATIVE_ATOMIC_SNAPSHOT_MAX_BYTES / 64;
 const TargetSchema = z
   .object({
@@ -147,6 +148,125 @@ export function decodeNativeAtomicSnapshot(
       cursorLine: metadata.cursor,
       target: Object.freeze({ ...expected }),
     };
+  } catch {
+    return unknown;
+  }
+}
+
+const DualMetadataSchema = MetadataSchema.extend({
+  snapshotVersion: z.literal(2),
+  representation: z.literal("dual"),
+}).strict();
+const AnsiChunkSchema = z
+  .object({ ansiHex: z.string().regex(/^(?:[0-9a-f]{2}){1,4096}$/u) })
+  .strict();
+const AnsiEndSchema = z
+  .object({
+    ansiEnd: z.literal(true),
+    bytes: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(NATIVE_ATOMIC_SNAPSHOT_MAX_BYTES / 2),
+    chunks: z.number().int().nonnegative().max(NATIVE_ATOMIC_DUAL_MAX_RECORDS),
+  })
+  .strict();
+export type NativeAtomicDualSnapshotResult =
+  | (Extract<NativeAtomicSnapshotResult, { status: "ok" }> & { readonly ansiCapture: Uint8Array })
+  | { readonly status: "unknown" };
+
+/** V2's -U includes the continuation; v1's existing budget semantics stay unchanged. */
+export function nativeAtomicDualSnapshotPlan(
+  target: NativeAtomicSnapshotTarget,
+  maxBytes = NATIVE_ATOMIC_SNAPSHOT_MAX_BYTES,
+): OwnedViewerRequest {
+  const plan = nativeAtomicSnapshotPlan(target, maxBytes);
+  return {
+    ...plan,
+    commands: [
+      [
+        "capture-pane",
+        "-p",
+        "-R",
+        "-Q",
+        "-D",
+        "-U",
+        String(maxBytes),
+        "-S",
+        "-",
+        "-t",
+        target.paneId,
+      ],
+    ],
+    limits: { maxBytes, maxLines: NATIVE_ATOMIC_DUAL_MAX_RECORDS + 1 },
+  };
+}
+
+/** Decode only the exact child reply delivered by the verified wrapper adapter.
+ * Hex keeps terminal contents out of control framing; validate all records before
+ * allocating the one decoded ANSI buffer (at most half the total wire budget).
+ */
+export function decodeNativeAtomicDualSnapshot(
+  reply: ControlReply,
+  expected: NativeAtomicSnapshotTarget,
+  maxBytes = NATIVE_ATOMIC_SNAPSHOT_MAX_BYTES,
+): NativeAtomicDualSnapshotResult {
+  const unknown = { status: "unknown" as const };
+  if (
+    !reply.ok ||
+    !validLimit(maxBytes) ||
+    reply.lines.length < 5 ||
+    reply.lines.length > NATIVE_ATOMIC_DUAL_MAX_RECORDS + 1 ||
+    !TargetSchema.safeParse(expected).success
+  )
+    return unknown;
+  let wireBytes = 0;
+  for (const line of reply.lines) {
+    wireBytes += line.length + 1;
+    if (wireBytes > maxBytes || /[^\x20-\x7e]/u.test(line)) return unknown;
+  }
+  try {
+    const metadata = DualMetadataSchema.parse(JSON.parse(reply.lines[0]!));
+    const end = AnsiEndSchema.parse(JSON.parse(reply.lines.at(-2)!));
+    if (reply.lines.at(-1) !== `%continue ${expected.paneId}`) return unknown;
+    let firstChunk = reply.lines.length - 2;
+    const chunks: string[] = [];
+    let bytes = 0;
+    for (let index = 1; index < reply.lines.length - 2; index++) {
+      const record: unknown = JSON.parse(reply.lines[index]!);
+      if (typeof record === "object" && record !== null && "ansiHex" in record) {
+        const chunk = AnsiChunkSchema.parse(record).ansiHex;
+        if (chunks.length && chunks.at(-1)!.length !== 8192) return unknown;
+        firstChunk = Math.min(firstChunk, index);
+        chunks.push(chunk);
+        bytes += chunk.length / 2;
+      } else if (chunks.length) return unknown;
+    }
+    if (bytes !== end.bytes || chunks.length !== end.chunks || bytes > maxBytes / 2) return unknown;
+    const native = decodeNativeAtomicSnapshot(
+      {
+        ok: true,
+        lines: [
+          JSON.stringify({
+            serverEpoch: metadata.serverEpoch,
+            paneId: metadata.paneId,
+            paneBirthId: metadata.paneBirthId,
+            cursor: metadata.cursor,
+            resumed: metadata.resumed,
+            snapshotVersion: 1,
+          }),
+          ...reply.lines.slice(1, firstChunk),
+          reply.lines.at(-1)!,
+        ],
+      },
+      expected,
+      maxBytes,
+    );
+    if (native.status !== "ok") return unknown;
+    const ansiCapture = Buffer.allocUnsafe(bytes);
+    let offset = 0;
+    for (const chunk of chunks) offset += ansiCapture.write(chunk, offset, "hex");
+    return { ...native, ansiCapture };
   } catch {
     return unknown;
   }

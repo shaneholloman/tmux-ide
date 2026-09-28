@@ -136,6 +136,19 @@ export class PaneFeed {
     this.state = "awaiting-cursor";
   }
 
+  /** Same capture instant, with stock control-print normalization for plain consumers. */
+  captureDualReply(epoch: number, snapshot: NativeGridCapture, ansiCapture: Uint8Array): void {
+    if (epoch !== this.epoch || this.state !== "awaiting-capture") return;
+    let text = Buffer.from(ansiCapture).toString("latin1");
+    // capture-pane removes one final LF before control_write adds its delimiter.
+    if (text.endsWith("\n")) text = text.slice(0, -1);
+    this.seedLines = text
+      .split("\n")
+      .map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
+    this.nativeSeed = snapshot;
+    this.state = "awaiting-cursor";
+  }
+
   /**
    * The cursor/size probe reply landed — emit the atomic seed batch:
    * `reset, seed, …held deltas, cursor`. On a malformed probe line the batch

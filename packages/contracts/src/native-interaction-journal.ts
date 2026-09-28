@@ -26,6 +26,7 @@ export const NativeJournalCapabilitySchemaZ = z
     ownedOperationPaneGuard: z.literal("direct-pane-v1").optional(),
     ownedOperationSessionGuard: z.literal("direct-session-v1").optional(),
     atomicPaneSnapshot: z.literal("capture-resume-v1").optional(),
+    atomicPaneSnapshotDual: z.literal("capture-resume-dual-v2").optional(),
     serverEpoch: z.uuid(),
     journalEpoch: z.uuid(),
     enabled: z.boolean(),
