@@ -28,6 +28,19 @@ try:
  call('set-option','-s','command-alias[101]','tmux-ide-run=set-option -g @wrapper-alias yes ; tmux-ide-run')
  cap=json.loads(call('if-shell','-F','1','tmux-ide-events -e'));epoch=cap['journalEpoch']
  assert cap['ownedOperationTransport']=='direct-wrapper-v1'
+ assert cap['ownedOperationEpochGuard']=='server-epoch-v1'
+ # Epoch guard refuses before body parsing, output acknowledgement, or child effects.
+ for stale in [str(uuid.uuid4()), 'malformed']:
+  assert call('tmux-ide-run','-I','-E',stale,'-O',operation,'TMUX_IDE_EPOCH_LEAK=bad ; set-option -g @epoch-effect yes',ok=False)==''
+ assert call('show-options','-gqv','@epoch-effect')==''
+ assert 'TMUX_IDE_EPOCH_LEAK=' not in call('show-environment','-g')
+ assert call('tmux-ide-run','-E',cap['serverEpoch'],'-O',operation,'set-option -g @epoch-effect yes',ok=False)==''
+ epoch_capture=call('capture-pane','-p','-t','probe')
+ guarded=call('tmux-ide-run','-I','-E',cap['serverEpoch'],'-O',str(uuid.uuid4()),'capture-pane -p -t probe')
+ guarded_ack,separator,guarded_capture=guarded.partition('\n')
+ assert json.loads(guarded_ack)['serverEpoch']==cap['serverEpoch']
+ assert guarded_capture==epoch_capture
+
  assert call('show-options','-gqv','@event-alias')==''
  # The strict body parse itself must not change global environment on error.
  call('tmux-ide-run','-I','-O',operation,'TMUX_IDE_PARSE_LEAK=bad ; missing-native-command',ok=False)

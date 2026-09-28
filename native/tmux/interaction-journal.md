@@ -212,3 +212,19 @@ outside the private string body. Ordinary `command-error` hooks can still run on
 an invalid owned wrapper; their effects are separate observations and do not gain
 direct-child ownership proof. The daemon must construct the string from known
 command/argument arrays with literal escaping, not accept arbitrary scripts.
+
+### Native server-epoch guard
+
+The optional capability `ownedOperationEpochGuard: "server-epoch-v1"` adds
+`tmux-ide-run -I -E SERVER_EPOCH -O OPERATION_UUID 'COMMAND STRING'`. The expected
+server epoch must match the server's immutable lifetime UUID. It is checked
+before parsing the string body, enqueueing children, or printing the wrapper
+acknowledgement. `-E` without `-I`, malformed UUIDs, and stale epochs fail without
+executing the supplied body. Ordinary tmux command-error hooks retain their
+usual behavior; this does not suppress unrelated user hooks.
+
+A daemon can therefore use its pinned raw socket runner for this guarded native
+extension without an ordinary `if-shell` command around the operation. It must
+require this capability before dispatch. Existing wrapper forms, schemas, and
+ordinary command aliases remain unchanged. Server lifetime validation does not
+by itself guard pane lifetime between individual child commands.

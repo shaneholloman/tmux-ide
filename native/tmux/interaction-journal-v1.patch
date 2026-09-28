@@ -809,10 +809,10 @@ index 49cac8b..d592a11 100644
  		return (0);
 diff --git a/tmux-ide-journal.c b/tmux-ide-journal.c
 new file mode 100644
-index 0000000..2a36a61
+index 0000000..8ab466e
 --- /dev/null
 +++ b/tmux-ide-journal.c
-@@ -0,0 +1,665 @@
+@@ -0,0 +1,672 @@
 +/*
 + * Copyright (c) 2026 wavyrai
 + *
@@ -1140,7 +1140,7 @@ index 0000000..2a36a61
 +	    "\"coverage\":[\"command-outcome-v1\",\"pty-enqueue-v1\",\"capture-"
 +	    "produced-v1\",\"cooperative-operation-v1\",\"pane-identity-v1\"],\"capacity\":%u,"
 +	    "\"maxBatch\":%u,\"maxWaiters\":%u,\"waitingReaders\":%u,"
-+	    "\"degraded\":%u,\"readerTransport\":\"sessionless-control-v1\",\"ownedOperationTransport\":\"direct-wrapper-v1\"}",
++	    "\"degraded\":%u,\"readerTransport\":\"sessionless-control-v1\",\"ownedOperationTransport\":\"direct-wrapper-v1\",\"ownedOperationEpochGuard\":\"server-epoch-v1\"}",
 +	    ti_server_epoch, ti_journal_epoch, ti_journal ? "true" : "false",
 +	    TI_CAPACITY, TI_MAX_BATCH, TI_MAX_WAITERS, waiting, ti_degraded);
 +}
@@ -1422,6 +1422,7 @@ index 0000000..2a36a61
 +{
 +	struct args *args = cmd_get_args(self);
 +	const char *operation = args_get(args, 'O');
++	const char *expected_epoch = args_get(args, 'E');
 +	struct cmd_list *commands;
 +	struct cmd_parse_result *parsed;
 +	struct cmd_parse_input parse = { .flags = CMD_PARSE_NOALIAS | CMD_PARSE_PARSEONLY };
@@ -1429,6 +1430,12 @@ index 0000000..2a36a61
 +	struct cmdq_item *child;
 +	struct ti_origin origin = cmdq_origin_child(item, TI_CHILD);
 +	struct client *client = cmdq_get_origin_client(item);
++	if (expected_epoch && (!args_has(args, 'I') ||
++	    !ti_operation_uuid(expected_epoch) ||
++	    strcmp(expected_epoch, ti_server_epoch) != 0)) {
++		cmdq_error(item, "operation server epoch mismatch");
++		return CMD_RETURN_ERROR;
++	}
 +	if (!ti_operation_uuid(operation)) {
 +		cmdq_error(item, "operation must be a canonical UUID");
 +		return CMD_RETURN_ERROR;
@@ -1474,8 +1481,8 @@ index 0000000..2a36a61
 +const struct cmd_entry cmd_tmux_ide_run_entry = {
 +    .name = "tmux-ide-run",
 +    .alias = NULL,
-+    .args = {"IO:", 1, 1, ti_run_parse},
-+    .usage = "[-I] -O operation-uuid { commands }",
++    .args = {"E:IO:", 1, 1, ti_run_parse},
++    .usage = "[-I [-E server-epoch]] -O operation-uuid { commands }",
 +    .flags = 0,
 +    .exec = ti_run_exec};
 diff --git a/tmux-ide-journal.h b/tmux-ide-journal.h
