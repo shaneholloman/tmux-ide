@@ -122,6 +122,7 @@ describe("semantic application shell", () => {
             title: "Implementer",
             kind: "agent" as const,
             active: true,
+            interactionEndpoint: null,
             attachability: {
               status: "available" as const,
               semanticPaneId: "pane.implementer",
@@ -132,6 +133,7 @@ describe("semantic application shell", () => {
             title: "Shell",
             kind: "terminal" as const,
             active: false,
+            interactionEndpoint: null,
             attachability: {
               status: "unavailable" as const,
               reason: "missing-semantic-stamp" as const,
@@ -214,6 +216,7 @@ describe("semantic application shell", () => {
               title: "Fallback",
               kind: "terminal",
               active: true,
+              interactionEndpoint: null,
               attachability: {
                 status: "available",
                 semanticPaneId: "terminal.discovered.fallback",
@@ -303,6 +306,7 @@ describe("semantic application shell", () => {
     expect(
       ApplicationShellTerminalResourceSchemaZ.safeParse({
         ...base,
+        interactionEndpoint: null,
         attachability: { status: "available", semanticPaneId: "pane.grouped" },
         windowResourceId: "terminal-window.0123456789abcdef0123",
       }).success,
@@ -311,6 +315,7 @@ describe("semantic application shell", () => {
     expect(
       ApplicationShellTerminalResourceSchemaZ.safeParse({
         ...base,
+        interactionEndpoint: null,
         attachability: { status: "unavailable", reason: "missing-window-stamp" },
         windowResourceId: "terminal-window.0123456789abcdef0123",
       }).success,

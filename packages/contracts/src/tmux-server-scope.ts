@@ -9,12 +9,12 @@ import {
   TmuxServerIdSchemaZ,
   TmuxServerGenerationSchemaZ,
   TmuxServerScopeSchemaZ,
-} from "./tmux-server-identity.ts";
+} from "./owner-scope-identity.ts";
 export {
   TmuxServerIdSchemaZ,
   TmuxServerGenerationSchemaZ,
   TmuxServerScopeSchemaZ,
-} from "./tmux-server-identity.ts";
+} from "./owner-scope-identity.ts";
 
 const descriptorShape = {
   serverId: TmuxServerIdSchemaZ,

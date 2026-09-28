@@ -42,6 +42,7 @@ function agent(
     agentId: `agent.${token}`,
     name: "reviewer",
     harness: "claude-code",
+    interactionEndpoint: null,
     activity: "running",
     attention: false,
     statusSource: "authority",
