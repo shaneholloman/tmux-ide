@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { runPackedAutomationJourney } from "./lib/packed-automation-journey.mjs";
 import { createPackedCancellation } from "./lib/packed-cancellation.mjs";
 import { createHash } from "node:crypto";
 import {
@@ -266,6 +267,7 @@ let installedCliPath = null;
 let installedVersion = null;
 let runtimeEvidence = null;
 let journeyObservations = null;
+let automationObservations = null;
 let homeDiagnostics = null;
 let emptyDiagnostics = null;
 let proofCompleted = false;
@@ -2075,6 +2077,17 @@ try {
     },
     installationScenarios,
   );
+  automationObservations = await runPackedAutomationJourney({
+    root,
+    directory: join(tmpRoot, "automation"),
+    installedCli,
+    socket: installedTmuxSocketPath,
+    environment: tmuxEnv(dirname(installedCli)),
+    daemonInfoPath: daemonInfo,
+    run,
+    runAsync,
+    cancellation,
+  });
   journeyObservations = await runPackedGoldenJourney(installedCli, owner);
   proofCompleted = true;
 } finally {
@@ -2169,6 +2182,7 @@ try {
       runtime: runtimeEvidence,
       artifacts: copied,
       journey: journeyObservations,
+      automation: automationObservations,
       homeDiagnostics,
       emptyDiagnostics,
       installationScenarios,
