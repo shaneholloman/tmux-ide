@@ -82,6 +82,14 @@ it("metadata consumer exceptions preserve decoded capture and never recapture", 
   expect(await r.capture(request)).toEqual({ output: "snapshot\n" });
   expect(r.run).toHaveBeenCalledTimes(1);
 });
+it("rejected proof reports uncertainty without losing or replaying the capture", async () => {
+  const r = rig("snapshot\n");
+  r.observer.acknowledgeOneShotViewerCapture.mockReturnValue(false);
+  expect(await r.capture(request)).toEqual({ output: "snapshot\n" });
+  expect(r.observer.noteOwnedOperationUncertainty).toHaveBeenCalledTimes(1);
+  expect(r.observer.cancelUndispatchedOwnedOperation).not.toHaveBeenCalled();
+  expect(r.run).toHaveBeenCalledTimes(1);
+});
 it.each(["prefix", "error"] as const)(
   "failed %s exposes no captured content and never retries",
   async (failure) => {

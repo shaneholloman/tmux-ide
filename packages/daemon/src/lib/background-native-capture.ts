@@ -107,7 +107,14 @@ export function createBackgroundNativeCapture(options: {
         operationId,
       });
       try {
-        observer.acknowledgeOneShotViewerCapture(permit, decoded.identity, decoded.acknowledgement);
+        if (
+          !observer.acknowledgeOneShotViewerCapture(
+            permit,
+            decoded.identity,
+            decoded.acknowledgement,
+          )
+        )
+          uncertain();
       } catch {
         uncertain();
       }
