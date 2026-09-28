@@ -57,6 +57,12 @@ const client = await openPaneStreamRuntimeClient({
   onNegotiated: (_pane, result) => resolveNegotiation(result),
   onTerminalDelivery: () => undefined,
   onLayout: resolveLayout,
+  onLayoutSnapshot: (snapshot) => {
+    const requested = snapshot.layouts.find(({ panes }) =>
+      panes.some(({ pane }) => pane === semanticPaneId),
+    );
+    if (requested) resolveLayout(requested);
+  },
 });
 try {
   const [layoutFrame, negotiated] = await Promise.race([
