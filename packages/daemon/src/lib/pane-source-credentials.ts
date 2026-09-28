@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 
 export const PANE_SOURCE_CREDENTIAL_OPTION = "@tmux_ide_source_credential_v1";
 export const PANE_SOURCE_CREDENTIAL_HEADER = "X-Tmux-Ide-Pane-Source-Credential";
@@ -9,11 +9,13 @@ export interface PaneSourceCredentialTmux {
   runAsync?: (args: readonly string[], signal?: AbortSignal) => Promise<string>;
 }
 
-interface CredentialGrant {
+export interface PaneSourceBinding {
+  readonly bindingId: string;
   readonly session: string;
   readonly runtimePaneId: string;
   readonly semanticPaneId: string;
 }
+type CredentialGrant = PaneSourceBinding;
 
 /**
  * Daemon-generation-only source attribution capabilities for local tmux panes.
@@ -74,7 +76,7 @@ export class PaneSourceCredentialAuthority {
         token,
       ]);
       this.#tokensByPane.set(paneKey, token);
-      this.#grants.set(token, { session, runtimePaneId, semanticPaneId });
+      this.#grants.set(token, { bindingId: randomUUID(), session, runtimePaneId, semanticPaneId });
     }
     for (const [paneKey, token] of this.#tokensByPane) {
       if (!paneKey.startsWith(`${session}\0`) || live.has(paneKey)) continue;
@@ -136,7 +138,12 @@ export class PaneSourceCredentialAuthority {
         }
         if (existingToken) this.#grants.delete(existingToken);
         this.#tokensByPane.set(paneKey, token);
-        this.#grants.set(token, { session, runtimePaneId, semanticPaneId });
+        this.#grants.set(token, {
+          bindingId: randomUUID(),
+          session,
+          runtimePaneId,
+          semanticPaneId,
+        });
       }
       if (raced) continue;
       for (const [paneKey, token] of this.#tokensByPane) {
@@ -153,6 +160,14 @@ export class PaneSourceCredentialAuthority {
     session: string,
     claimedSemanticPaneId: string | undefined,
   ): string | null {
+    return this.resolveBinding(credential, session, claimedSemanticPaneId)?.semanticPaneId ?? null;
+  }
+
+  resolveBinding(
+    credential: string | undefined,
+    session: string,
+    claimedSemanticPaneId: string | undefined,
+  ): PaneSourceBinding | null {
     try {
       this.reconcileSession(session);
     } catch {
@@ -166,7 +181,7 @@ export class PaneSourceCredentialAuthority {
     if (claimedSemanticPaneId !== undefined && claimedSemanticPaneId !== grant.semanticPaneId) {
       return null;
     }
-    return grant.semanticPaneId;
+    return { ...grant };
   }
 
   dispose(): void {
