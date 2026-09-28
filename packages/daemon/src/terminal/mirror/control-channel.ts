@@ -22,11 +22,57 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { shellEscape } from "../../lib/shell.ts";
 import type { NativeTmuxServerIdentity } from "../../lib/tmux-server-generation-runner.ts";
+import {
+  NativeJournalIdentitySchemaZ,
+  type NativeJournalIdentity,
+  type NativeOperationIdentity,
+} from "@tmux-ide/contracts";
+import { nativeOperationWrapperArgs } from "../../lib/native-operation-command.ts";
+import { decodeNativeOperationReply } from "../../lib/native-operation-reply.ts";
 import { parseControlLine } from "../protocol/control.ts";
+
+const NATIVE_VIEWER_PRIMITIVES = new Set([
+  "send-keys",
+  "capture-pane",
+  "paste-buffer",
+  "send-prefix",
+  "set-option",
+  "display-message",
+]);
 
 export interface ControlReply {
   ok: boolean;
   lines: string[];
+}
+
+/** Optional proof transport; terminal results and attribution validity are separate. */
+export interface NativeViewerControlReply extends ControlReply {
+  readonly metadataStatus: "valid" | "invalid" | "unavailable";
+  readonly acknowledgement: NativeOperationIdentity | null;
+}
+export interface NativeViewerControlRequest {
+  readonly operationId: string;
+  readonly paneId: string;
+  readonly paneBirthId: string;
+  readonly commands: readonly (readonly string[])[];
+  readonly resultIndex: number;
+  readonly limits: ControlReplyLimits;
+  readonly onAcknowledgement?: (acknowledgement: NativeOperationIdentity) => void;
+}
+export interface NativeViewerControlOptions {
+  /** Supplied only after the owner proved strict transport AND pane guard capability. */
+  readonly serverEpoch: string;
+  readonly onIdentity: (identity: NativeJournalIdentity) => boolean;
+  readonly onRetired: () => void;
+}
+interface NativeWrapperReplyState {
+  readonly expected: NativeJournalIdentity & { readonly operationId: string };
+  readonly resultIndex: number;
+  readonly onReply: (reply: NativeViewerControlReply) => void;
+  readonly onAcknowledgement?: (acknowledgement: NativeOperationIdentity) => void;
+  acknowledgement: NativeOperationIdentity | null;
+  metadataStatus: NativeViewerControlReply["metadataStatus"];
+  settled: boolean;
 }
 
 export interface ControlReplyLimits {
@@ -131,6 +177,11 @@ export interface MirrorChannelIo {
   /** Outstanding control replies before a new command is written. */
   readonly pendingCount?: number;
   start(): Promise<void>;
+  readonly nativeViewerIdentity?: NativeJournalIdentity | null;
+  commandNativeViewerInline?(
+    request: NativeViewerControlRequest,
+    onReply: (reply: NativeViewerControlReply) => void,
+  ): boolean;
   /** Reply-matched command; resolution order follows the wire FIFO but the
    *  continuation is a microtask — use ONLY where output ordering is moot
    *  (identity join, stamping, window listing). */
@@ -169,6 +220,7 @@ export interface MirrorChannelIo {
 }
 
 type ReplySink =
+  | { kind: "native-wrapper"; state: NativeWrapperReplyState; index: number; budget: ReplyBudget }
   | {
       kind: "bounded";
       limits: ControlReplyLimits;
@@ -309,9 +361,54 @@ export class ControlChannelCore {
     return true;
   }
 
+  /** Reserve wrapper acknowledgement plus fixed synchronous child replies as one group. */
+  pushNativeWrapper(
+    expected: NativeJournalIdentity & { readonly operationId: string },
+    request: NativeViewerControlRequest,
+    onReply: (reply: NativeViewerControlReply) => void,
+  ): boolean {
+    if (
+      this.failed ||
+      !Number.isSafeInteger(request.resultIndex) ||
+      request.resultIndex < 0 ||
+      request.resultIndex >= request.commands.length ||
+      request.commands.length > 64 ||
+      !Number.isSafeInteger(request.limits.maxBytes) ||
+      request.limits.maxBytes < 1 ||
+      request.limits.maxBytes > ATOMIC_CAPTURE_BYTE_HARD_CAP ||
+      !Number.isSafeInteger(request.limits.maxLines) ||
+      request.limits.maxLines < 1 ||
+      request.limits.maxLines > ATOMIC_CAPTURE_LINE_HARD_CAP
+    )
+      return false;
+    const state: NativeWrapperReplyState = {
+      expected: { ...expected },
+      resultIndex: request.resultIndex + 1,
+      onReply,
+      onAcknowledgement: request.onAcknowledgement,
+      acknowledgement: null,
+      metadataStatus: "unavailable",
+      settled: false,
+    };
+    for (let index = 0; index <= request.commands.length; index++) {
+      const limits =
+        index === state.resultIndex
+          ? { ...request.limits }
+          : { maxBytes: 1024, maxLines: index === 0 ? 1 : 8 };
+      this.pending.push({
+        kind: "native-wrapper",
+        state,
+        index,
+        budget: { limits, bytes: 0, overflowed: false, lines: [] },
+      });
+    }
+    return true;
+  }
+
   private currentBudget(): ReplyBudget | undefined {
     const head = this.currentReplyConsumesPending ? this.pending[0] : undefined;
     if (head?.kind === "bounded") return head;
+    if (head?.kind === "native-wrapper") return head.budget;
     if (head?.kind === "command-list" && head.index <= head.state.resultIndex)
       return head.state.budget;
     return undefined;
@@ -431,7 +528,15 @@ export class ControlChannelCore {
       if (sink.kind === "promise") sink.reject(new Error(reason));
       else if (sink.kind === "inline" || sink.kind === "bounded")
         sink.onReply({ ok: false, lines: [reason] });
-      else if (sink.kind === "command-list" && !sink.state.settled) {
+      else if (sink.kind === "native-wrapper" && !sink.state.settled) {
+        sink.state.settled = true;
+        sink.state.onReply({
+          ok: false,
+          lines: [],
+          metadataStatus: sink.state.metadataStatus,
+          acknowledgement: sink.state.acknowledgement,
+        });
+      } else if (sink.kind === "command-list" && !sink.state.settled) {
         sink.state.settled = true;
         sink.state.onReply({ ok: false, lines: [reason] });
       }
@@ -498,6 +603,42 @@ export class ControlChannelCore {
         this.awaitingGreeting = false;
         const sink = this.pending.shift();
         if (!sink) break; // unsolicited block (greeting after a race)
+        if (sink.kind === "native-wrapper") {
+          const state = sink.state;
+          if (sink.index === 0 && event.kind === "end") {
+            try {
+              if (sink.budget.overflowed || sink.budget.lines.length !== 1)
+                throw new Error("Invalid acknowledgement bound");
+              const { acknowledgement } = decodeNativeOperationReply(
+                sink.budget.lines[0]! + "\n",
+                state.expected,
+              );
+              if (acknowledgement.connectionId !== state.expected.connectionId)
+                throw new Error("Foreign connection acknowledgement");
+              state.onAcknowledgement?.(acknowledgement);
+              state.acknowledgement = acknowledgement;
+              state.metadataStatus = "valid";
+            } catch {
+              state.metadataStatus = "invalid";
+            }
+          }
+          if (event.kind === "error") {
+            // tmux aborts the remaining children in this parsed command group.
+            // Drop only this group's sinks; subsequent queued writes retain theirs.
+            while (this.pending[0]?.kind === "native-wrapper" && this.pending[0].state === state)
+              this.pending.shift();
+          }
+          if (!state.settled && (event.kind === "error" || sink.index === state.resultIndex)) {
+            state.settled = true;
+            state.onReply({
+              ok: event.kind === "end" && !sink.budget.overflowed,
+              lines: sink.index === 0 ? [] : sink.budget.lines,
+              metadataStatus: state.metadataStatus,
+              acknowledgement: state.acknowledgement,
+            });
+          }
+          break;
+        }
         if (sink.kind === "command-list") {
           if (event.kind === "end") sink.state.leadingErrorLines.length = 0;
           if (event.kind === "end" && sink.index < sink.state.resultIndex && sink.state.budget) {
@@ -752,6 +893,7 @@ export class ControlChannelCore {
 }
 
 export interface MirrorControlChannelOptions {
+  nativeViewer?: NativeViewerControlOptions;
   /** Resolve through the owning daemon's generation fence before each spawn. */
   resolveSocketPath?: () => string;
   nativeServerIdentity?: NativeTmuxServerIdentity;
@@ -821,6 +963,9 @@ export class MirrorControlChannel implements MirrorChannelIo {
   private readonly core: ControlChannelCore;
   private readonly opts: MirrorControlChannelOptions;
   private exited = false;
+  private viewerIdentity: NativeJournalIdentity | null = null;
+  private viewerRetired = false;
+  private viewerPending = 0;
   private verifiedAttach = false;
   private guardedStart: { resolve: () => void; reject: (error: Error) => void } | null = null;
   private atomicCollectorTimer: ReturnType<typeof setTimeout> | null = null;
@@ -847,6 +992,8 @@ export class MirrorControlChannel implements MirrorChannelIo {
   }
 
   start(): Promise<void> {
+    if (this.proc || this.exited)
+      return Promise.reject(new Error("Control channel cannot restart"));
     const pauseAfter = this.opts.pauseAfterSeconds ?? DEFAULT_PAUSE_AFTER_SECONDS;
     let args: string[];
     try {
@@ -882,7 +1029,7 @@ export class MirrorControlChannel implements MirrorChannelIo {
     });
     // tmux opens with an unsolicited %begin/%end greeting block; a queued
     // resolver makes start() settle when the protocol is actually live.
-    return new Promise((resolve, reject) => {
+    return new Promise<void>((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const settle = (error?: Error) => {
         if (timer) clearTimeout(timer);
@@ -912,7 +1059,101 @@ export class MirrorControlChannel implements MirrorChannelIo {
         this.core.fail(String(err));
         reject(err);
       });
+    }).then(() => this.initializeNativeViewer());
+  }
+
+  get nativeViewerIdentity(): NativeJournalIdentity | null {
+    return this.viewerIdentity ? { ...this.viewerIdentity } : null;
+  }
+  private retireNativeViewer(): void {
+    this.viewerIdentity = null;
+    if (this.viewerRetired || !this.opts.nativeViewer) return;
+    this.viewerRetired = true;
+    try {
+      this.opts.nativeViewer.onRetired();
+    } catch {
+      /* optional metadata only */
+    }
+  }
+  private initializeNativeViewer(): Promise<void> {
+    const config = this.opts.nativeViewer;
+    if (!config || this.exited || this.viewerRetired) return Promise.resolve();
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (identity: NativeJournalIdentity | null) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try {
+          if (!identity || this.exited || this.viewerRetired || !config.onIdentity({ ...identity }))
+            this.retireNativeViewer();
+          else this.viewerIdentity = identity;
+        } catch {
+          this.retireNativeViewer();
+        }
+        resolve();
+      };
+      const timer = setTimeout(() => finish(null), 1000);
+      timer.unref?.();
+      this.commandBoundedInline("tmux-ide-events -i", { maxBytes: 1024, maxLines: 1 }, (reply) => {
+        try {
+          if (!reply.ok || reply.lines.length !== 1) return finish(null);
+          const identity = NativeJournalIdentitySchemaZ.parse(JSON.parse(reply.lines[0]!));
+          finish(identity.serverEpoch === config.serverEpoch ? identity : null);
+        } catch {
+          finish(null);
+        }
+      });
     });
+  }
+  /** false means no write occurred. Once accepted, never fall back or replay on failure. */
+  commandNativeViewerInline(
+    request: NativeViewerControlRequest,
+    onReply: (reply: NativeViewerControlReply) => void,
+  ): boolean {
+    const identity = this.viewerIdentity,
+      proc = this.proc;
+    if (
+      !identity ||
+      this.viewerRetired ||
+      !proc?.stdin?.writable ||
+      this.viewerPending >= 64 ||
+      this.core.pendingCount + request.commands.length + 1 > 4096
+    )
+      return false;
+    let command: string;
+    try {
+      if (request.commands.some((argv) => !NATIVE_VIEWER_PRIMITIVES.has(argv[0]!))) return false;
+      command = nativeOperationWrapperArgs(
+        request.operationId,
+        request.commands,
+        identity.serverEpoch,
+        { paneId: request.paneId, paneBirthId: request.paneBirthId },
+      )
+        .map(shellEscape)
+        .join(" ");
+    } catch {
+      return false;
+    }
+    if (
+      !this.core.pushNativeWrapper(
+        { ...identity, operationId: request.operationId },
+        request,
+        (reply) => {
+          this.viewerPending--;
+          onReply(reply);
+        },
+      )
+    )
+      return false;
+    this.viewerPending++;
+    try {
+      proc.stdin.write(command + "\n");
+    } catch {
+      this.core.fail("Native viewer write failed");
+      this.retireNativeViewer();
+    }
+    return true;
   }
 
   request(cmd: string): Promise<string[]> {
@@ -1033,6 +1274,7 @@ export class MirrorControlChannel implements MirrorChannelIo {
    * signals are a fallback, never the first move (wedged-server hazard).
    */
   async dispose(): Promise<void> {
+    this.retireNativeViewer();
     if (this.atomicCollectorTimer) clearTimeout(this.atomicCollectorTimer);
     this.atomicCollectorTimer = null;
     const proc = this.proc;
@@ -1066,6 +1308,7 @@ export class MirrorControlChannel implements MirrorChannelIo {
   private noteExit(reason: string | null): void {
     if (this.exited) return;
     this.exited = true;
+    this.retireNativeViewer();
     this.guardedStart?.reject(new Error(reason ?? "Control channel exited before guarded attach"));
     this.opts.handlers.onExit(reason);
   }
