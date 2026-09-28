@@ -1,9 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-
-export interface AutomationOperationHandle {
-  readonly generation: string;
-  readonly operationId: string;
-}
+import type { AutomationOperationHandle } from "@tmux-ide/contracts";
 
 export type AutomationOperationStatus<T> =
   | { readonly status: "reserved" | "running" }
