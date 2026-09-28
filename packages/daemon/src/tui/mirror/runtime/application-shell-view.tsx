@@ -1,7 +1,7 @@
 import {
   interactionForCurrentPane,
   nameForCurrentEndpoint,
-} from "./application-pane-interaction-identity.ts";
+} from "../ui/pane-interaction-presentation.ts";
 import { isSidebarToggleKey } from "./application-sidebar-shortcuts.ts";
 import {
   ApplicationMachineSidebar,

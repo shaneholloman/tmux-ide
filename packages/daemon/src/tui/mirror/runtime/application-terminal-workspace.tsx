@@ -3,7 +3,7 @@ import type { InteractionObservationStatus, NativePaneIdentity } from "@tmux-ide
 import { interactionPaneEndpointKey } from "@tmux-ide/core";
 import type { PaneInteractionEndpoint } from "../ui/pane-interaction-presentation.ts";
 import type { InteractionPaneEndpoint } from "@tmux-ide/contracts";
-import { interactionForCurrentPane } from "./application-pane-interaction-identity.ts";
+import { interactionForCurrentPane } from "../ui/pane-interaction-presentation.ts";
 import { PaneInteractionDetails } from "../ui/pane-interaction.tsx";
 import type { PaneInteractionEvent } from "../ui/pane-interaction-presentation.ts";
 import { Menu } from "../ui/index.ts";

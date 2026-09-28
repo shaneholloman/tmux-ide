@@ -3,7 +3,7 @@ import { interactionPaneEndpointKey } from "@tmux-ide/core";
 import {
   interactionForCurrentPane,
   nameForCurrentEndpoint,
-} from "./application-pane-interaction-identity.ts";
+} from "../ui/pane-interaction-presentation.ts";
 const uuid = "00000000-0000-4000-8000-000000000001";
 const endpoint = {
   kind: "pane" as const,

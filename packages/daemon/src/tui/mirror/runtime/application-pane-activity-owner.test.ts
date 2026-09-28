@@ -1,5 +1,5 @@
 import { InteractionEvidenceRecordSchemaZ } from "@tmux-ide/contracts";
-import { interactionForCurrentPane } from "./application-pane-interaction-identity.ts";
+import { interactionForCurrentPane } from "../ui/pane-interaction-presentation.ts";
 import { createRoot, createSignal } from "solid-js";
 import { afterEach, expect, it, vi } from "vitest";
 import { InteractionReceiptSchemaZ, type TmuxInteractionCursor } from "@tmux-ide/contracts";
@@ -320,4 +320,50 @@ it("keeps verified viewer operations out of Home activity and pane badges", asyn
   } finally {
     r.dispose();
   }
+});
+
+it("selects current authenticated machine scopes and ignores foreign or unavailable inventory", async () => {
+  const { applicationPaneActivitySources } = await import("./application-pane-activity-owner.ts");
+  const first = endpoint(source(1));
+  const second = endpoint(source(2));
+  const foreign = { ...second, environmentId: "00000000-0000-4000-8000-000000000099" };
+  const daemon = { bindHostname: "127.0.0.1", port: 4321, authToken: "owner-secret" };
+  const groups = [
+    {
+      id: "local",
+      state: "ready",
+      environmentId: uuid,
+      agents: [{ interactionEndpoint: first }, { interactionEndpoint: foreign }],
+    },
+    {
+      id: "offline",
+      state: "unavailable",
+      environmentId: uuid,
+      agents: [{ interactionEndpoint: second }],
+    },
+    {
+      id: "unauthenticated",
+      state: "ready",
+      environmentId: uuid,
+      agents: [{ interactionEndpoint: second }],
+    },
+  ];
+  const result = applicationPaneActivitySources(
+    groups,
+    "local",
+    [{ interactionEndpoint: second }, { interactionEndpoint: first }],
+    (machine) => (machine === "unauthenticated" ? { ...daemon, authToken: null } : daemon),
+  );
+  expect(result).toEqual(
+    [1, 2].map((index) => ({
+      ...source(index),
+      baseUrl: "http://127.0.0.1:4321",
+      ownerToken: "owner-secret",
+    })),
+  );
+  expect(
+    applicationPaneActivitySources(groups, "other", [{ interactionEndpoint: second }], (machine) =>
+      machine === "unauthenticated" ? null : daemon,
+    ),
+  ).toHaveLength(1);
 });

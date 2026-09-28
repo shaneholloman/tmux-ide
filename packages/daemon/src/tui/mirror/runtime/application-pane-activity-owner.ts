@@ -1,3 +1,5 @@
+import { applicationMachineAuthorityManager } from "./application-machine-authority.ts";
+import { canonicalDaemonUrl } from "../../../lib/canonical-daemon.ts";
 import type {
   InteractionJournalEntry,
   NativePaneIdentity,
@@ -27,6 +29,80 @@ export interface ApplicationInteractionSource {
   readonly baseUrl: string;
   readonly ownerToken: string;
 }
+type EndpointCarrier = {
+  readonly interactionEndpoint: Extract<InteractionPaneEndpoint, { kind: "pane" }> | null;
+};
+interface ActivityMachineGroup {
+  readonly id: string;
+  readonly state: string;
+  readonly environmentId?: string | null;
+  readonly agents?: readonly EndpointCarrier[];
+}
+type ActivityDaemonAuthority = {
+  readonly bindHostname: string;
+  readonly port: number;
+  readonly authToken?: string | null;
+};
+
+/** Select authenticated owner streams only from current, environment-matched endpoint inventory. */
+export function applicationPaneActivitySources(
+  groups: readonly ActivityMachineGroup[],
+  selectedMachineId: string | null,
+  resources: readonly EndpointCarrier[],
+  readAuthority: (machineId: string) => ActivityDaemonAuthority | null | undefined,
+): readonly ApplicationInteractionSource[] {
+  const sources = new Map<string, ApplicationInteractionSource>();
+  for (const group of groups) {
+    if (group.state !== "ready" || !group.environmentId) continue;
+    const daemon = readAuthority(group.id);
+    if (!daemon?.authToken) continue;
+    const endpoints = (group.agents ?? []).flatMap((agent) =>
+      agent.interactionEndpoint ? [agent.interactionEndpoint] : [],
+    );
+    if (group.id === selectedMachineId)
+      endpoints.push(
+        ...resources.flatMap((resource) =>
+          resource.interactionEndpoint ? [resource.interactionEndpoint] : [],
+        ),
+      );
+    for (const endpoint of endpoints) {
+      if (endpoint.environmentId !== group.environmentId) continue;
+      const key = JSON.stringify([
+        endpoint.environmentId,
+        endpoint.serverScope.serverId,
+        endpoint.serverScope.generation,
+      ]);
+      sources.set(key, {
+        environmentId: endpoint.environmentId,
+        server: endpoint.serverScope,
+        baseUrl: canonicalDaemonUrl("http", daemon.bindHostname, daemon.port),
+        ownerToken: daemon.authToken,
+      });
+    }
+  }
+  return [...sources.values()];
+}
+
+/** Root composition facade; source selection and owner authentication belong together. */
+export function createMachinePaneActivity(
+  machines: { readonly sidebar: { readonly groups: Accessor<readonly ActivityMachineGroup[]> } },
+  selectedMachineId: Accessor<string | null>,
+  shell: Accessor<{
+    readonly semantic?: {
+      readonly terminalInventory?: { readonly resources: readonly EndpointCarrier[] };
+    } | null;
+  }>,
+): ApplicationPaneActivity {
+  return createApplicationPaneActivityOwner(() =>
+    applicationPaneActivitySources(
+      machines.sidebar.groups(),
+      selectedMachineId(),
+      shell().semantic?.terminalInventory?.resources ?? [],
+      (machineId) => applicationMachineAuthorityManager.getMachine(machineId)?.read(),
+    ),
+  );
+}
+
 export type ApplicationPaneActivity = Accessor<ReadonlyMap<string, PaneInteractionProjection>> & {
   readonly activity: Accessor<readonly InteractionJournalEntry[]>;
   readonly observationStatus: (

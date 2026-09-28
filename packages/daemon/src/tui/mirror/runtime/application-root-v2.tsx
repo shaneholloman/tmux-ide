@@ -1,6 +1,5 @@
-import { canonicalDaemonUrl } from "../../../lib/canonical-daemon.ts";
-import { createApplicationSidebarShortcuts } from "./application-sidebar-shortcuts.ts";
 import type { TmuxServerScope } from "@tmux-ide/contracts";
+import { createApplicationSidebarShortcuts } from "./application-sidebar-shortcuts.ts";
 import { terminalWindowActionCallbacks } from "./application-terminal-workspace-policy.ts";
 import { applicationRouteConnection } from "./application-route-connection.ts";
 import { ApplicationMachineOverlays } from "./application-machine-overlays.tsx";
@@ -10,7 +9,7 @@ import { createApplicationMachineNavigation } from "./application-machine-naviga
 import { handleFleetShortcut } from "./application-machine-navigation.ts";
 import { disposeApplicationDaemonAuthority } from "./application-daemon-authority.ts";
 import { createTerminalLinkOpener } from "./terminal-link-opener.ts";
-import { createApplicationPaneActivityOwner } from "./application-pane-activity-owner.ts";
+import { createMachinePaneActivity } from "./application-pane-activity-owner.ts";
 import { createApplicationConnectionFeedback } from "../workspace/connection-feedback.ts";
 /* @jsxImportSource @opentui/solid */
 import { batch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
@@ -358,37 +357,7 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
           setSurface,
           setNote: appearance.setNote,
         });
-        const paneInteractions = createApplicationPaneActivityOwner(() => {
-          const sources = new Map<
-            string,
-            { environmentId: string; server: TmuxServerScope; baseUrl: string; ownerToken: string }
-          >();
-          for (const group of machines.sidebar.groups()) {
-            if (group.state !== "ready" || !group.environmentId) continue;
-            const daemon = applicationMachineAuthorityManager.getMachine(group.id)?.read();
-            if (!daemon?.authToken) continue;
-            const endpoints = (group.agents ?? []).flatMap((agent) =>
-              agent.interactionEndpoint ? [agent.interactionEndpoint] : [],
-            );
-            if (group.id === generationMachineId())
-              endpoints.push(
-                ...(shell().semantic?.terminalInventory?.resources ?? []).flatMap((resource) =>
-                  resource.interactionEndpoint ? [resource.interactionEndpoint] : [],
-                ),
-              );
-            for (const endpoint of endpoints) {
-              if (endpoint.environmentId !== group.environmentId) continue;
-              const key = JSON.stringify([endpoint.environmentId, endpoint.serverScope]);
-              sources.set(key, {
-                environmentId: endpoint.environmentId,
-                server: endpoint.serverScope,
-                baseUrl: canonicalDaemonUrl("http", daemon.bindHostname, daemon.port),
-                ownerToken: daemon.authToken,
-              });
-            }
-          }
-          return [...sources.values()];
-        });
+        const paneInteractions = createMachinePaneActivity(machines, generationMachineId, shell);
         machineAgentNavigator = createApplicationMachineAgentNavigator({
           isCurrentTarget: (machineId, row) => machines.agents.isCurrentTarget(machineId, row),
           selectedMachineId: machines.selectedMachineId,

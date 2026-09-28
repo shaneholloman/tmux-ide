@@ -5,7 +5,7 @@ import type { PaneInteractionEndpoint } from "../ui/pane-interaction-presentatio
 import {
   interactionForCurrentPane,
   nameForCurrentEndpoint,
-} from "./application-pane-interaction-identity.ts";
+} from "../ui/pane-interaction-presentation.ts";
 import type { InteractionJournalEntry } from "@tmux-ide/contracts";
 
 /* @jsxImportSource @opentui/solid */
