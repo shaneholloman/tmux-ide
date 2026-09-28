@@ -340,11 +340,13 @@ it("accepts only same-owner semantic admission destinations for authored proof",
     target,
     commands: ["send-keys" as const],
     source: null,
+    executionId: id(99),
     authoredDestination,
   };
   expect(() =>
     authority.admit({
       ...request,
+      executionId: id(99),
       authoredDestination: { ...authoredDestination, environmentId: id(80) },
     }),
   ).toThrow();
@@ -382,6 +384,7 @@ function completionRig() {
     target,
     commands: ["paste-buffer", "send-keys"],
     source: null,
+    executionId: id(99),
     authoredDestination,
   })!;
   const connection = authority.registerConnection(identity, "authored")!;

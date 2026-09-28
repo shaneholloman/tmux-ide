@@ -41,6 +41,8 @@ function rig(canDispatch?: () => boolean) {
     expectedKinds: ["capture-pane"],
     commands: [["capture-pane", "-p", "-t", "%0"]],
     context: {
+      executionId: id,
+      authoredReceiptAdmissionSequence: 1,
       origin: "sdk",
       interactionContext: {
         destination: {

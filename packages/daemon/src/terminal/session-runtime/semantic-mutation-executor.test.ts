@@ -1203,7 +1203,12 @@ it("forwards captured trusted context only after validation and authorization, w
     OP_A,
     { ...intent, origin: "cli" },
     undefined,
-    { interactionContext: { ...captured, source }, origin: "cli" },
+    {
+      interactionContext: { ...captured, source },
+      origin: "cli",
+      executionId: expect.any(String),
+      authoredReceiptAdmissionSequence: 1,
+    },
   ]);
   expect(execute.mock.calls[0]![3]).not.toBe(captured);
   await executor.dispose();

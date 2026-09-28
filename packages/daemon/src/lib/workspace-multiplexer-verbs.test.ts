@@ -837,7 +837,12 @@ describe("the multiplexer authority", () => {
       text: ";",
       submit: false,
     };
-    const context = { interactionContext: testInteractionContext(intent), origin: "cli" as const };
+    const context = {
+      executionId: "00000000-0000-4000-8000-000000000001",
+      authoredReceiptAdmissionSequence: 1,
+      interactionContext: testInteractionContext(intent),
+      origin: "cli" as const,
+    };
     function nativeAuthority(
       native: NonNullable<
         import("./workspace-multiplexer-verbs.ts").WorkspaceMultiplexerIo["runAuthoredNative"]

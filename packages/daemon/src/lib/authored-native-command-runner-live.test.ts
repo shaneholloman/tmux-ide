@@ -82,6 +82,8 @@ it.skipIf(!binary)(
         expectedKinds: ["capture-pane"],
         commands: [["capture-pane", "-p", "-e", "-J", "-S", "-2000", "-t", pane!]],
         context: {
+          executionId: id,
+          authoredReceiptAdmissionSequence: 1,
           origin: "sdk",
           interactionContext: {
             destination: {

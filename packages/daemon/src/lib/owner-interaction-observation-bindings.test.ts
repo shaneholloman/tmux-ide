@@ -138,6 +138,7 @@ async function rig(owned = true, consume = false) {
       target,
       commands: ["send-keys"],
       source: null,
+      executionId: id(99),
       authoredDestination:
         role === "authored"
           ? {

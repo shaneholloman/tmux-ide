@@ -30,6 +30,8 @@ export interface OwnedNativeOperation {
   readonly operationId: string;
 }
 export interface OwnedNativeOperationRequest {
+  readonly executionId?: string;
+  readonly authoredReceiptAdmissionSequence?: number;
   readonly operationId: string;
   readonly role: Role;
   readonly target: NativeEndpoint;
@@ -50,6 +52,7 @@ export interface OwnedNativeInteractionDecision {
   readonly evidence: InteractionEvidence;
   /** Private proof for enriching the existing authored receipt; not a new operation result. */
   readonly proof: {
+    readonly authoredReceiptAdmissionSequence: number | null;
     readonly acknowledgement: NativeOperationIdentity;
     readonly target: NativeEndpoint;
     readonly authoredDestination: SemanticEndpoint | null;
@@ -58,6 +61,7 @@ export interface OwnedNativeInteractionDecision {
   readonly reason: "unmatched" | "pending-expired" | "overflow" | "retired" | "matched";
 }
 export interface OwnedNativePlanCompletion {
+  readonly executionId: string;
   readonly acknowledgement: NativeOperationIdentity;
   readonly physicalTarget: NativeEndpoint;
   readonly authoredDestination: SemanticEndpoint;
@@ -207,6 +211,14 @@ export class OwnedNativeInteractionBindings {
       wrapperCommandId: "1",
       operationId: raw.operationId,
     }).operationId;
+    if (raw.executionId !== undefined && !EnvironmentIdSchema.safeParse(raw.executionId).success)
+      throw new TypeError("Invalid execution identity");
+    if (
+      raw.authoredReceiptAdmissionSequence !== undefined &&
+      (!Number.isSafeInteger(raw.authoredReceiptAdmissionSequence) ||
+        raw.authoredReceiptAdmissionSequence < 1)
+    )
+      throw new TypeError("Invalid authored admission sequence");
     const target = InteractionPaneEndpointSchemaZ.parse(raw.target);
     if (
       target.kind !== "native-pane" ||
@@ -421,6 +433,7 @@ export class OwnedNativeInteractionBindings {
       if (
         permit.request.role === "authored" &&
         permit.request.authoredDestination &&
+        permit.request.executionId &&
         permit.completionEligible &&
         commands.every(
           (command, index) =>
@@ -432,6 +445,7 @@ export class OwnedNativeInteractionBindings {
         )
       ) {
         const proof: OwnedNativePlanCompletion = freeze({
+          executionId: permit.request.executionId,
           acknowledgement: permit.acknowledgement,
           physicalTarget: permit.request.target,
           authoredDestination: permit.request.authoredDestination,
@@ -619,6 +633,7 @@ export class OwnedNativeInteractionBindings {
       disposition: permit.request.role,
       evidence,
       proof: {
+        authoredReceiptAdmissionSequence: permit.request.authoredReceiptAdmissionSequence ?? null,
         acknowledgement: ack,
         target: permit.request.target,
         authoredDestination: permit.request.authoredDestination ?? null,

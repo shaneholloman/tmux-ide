@@ -55,6 +55,8 @@ export function createAuthoredNativeCommandRunner(options: {
     const source = request.context.interactionContext.source;
     const permit = observer.admitOwnedOperation({
       operationId: request.operationId,
+      executionId: request.context.executionId,
+      authoredReceiptAdmissionSequence: request.context.authoredReceiptAdmissionSequence,
       role: "authored",
       target: {
         kind: "native-pane",

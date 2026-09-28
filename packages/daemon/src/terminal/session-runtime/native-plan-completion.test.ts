@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { expect, it, vi } from "vitest";
 import type { NativeJournalRecord } from "@tmux-ide/contracts";
 import {
@@ -10,6 +11,7 @@ import { testInteractionContext } from "../../../test-support/interaction-eviden
 import {
   SessionSemanticMutationExecutor,
   type SessionRuntimeIntentResult,
+  type AuthoredExecutionContext,
 } from "./semantic-mutation-executor.ts";
 const id = "00000000-0000-4000-8000-000000000005";
 const intent = {
@@ -22,6 +24,7 @@ const intent = {
 } as const;
 const context = testInteractionContext(intent);
 function proof(
+  executionId: string,
   destination = context.destination,
   command: "send-keys" | "capture-pane" = "send-keys",
 ): OwnedNativePlanCompletion {
@@ -37,6 +40,7 @@ function proof(
   });
   const permit = authority.admit({
     operationId: id,
+    executionId,
     role: "authored",
     target: { kind: "native-pane", environmentId, serverScope, serverEpoch: id, paneBirthId: "1" },
     authoredDestination: destination,
@@ -92,11 +96,13 @@ function proof(
   return completion;
 }
 function rig() {
+  let executionId: string;
   let finish!: (value: SessionRuntimeIntentResult) => void;
   let fail!: (error: Error) => void;
   const execute = vi.fn(
-    () =>
+    (_id: string, _intent: unknown, _timing: unknown, execution?: AuthoredExecutionContext) =>
       new Promise<SessionRuntimeIntentResult>((resolve, reject) => {
+        executionId = execution!.executionId;
         finish = resolve;
         fail = reject;
       }),
@@ -112,6 +118,7 @@ function rig() {
   const result = executor.submit(id, intent, { origin: "sdk" });
   return {
     executor,
+    executionId: () => executionId,
     execute,
     journal,
     result,
@@ -135,10 +142,13 @@ function rig() {
 it("native completion releases only the existing barrier and still waits for primitive readback", async () => {
   const r = rig();
   await vi.waitFor(() => expect(r.execute).toHaveBeenCalledOnce());
-  const exact = proof();
+  const exact = proof(r.executionId());
+  expect(r.executor.observeOwnedNativePlan(proof(id))).toBe(false);
   expect(r.executor.observeOwnedNativePlan(structuredClone(exact))).toBe(false);
   expect(
-    r.executor.observeOwnedNativePlan(proof({ ...context.destination, paneLifetimeId: id })),
+    r.executor.observeOwnedNativePlan(
+      proof(r.executionId(), { ...context.destination, paneLifetimeId: id }),
+    ),
   ).toBe(false);
   for (const destination of [
     { ...context.destination, environmentId: id },
@@ -146,8 +156,10 @@ it("native completion releases only the existing barrier and still waits for pri
     { ...context.destination, workspaceName: "another" },
     { ...context.destination, semanticPaneId: "pane.other" },
   ])
-    expect(r.executor.observeOwnedNativePlan(proof(destination))).toBe(false);
-  expect(r.executor.observeOwnedNativePlan(proof(context.destination, "capture-pane"))).toBe(false);
+    expect(r.executor.observeOwnedNativePlan(proof(r.executionId(), destination))).toBe(false);
+  expect(
+    r.executor.observeOwnedNativePlan(proof(r.executionId(), context.destination, "capture-pane")),
+  ).toBe(false);
   expect(r.executor.observeOwnedNativePlan(exact)).toBe(true);
   expect(r.journal.latestOperationReceipt(id)?.phase).toBe("accepted");
   r.finish();
@@ -162,11 +174,47 @@ it("a complete native plan cannot hide later primitive failure", async () => {
   const r = rig();
   const rejected = expect(r.result).rejects.toThrow("tmux rejected");
   await vi.waitFor(() => expect(r.execute).toHaveBeenCalledOnce());
-  expect(r.executor.observeOwnedNativePlan(proof())).toBe(true);
+  expect(r.executor.observeOwnedNativePlan(proof(r.executionId()))).toBe(true);
   r.fail();
   await rejected;
   expect(r.journal.latestOperationReceipt(id)?.phase).toBe("rejected");
-  expect(r.executor.observeOwnedNativePlan(proof())).toBe(false);
+  expect(r.executor.observeOwnedNativePlan(proof(r.executionId()))).toBe(false);
+  await r.executor.dispose();
+  r.journal.dispose();
+});
+
+it("late proof cannot complete a reused operation ID after timeout and ledger eviction", async () => {
+  const r = rig();
+  const timeout = expect(r.result).rejects.toThrow("in time");
+  await vi.waitFor(() => expect(r.execute).toHaveBeenCalledOnce());
+  const oldExecution = r.executionId();
+  const oldProof = proof(oldExecution);
+  r.finish();
+  await timeout;
+  for (let index = 0; index < 256; index++) {
+    const operationId = randomUUID();
+    r.execute.mockImplementationOnce(async () => ({
+      verb: "workspace.pane.select",
+      operationId,
+      daemonInstanceId: id,
+      workspaceName: "w",
+      outcome: "applied",
+      semanticPaneId: "pane.one",
+    }));
+    await r.executor.submit(
+      operationId,
+      { verb: "workspace.pane.select", workspaceName: "w", semanticPaneId: "pane.one" },
+      { origin: "sdk" },
+    );
+  }
+  const repeated = r.executor.submit(id, intent, { origin: "sdk" });
+  await vi.waitFor(() => expect(r.executionId()).not.toBe(oldExecution));
+  expect(r.executor.observeOwnedNativePlan(oldProof)).toBe(false);
+  expect(r.journal.latestOperationReceipt(id)?.phase).toBe("accepted");
+  expect(r.executor.observeOwnedNativePlan(proof(r.executionId()))).toBe(true);
+  r.finish();
+  await repeated;
+  expect(r.journal.latestOperationReceipt(id)?.phase).toBe("observed");
   await r.executor.dispose();
   r.journal.dispose();
 });
