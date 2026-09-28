@@ -561,6 +561,7 @@ export class WorkspaceMultiplexerAuthority {
       });
     }
     const pane = resolvePaneRow(this.#panes(workspace.sessionName), intent.semanticPaneId);
+    const dispatch = { native: false };
     let captured: string;
     try {
       captured = this.#runAuthored(
@@ -579,13 +580,22 @@ export class WorkspaceMultiplexerAuthority {
           ],
           ["capture-pane", "-p", "-e", "-J", "-S", "-2000", "-t", pane.paneId],
         ],
+        dispatch,
         { preserveTrailingNewlines: true },
       );
     } catch {
-      try {
-        this.#io.runTmux(["set-option", "-pu", "-t", pane.paneId, INTERNAL_READ_OPERATION_OPTION]);
-      } catch {
-        // The pane may have disappeared with the failed capture.
+      if (!dispatch.native) {
+        try {
+          this.#io.runTmux([
+            "set-option",
+            "-pu",
+            "-t",
+            pane.paneId,
+            INTERNAL_READ_OPERATION_OPTION,
+          ]);
+        } catch {
+          // The pane may have disappeared with the failed capture.
+        }
       }
       // Child-process errors can contain private stdout/stderr; do not expose them.
       throw new WorkspaceMultiplexerError("mutation_failed", {
@@ -1400,21 +1410,37 @@ export class WorkspaceMultiplexerAuthority {
     pane: MultiplexerPaneRow,
     expectedKinds: AuthoredNativeCommandRequest["expectedKinds"],
     commands: readonly (readonly string[])[],
+    dispatch: { native: boolean },
     options?: WorkspaceTmuxRunOptions,
   ): string {
     if (execution && pane.nativePaneBirthId && this.#io.runAuthoredNative) {
+      // Native outcomes complete the executor directly. Pane markers are only
+      // for the stock after-hook bridge and must not trigger native-path hooks.
+      const nativeCommands = commands.filter(
+        (command) =>
+          !(
+            command[0] === "set-option" &&
+            command[1] === "-p" &&
+            command[2] === "-t" &&
+            command[3] === pane.paneId &&
+            (command[4] === INTERNAL_SEND_OPERATION_OPTION ||
+              command[4] === INTERNAL_READ_OPERATION_OPTION)
+          ),
+      );
+      dispatch.native = true;
       const result = this.#io.runAuthoredNative(
         {
           operationId,
           context: execution,
           targetPaneId: pane.paneId,
           targetBirthId: pane.nativePaneBirthId,
-          commands,
+          commands: nativeCommands,
           expectedKinds,
         },
         options,
       );
       if (result !== null) return result.output;
+      dispatch.native = false;
     }
     return this.#io.runTmux(
       commands.flatMap((command, index) => (index === 0 ? [...command] : [";", ...command])),
@@ -1434,6 +1460,7 @@ export class WorkspaceMultiplexerAuthority {
     envelope: { operationId: string; daemonInstanceId: string; workspaceName: string },
     execution?: AuthoredExecutionContext,
   ): WorkspaceMultiplexerMutationResult {
+    const dispatch = { native: false };
     const before = this.#panes(sessionName);
     const pane = resolvePaneRow(before, intent.semanticPaneId);
     const sourcePane = intent.sourceSemanticPaneId
@@ -1460,6 +1487,7 @@ export class WorkspaceMultiplexerAuthority {
             ["set-option", "-p", "-t", pane.paneId, INTERNAL_SEND_OPERATION_OPTION, marker],
             ["send-keys", "-t", pane.paneId, "Enter"],
           ],
+          dispatch,
         );
       } catch (error) {
         try {
@@ -1467,16 +1495,18 @@ export class WorkspaceMultiplexerAuthority {
         } catch {
           // The one-shot paste already removed it, or the server disappeared.
         }
-        try {
-          this.#io.runTmux([
-            "set-option",
-            "-pu",
-            "-t",
-            pane.paneId,
-            INTERNAL_SEND_OPERATION_OPTION,
-          ]);
-        } catch {
-          // The pane may have disappeared with the failed send.
+        if (!dispatch.native) {
+          try {
+            this.#io.runTmux([
+              "set-option",
+              "-pu",
+              "-t",
+              pane.paneId,
+              INTERNAL_SEND_OPERATION_OPTION,
+            ]);
+          } catch {
+            // The pane may have disappeared with the failed send.
+          }
         }
         throw error;
       }
@@ -1491,18 +1521,21 @@ export class WorkspaceMultiplexerAuthority {
             ["set-option", "-p", "-t", pane.paneId, INTERNAL_SEND_OPERATION_OPTION, marker],
             ["send-keys", "-t", pane.paneId, "-l", "--", intent.text],
           ],
+          dispatch,
         );
       } catch (error) {
-        try {
-          this.#io.runTmux([
-            "set-option",
-            "-pu",
-            "-t",
-            pane.paneId,
-            INTERNAL_SEND_OPERATION_OPTION,
-          ]);
-        } catch {
-          // The pane may have disappeared with the failed send.
+        if (!dispatch.native) {
+          try {
+            this.#io.runTmux([
+              "set-option",
+              "-pu",
+              "-t",
+              pane.paneId,
+              INTERNAL_SEND_OPERATION_OPTION,
+            ]);
+          } catch {
+            // The pane may have disappeared with the failed send.
+          }
         }
         throw error;
       }

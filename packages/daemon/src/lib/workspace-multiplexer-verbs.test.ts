@@ -871,7 +871,7 @@ describe("the multiplexer authority", () => {
       });
     }
     it.each([false, true])(
-      "preserves structured literal payload and completion markers, submit=%s",
+      "preserves structured literal payload without native completion markers, submit=%s",
       (submit) => {
         const native = vi.fn(
           (
@@ -900,7 +900,7 @@ describe("the multiplexer authority", () => {
           plan.commands.some(
             (cmd) => cmd[0] === "set-option" && cmd.includes(INTERNAL_SEND_OPERATION_OPTION),
           ),
-        ).toBe(true);
+        ).toBe(false);
         expect(tmux.calls.some((cmd) => cmd[0] === "send-keys" || cmd[0] === "set-buffer")).toBe(
           false,
         );
@@ -912,11 +912,13 @@ describe("the multiplexer authority", () => {
       subject.mutate(request({ ...intent, text: "safe" }), undefined, context);
       expect(native).toHaveBeenCalledTimes(1);
       expect(tmux.calls.some((cmd) => cmd.includes("send-keys"))).toBe(true);
+      expect(tmux.calls.some((cmd) => cmd.includes(INTERNAL_SEND_OPERATION_OPTION))).toBe(true);
       tmux.calls.length = 0;
       const failure = nativeAuthority(() => {
         throw new Error("partial effect");
       });
       expect(() => failure.mutate(request(intent), undefined, context)).toThrow();
+      expect(tmux.calls.some((cmd) => cmd.includes(INTERNAL_SEND_OPERATION_OPTION))).toBe(false);
       expect(tmux.calls.some((cmd) => cmd[0] === "send-keys" || cmd[0] === "paste-buffer")).toBe(
         false,
       );
