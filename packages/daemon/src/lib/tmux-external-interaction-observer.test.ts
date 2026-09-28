@@ -77,6 +77,7 @@ function harness(
   const io: ExternalTmuxInteractionObserverIo = {
     runTmux: async (args) => {
       calls.push([...args]);
+      if (args.includes("if-shell")) return "tmux-ide-drain-consumed";
       if (args[0] === "show-hooks") {
         return showHooks(
           args,
@@ -135,6 +136,7 @@ function statefulHookHarness(): {
   const io: ExternalTmuxInteractionObserverIo = {
     runTmux: async (args) => {
       calls.push([...args]);
+      if (args.includes("if-shell")) return "tmux-ide-drain-consumed";
       if (args[0] === "show-hooks") return showHooks(args, hooks);
       if (args[0] === "list-buffers") return "";
       if (args[0] === "set-hook" && args[1] === "-ag") {
@@ -366,6 +368,7 @@ describe("tmux external interaction observer", () => {
             await first;
           }
           active -= 1;
+          if (args.includes("if-shell")) return "tmux-ide-drain-consumed";
           if (args[0] === "show-hooks") {
             return HOOK_NAMES.map(
               (name) => `${name}[0] run-shell tmux-ide-interaction-v3-${DAEMON}`,
@@ -429,6 +432,7 @@ describe("tmux external interaction observer", () => {
       registry: registry(),
       io: {
         runTmux: async (args) => {
+          if (args.includes("if-shell")) return "tmux-ide-drain-consumed";
           if (args[0] === "show-hooks") return showHooks(args, hooks);
           if (args[0] === "list-buffers") return "";
           if (args[0] === "set-hook" && args[1] === "-ag") {
@@ -463,6 +467,7 @@ describe("tmux external interaction observer", () => {
       registry: registry(),
       io: {
         runTmux: async (args) => {
+          if (args.includes("if-shell")) return "tmux-ide-drain-consumed";
           if (!serverAvailable) {
             throw Object.assign(new Error("error connecting to tmux socket"), {
               stderr: "no server running on /private/tmp/tmux/default",
@@ -517,6 +522,7 @@ describe("tmux external interaction observer", () => {
       io: {
         runTmux: async (args, signal) => {
           calls.push(String(args[0]));
+          if (args.includes("if-shell")) return "tmux-ide-drain-consumed";
           if (first && signal) {
             first = false;
             installEntered();
@@ -558,6 +564,7 @@ describe("tmux external interaction observer", () => {
       onGap: gaps,
       io: {
         runTmux: async (args) => {
+          if (args.includes("if-shell")) return "tmux-ide-drain-consumed";
           if (args[0] === "show-options") {
             if (++reads === 1) throw new Error("transient read failure");
             return `%9${FIELD}${FIELD}${SEND}${EVENT}`;
@@ -588,6 +595,7 @@ describe("tmux external interaction observer", () => {
       onGap: gaps,
       io: {
         runTmux: async (args) => {
+          if (args.includes("if-shell")) return "tmux-ide-drain-consumed";
           if (args[0] === "show-options") {
             reads.push(args[2]!);
             throw new Error("stdout maxBuffer exceeded: content must not be logged");
@@ -698,6 +706,7 @@ describe("tmux external interaction observer", () => {
       onGap: gaps,
       io: {
         runTmux: async (args, signal) => {
+          if (args.includes("if-shell")) return "tmux-ide-drain-consumed";
           if (args[0] !== "show-options") return "";
           reads += 1;
           entered();
@@ -769,6 +778,7 @@ describe("tmux external interaction observer", () => {
       io: {
         runTmux: async (args) => {
           calls.push(String(args[0]));
+          if (args.includes("if-shell")) return "tmux-ide-drain-consumed";
           if (args[0] === "show-hooks") return showHooks(args, hooks);
           if (args[0] === "list-buffers") return "";
           if (args[0] === "set-hook" && args[1] === "-ag") {
@@ -851,6 +861,7 @@ describe("tmux external interaction observer", () => {
       onObserved: () => false,
       io: {
         runTmux: async (args) => {
+          if (args.includes("if-shell")) return "tmux-ide-drain-consumed";
           if (args[0] === "show-hooks") return showHooks(args, hooks);
           if (args[0] === "list-buffers") return "";
           if (args[0] === "set-hook" && args[1] === "-ag") {
@@ -912,4 +923,51 @@ describe("unread-aware native wait command", () => {
     expect(() => tmuxInteractionWaitCommand("bad;name", "ready")).toThrow();
     expect(() => tmuxInteractionWaitCommand("observer", "bad'channel")).toThrow();
   });
+});
+
+describe("prefix consumption acknowledgement", () => {
+  it.each(["lost", "unknown", "mismatch"])(
+    "does not project a snapshot after %s acknowledgement",
+    async (failure) => {
+      const observed = vi.fn(() => true);
+      const gaps = vi.fn();
+      const delay = vi.fn(async () => undefined);
+      let attempts = 0;
+      let reads = 0;
+      const observer = new TmuxExternalInteractionObserver({
+        daemonInstanceId: DAEMON,
+        tmuxAuthority: {
+          executablePath: "/unused",
+          socketSelector: { kind: "name", name: "unused" },
+        },
+        registry: registry(),
+        onObserved: observed,
+        onGap: gaps,
+        io: {
+          delay,
+          runTmux: async (args) => {
+            if (args.includes("if-shell")) {
+              attempts += 1;
+              if (failure === "lost") throw new Error("response lost after possible mutation");
+              return failure === "mismatch" ? "tmux-ide-drain-retry" : "unknown";
+            }
+            if (args[0] === "show-options") {
+              reads += 1;
+              return `%9${FIELD}${FIELD}${SEND}${EVENT}`;
+            }
+            return "";
+          },
+        },
+      });
+      expect(await observer.drain()).toBe(false);
+      expect(attempts).toBe(1);
+      expect(reads).toBe(0);
+      expect(observed).not.toHaveBeenCalled();
+      expect(gaps).toHaveBeenCalledWith({
+        reason: failure === "mismatch" ? "overflow" : "detach-failed",
+        recovery: "future-observations-only",
+      });
+      expect(delay).toHaveBeenCalledTimes(failure === "lost" ? 0 : 1);
+    },
+  );
 });

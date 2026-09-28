@@ -91,7 +91,7 @@ describe.skipIf(!hasTmux).sequential("tmux external interaction observer live", 
     }
   });
 
-  it("automatically drains an even burst arriving while the previous batch is detached", async () => {
+  it("automatically drains an even burst arriving while the previous batch is consumed", async () => {
     const root = mkdtempSync("/tmp/tmux-ide-drain-rearm-");
     roots.push(root);
     const socketPath = join(root, "tmux.sock");
@@ -169,6 +169,72 @@ describe.skipIf(!hasTmux).sequential("tmux external interaction observer live", 
       release();
     }
   });
+
+  it.each(["append", "replace"])(
+    "preserves records when a yielding user hook allows a producer to %s during snapshot",
+    async (mode) => {
+      const root = mkdtempSync("/tmp/tmux-ide-prefix-drain-");
+      roots.push(root);
+      const socketPath = join(root, "tmux.sock");
+      const executablePath = realpathSync(
+        execFileSync("which", ["tmux"], { encoding: "utf8" }).trim(),
+      );
+      const run = (args: readonly string[]) =>
+        execFileSync(executablePath, ["-S", socketPath, ...args], { encoding: "utf8" }).trim();
+      run(["-f", "/dev/null", "new-session", "-d", "-s", "project", "cat"]);
+      const pane = run(["display-message", "-p", "-t", "project", "#{pane_id}"]);
+      run(["set-option", "-p", "-t", pane, "@tmux_ide_pane_id", "pane.editor"]);
+      const daemonInstanceId = randomUUID();
+      const observed: string[] = [];
+      const gaps: string[] = [];
+      const observer = new TmuxExternalInteractionObserver({
+        daemonInstanceId,
+        tmuxAuthority: { executablePath, socketSelector: { kind: "path", path: socketPath } },
+        registry: {
+          list: () => [{ name: "workspace.project", sessionName: "project", projectDir: root }],
+        } as unknown as WorkspaceRegistry,
+        onObserved: (interaction) => {
+          observed.push(interaction.operationKind);
+          return true;
+        },
+        onGap: (gap) => gaps.push(gap.reason),
+        io: { delay: async () => undefined },
+      });
+      observers.push(observer);
+      await observer.install();
+      const option = tmuxInteractionOption(`tmux-ide-interaction-v3-${daemonInstanceId}`);
+      const first = `${pane}|tmux-ide-input-field-v1||tmux-ide-input-field-v1|workspace.pane.send|tmux-ide-input-event-v1|`;
+      const second = `${pane}|tmux-ide-input-field-v1||tmux-ide-input-field-v1|workspace.pane.read|tmux-ide-input-event-v1|`;
+      run(["set-option", "-g", option, first]);
+      run(["set-option", "-g", "@test-drain-armed", "1"]);
+      run([
+        "set-hook",
+        "-g",
+        "after-set-option",
+        "if-shell -F '#{@test-drain-armed}' 'set-option -gu @test-drain-armed ; set-option -g @test-drain-paused 1 ; wait-for test-drain-resume'",
+      ]);
+      const draining = observer.drain();
+      try {
+        await vi.waitFor(() =>
+          expect(run(["show-options", "-gqv", "@test-drain-paused"])).toBe("1"),
+        );
+        run(["set-option", mode === "append" ? "-ga" : "-g", option, second]);
+      } finally {
+        run(["wait-for", "-S", "test-drain-resume"]);
+      }
+      expect(await draining).toBe(mode === "append");
+      expect(observed).toEqual(mode === "append" ? ["workspace.pane.send"] : []);
+      expect(run(["show-options", "-gqv", option])).toBe(second);
+      expect(gaps).toEqual(mode === "append" ? [] : ["overflow"]);
+      expect(await observer.drain()).toBe(true);
+      expect(observed).toEqual(
+        mode === "append"
+          ? ["workspace.pane.send", "workspace.pane.read"]
+          : ["workspace.pane.read"],
+      );
+      expect(run(["show-options", "-gqv", option])).toBe("");
+    },
+  );
 
   it("publishes ordered markers without a child client and preserves user hooks", async () => {
     const root = mkdtempSync("/tmp/tmux-ide-native-hook-");

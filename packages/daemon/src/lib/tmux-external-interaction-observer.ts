@@ -551,7 +551,7 @@ export class TmuxExternalInteractionObserver {
     return settled;
   }
 
-  /** Atomically detach and drain the current bounded event batch. */
+  /** Snapshot and consume a matching prefix of the bounded event batch. */
   drain(): Promise<boolean> {
     return this.#serializeTmux(() => this.#drain());
   }
@@ -559,17 +559,50 @@ export class TmuxExternalInteractionObserver {
   async #drain(): Promise<boolean> {
     const finish = this.#beginDiagnostic("drain");
     const option = tmuxInteractionOption(this.#bufferName);
-    // A single reusable detached slot bounds retained storage even if deletion
-    // fails. Native synchronous commands execute consecutively in one queue.
+    // A reusable snapshot bounds storage. User after-set-option hooks may
+    // yield, so snapshot and clear are NOT an atomic command pair. Consume
+    // only the matching prefix in a later single native mutation.
     const drainName = `${option}-drain`;
+    // if-shell -F does not yield or invoke user hooks. Its branch removes
+    // exactly the snapshot prefix; an append after the snapshot survives.
+    // An overflowing producer can replace that prefix: do not project stale
+    // data or clear the new batch, report the gap and retry on the next turn.
+    const snapshotLength = `#{n:${drainName}}`;
+    const remainingLength = `#{e|-:#{n:${option}},${snapshotLength}}`;
+    const prefixMatches = `#{==:#{=/${snapshotLength}/:${option}},#{${drainName}}}`;
+    const emptySnapshot = `#{==:#{${drainName}},}`;
+    const suffix = `#{?${emptySnapshot},#{${option}},#{?#{==:${remainingLength},0},,#{=/-${remainingLength}/:${option}}}}`;
+    let acknowledged: string;
     try {
-      await this.#io.runTmux(
-        ["set-option", "-gF", drainName, `#{${option}}`, ";", "set-option", "-g", option, ""],
+      acknowledged = await this.#io.runTmux(
+        [
+          "set-option",
+          "-gF",
+          drainName,
+          `#{${option}}`,
+          ";",
+          "if-shell",
+          "-F",
+          `#{||:${emptySnapshot},${prefixMatches}}`,
+          `set-option -gF '${option}' '${suffix}' ; display-message -p tmux-ide-drain-consumed`,
+          "display-message -p tmux-ide-drain-retry",
+        ],
         this.#abort.signal,
       );
     } catch {
+      // Mutation may have happened. Never retry/project this snapshot without
+      // acknowledgement: that would invent success after uncertain delivery.
       this.#reportGap("detach-failed");
       finish(false);
+      return false;
+    }
+    const acknowledgement = acknowledged.trimEnd().split("\n").at(-1);
+    if (acknowledgement !== "tmux-ide-drain-consumed") {
+      await this.#deleteOption(drainName);
+      this.#reportGap(acknowledgement === "tmux-ide-drain-retry" ? "overflow" : "detach-failed");
+      finish(false);
+      // One bounded attempt per drain; prevent churn under continuous overflow.
+      await this.#io.delay(RETRY_MS, this.#abort.signal);
       return false;
     }
     let raw: string | undefined;
