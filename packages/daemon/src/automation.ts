@@ -4,6 +4,7 @@ import {
   AutomationExecuteRequestSchemaZ,
   AutomationOperationHandleSchemaZ,
   AutomationOperationIntentSchemaZ,
+  DAEMON_WIRE_PROTOCOL_VERSION,
   TmuxInteractionCursorSchemaZ,
   type AutomationOperationHandle,
 } from "@tmux-ide/contracts";
@@ -15,6 +16,8 @@ import {
 import {
   canonicalDaemonUrl,
   isCanonicalDaemonAlive,
+  probeCanonicalDaemonIdentity,
+  probeCanonicalDaemonHealth,
   readCanonicalDaemonInfo,
 } from "./lib/canonical-daemon.ts";
 import { PANE_SOURCE_CREDENTIAL_OPTION } from "./lib/pane-source-credentials.ts";
@@ -44,16 +47,54 @@ export function invokingPaneCredential(env = process.env): string | undefined {
   }
 }
 
-export async function localAutomationClient(): Promise<AutomationClient> {
-  const daemon = readCanonicalDaemonInfo();
-  if (!daemon?.authToken || !(await isCanonicalDaemonAlive(daemon)))
-    throw new IdeError("A running compatible tmux-ide daemon is required for automation", {
+export async function localAutomationClient(
+  dependencies: Partial<{
+    read: typeof readCanonicalDaemonInfo;
+    alive: typeof isCanonicalDaemonAlive;
+    identity: typeof probeCanonicalDaemonIdentity;
+    health: typeof probeCanonicalDaemonHealth;
+    credential: typeof invokingPaneCredential;
+  }> = {},
+): Promise<AutomationClient> {
+  const read = dependencies.read ?? readCanonicalDaemonInfo;
+  const unavailable = () =>
+    new IdeError("A running compatible tmux-ide daemon is required for automation", {
       code: "AUTOMATION_UNAVAILABLE",
     });
+  const daemon = read();
+  if (!daemon?.authToken || !(await (dependencies.alive ?? isCanonicalDaemonAlive)(daemon)))
+    throw unavailable();
+  // These probes send no credentials. A living PID alone does not bind an HTTP port.
+  const [identity, health] = await Promise.all([
+    (dependencies.identity ?? probeCanonicalDaemonIdentity)(daemon),
+    (dependencies.health ?? probeCanonicalDaemonHealth)(daemon),
+  ]);
+  const current = read();
+  if (
+    !identity ||
+    !health ||
+    !current ||
+    daemon.protocolVersion !== DAEMON_WIRE_PROTOCOL_VERSION ||
+    identity.protocolVersion !== daemon.protocolVersion ||
+    health.protocolVersion !== daemon.protocolVersion ||
+    identity.instanceId !== daemon.instanceId ||
+    identity.pid !== daemon.pid ||
+    identity.startedAt !== daemon.startedAt ||
+    identity.productVersion !== daemon.productVersion ||
+    health.productVersion !== daemon.productVersion ||
+    current.instanceId !== daemon.instanceId ||
+    current.startedAt !== daemon.startedAt ||
+    current.pid !== daemon.pid ||
+    current.port !== daemon.port ||
+    current.bindHostname !== daemon.bindHostname ||
+    current.authToken !== daemon.authToken ||
+    current.protocolVersion !== daemon.protocolVersion
+  )
+    throw unavailable();
   return createAutomationClient({
     baseUrl: canonicalDaemonUrl("http", daemon.bindHostname, daemon.port),
     ownerToken: daemon.authToken,
-    sourceCredential: invokingPaneCredential(),
+    sourceCredential: (dependencies.credential ?? invokingPaneCredential)(),
   });
 }
 

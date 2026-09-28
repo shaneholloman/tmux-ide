@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AutomationClient } from "@tmux-ide/daemon-client/automation-client";
 import { AutomationInvocationError } from "@tmux-ide/daemon-client/automation-client";
-import { readAutomationRequest, runAutomationCli } from "./automation.ts";
+import { DAEMON_WIRE_PROTOCOL_VERSION } from "@tmux-ide/contracts";
+import { localAutomationClient, readAutomationRequest, runAutomationCli } from "./automation.ts";
 
 const id = "00000000-0000-4000-8000-000000000001";
 const handle = { generation: id, operationId: id };
@@ -36,6 +37,49 @@ function fakeClient() {
 }
 
 describe("automation CLI adapter", () => {
+  it.each(["identity", "protocol", "record", "health", "valid"])(
+    "checks canonical %s before reading a source credential",
+    async (scenario) => {
+      const record = {
+        pid: 1234,
+        port: 4567,
+        bindHostname: "127.0.0.1",
+        protocolVersion: DAEMON_WIRE_PROTOCOL_VERSION,
+        productVersion: "test",
+        instanceId: id,
+        startedAt: "2026-09-28T00:00:00Z",
+        authToken: "private-owner-token",
+      };
+      const read = vi
+        .fn()
+        .mockReturnValueOnce(record)
+        .mockReturnValue({
+          ...record,
+          ...(scenario === "record" ? { port: 9999 } : {}),
+        });
+      const credential = vi.fn(() => "private-source-token");
+      const work = localAutomationClient({
+        read,
+        alive: async () => true,
+        identity: async () => ({
+          ...record,
+          ok: true,
+          ...(scenario === "identity" ? { pid: 9999 } : {}),
+          ...(scenario === "protocol" ? { protocolVersion: DAEMON_WIRE_PROTOCOL_VERSION - 1 } : {}),
+        }),
+        health: async () => (scenario === "health" ? null : { ...record, ok: true, uptime: 1 }),
+        credential,
+      });
+      if (scenario === "valid") {
+        await expect(work).resolves.toHaveProperty("execute");
+        expect(credential).toHaveBeenCalledOnce();
+      } else {
+        await expect(work).rejects.toThrow("compatible");
+        expect(credential).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   it("sends once through reservation and shared execution without a raw fallback", async () => {
     const client = fakeClient();
     const output = vi.fn();
