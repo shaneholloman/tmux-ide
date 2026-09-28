@@ -1,3 +1,4 @@
+import { runtimeTmuxArgs } from "./lib/runtime-namespace.ts";
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { resolve, join } from "node:path";
@@ -177,7 +178,7 @@ function semanticPaneId(paneId: string): string | null {
   try {
     const value = execFileSync(
       "tmux",
-      ["display-message", "-p", "-t", paneId, "#{@tmux_ide_pane_id}"],
+      runtimeTmuxArgs(["display-message", "-p", "-t", paneId, "#{@tmux_ide_pane_id}"]),
       { encoding: "utf8" },
     ).trim();
     return value || null;
@@ -187,9 +188,9 @@ function semanticPaneId(paneId: string): string | null {
 }
 
 /**
- * Prove that this CLI process is running inside a pane of the target session.
- * TMUX_PANE is runtime identity supplied by tmux itself; the semantic stamp is
- * then resolved from that exact pane. A CLI launched outside tmux, or from a
+ * Resolve the CLI pane hint within the same tmux authority as delivery.
+ * TMUX_PANE is an inherited hint, not authenticated caller identity; the semantic
+ * stamp is resolved from that pane within the selected authority. A CLI launched outside tmux, or from a
  * different workspace, stays honestly source-less.
  */
 export function cliSourceSemanticPaneId(
@@ -198,7 +199,13 @@ export function cliSourceSemanticPaneId(
   readIdentity: (runtimePaneId: string) => string = (paneId) =>
     execFileSync(
       "tmux",
-      ["display-message", "-p", "-t", paneId, `#{session_name}\t#{${"@tmux_ide_pane_id"}}`],
+      runtimeTmuxArgs([
+        "display-message",
+        "-p",
+        "-t",
+        paneId,
+        `#{session_name}\t#{${"@tmux_ide_pane_id"}}`,
+      ]),
       { encoding: "utf8" },
     ),
 ): string | null {
@@ -218,7 +225,7 @@ export function cliPaneSourceCredential(
   readCredential: (runtimePaneId: string) => string = (paneId) =>
     execFileSync(
       "tmux",
-      ["display-message", "-p", "-t", paneId, "#{@tmux_ide_source_credential_v1}"],
+      runtimeTmuxArgs(["display-message", "-p", "-t", paneId, "#{@tmux_ide_source_credential_v1}"]),
       { encoding: "utf8" },
     ),
 ): string | null {

@@ -14,7 +14,9 @@ const mocks = vi.hoisted(() => ({
   dispatch: vi.fn(),
   identity: vi.fn(),
   workspaces: vi.fn(),
+  tmuxArgs: vi.fn(),
 }));
+vi.mock("./lib/runtime-namespace.ts", () => ({ runtimeTmuxArgs: mocks.tmuxArgs }));
 vi.mock("@tmux-ide/tmux-bridge", () => ({ getSessionState: mocks.state }));
 vi.mock("./widgets/lib/pane-comms.ts", () => ({
   listSessionPanes: mocks.panes,
@@ -52,6 +54,7 @@ const pane: PaneInfo = {
 let dir: string;
 beforeEach(() => {
   vi.resetAllMocks();
+  mocks.tmuxArgs.mockImplementation((args: string[]) => args);
   vi.stubEnv("TMUX_PANE", "");
   vi.spyOn(console, "log").mockImplementation(() => {});
   dir = mkdtempSync(join(tmpdir(), "tmux-ide-delivery-"));
@@ -74,6 +77,27 @@ const run = (message = "hello", noEnter = false) =>
   send(dir, { to: "editor", message, noEnter, json: true });
 
 describe("send delivery authority", () => {
+  it("scopes target stamps, source identity and credentials through delivery authority", async () => {
+    vi.stubEnv("TMUX_PANE", "%7");
+    mocks.tmuxArgs.mockImplementation((args: string[]) => ["-S", "/isolated/tmux.sock", ...args]);
+    mocks.identity.mockImplementation((_binary, args: string[]) => {
+      expect(args.slice(0, 2)).toEqual(["-S", "/isolated/tmux.sock"]);
+      const format = args.at(-1)!;
+      if (format.includes("source_credential")) return "a".repeat(43);
+      if (format.includes("session_name")) return "work\tpane.source";
+      return "pane.editor";
+    });
+    await run();
+    expect(mocks.identity).toHaveBeenCalledTimes(3);
+    expect(mocks.dispatch.mock.calls[0]![1]).toMatchObject({
+      sourceSemanticPaneId: "pane.source",
+      semanticPaneId: "pane.editor",
+    });
+    expect(mocks.dispatch.mock.calls[0]![2]).toMatchObject({
+      sourcePaneCredential: "a".repeat(43),
+    });
+  });
+
   it.each(["missing daemon", "dead daemon", "unstamped pane", "unregistered workspace"])(
     "uses daemonless delivery only before dispatch: %s",
     async (condition) => {
