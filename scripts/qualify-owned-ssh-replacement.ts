@@ -1,5 +1,6 @@
 /** Opt-in native stage4. Four managed owners, two real SSH authorities, no Docker. */
 import assert from "node:assert/strict";
+import { qualifyCanonicalSshAttribution } from "./lib/owned-ssh-attribution.ts";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { createRequire } from "node:module";
@@ -51,6 +52,7 @@ import {
 type Tuple = { role: string; worktree: string; name: string; store: string; id?: string };
 type Plan = {
   version: number;
+  attribution?: boolean;
   instances: Tuple[];
   instance?: Tuple;
   remote?: DevelopmentAppRemote;
@@ -320,6 +322,24 @@ if (args[0] === "--client") {
       instances[role].worktree,
       "/bin/sh",
     ]);
+    if (descriptor.attribution) {
+      await tmux(role, [
+        "set-option",
+        "-p",
+        "-t",
+        descriptor.session + ":0.0",
+        "@tmux_ide_pane_id",
+        "pane.shared",
+      ]);
+      await tmux(role, [
+        "set-option",
+        "-p",
+        "-t",
+        descriptor.session + ":0.0",
+        "@agent_state",
+        `idle:${Date.now()}`,
+      ]);
+    }
     const info = await canonical(role);
     const response = await fetch(`http://127.0.0.1:${info.port}/api/v2/action/workspace.promote`, {
       method: "POST",
@@ -589,6 +609,47 @@ if (args[0] === "--client") {
           lease = value;
         },
       };
+    }
+    if (descriptor.attribution) {
+      stage = "canonical-attribution";
+      event(stage);
+      const facts: Record<string, unknown> = {};
+      receipts.attribution = facts;
+      await qualifyCanonicalSshAttribution({
+        local: await canonical("target-b"),
+        remote: await canonical("target-a"),
+        alias: "target",
+        connect: (options) =>
+          openSshDaemonTransport(options, {
+            spawn: (argv) =>
+              tracker.retain(
+                spawn("/usr/bin/ssh", ["-F", ssh.a!.config, ...argv], {
+                  env,
+                  stdio: ["ignore", "pipe", "pipe"],
+                }),
+              ),
+            allocatePort: unusedLoopbackPort,
+            probe: probeSshDaemonIdentity,
+          }),
+        privateParent: sshParent,
+        executable: JSON.parse(readFileSync(join(instances["target-a"]!.root, "tmux.json"), "utf8"))
+          .executable,
+        session: descriptor.session,
+        signal: cancellation.signal,
+        identify: (pid) => kernel.identify(pid),
+        stampRemoteDefault: async (state) => {
+          await tmux("target-a", [
+            "set-option",
+            "-p",
+            "-t",
+            descriptor.session + ":0.0",
+            "@agent_state",
+            state,
+          ]);
+        },
+        facts,
+      });
+      event("canonical-attribution-qualified");
     }
     for (const side of ["a", "b"]) {
       stage = "open-" + side;
