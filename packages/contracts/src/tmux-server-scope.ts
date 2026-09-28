@@ -5,13 +5,16 @@ import {
 } from "./semantic-identity.ts";
 import { WorkspaceCatalogLiveSessionIdSchemaZ } from "./workspace-catalog-resource.ts";
 
-/** Stable registration identity. Never derive it from a socket path or native ID. */
-export const TmuxServerIdSchemaZ = z.string().regex(/^tmux-server\.[a-f0-9]{32}$/u);
-/** Fresh live authority incarnation, independently retired for each server owner. */
-export const TmuxServerGenerationSchemaZ = z.uuid();
-export const TmuxServerScopeSchemaZ = z
-  .object({ serverId: TmuxServerIdSchemaZ, generation: TmuxServerGenerationSchemaZ })
-  .strict();
+import {
+  TmuxServerIdSchemaZ,
+  TmuxServerGenerationSchemaZ,
+  TmuxServerScopeSchemaZ,
+} from "./tmux-server-identity.ts";
+export {
+  TmuxServerIdSchemaZ,
+  TmuxServerGenerationSchemaZ,
+  TmuxServerScopeSchemaZ,
+} from "./tmux-server-identity.ts";
 
 const descriptorShape = {
   serverId: TmuxServerIdSchemaZ,

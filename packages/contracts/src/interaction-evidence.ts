@@ -2,7 +2,7 @@ import { z } from "zod";
 import { EnvironmentIdSchema } from "./daemon-wire.ts";
 import { DesktopWorkspaceNameSchemaZ } from "./desktop-workspace-name.ts";
 import { TerminalAttachmentSemanticPaneIdSchemaZ } from "./semantic-identity.ts";
-import { TmuxServerScopeSchemaZ } from "./tmux-server-scope.ts";
+import { TmuxServerScopeSchemaZ } from "./tmux-server-identity.ts";
 
 const uuid = z.uuid();
 const time = z.iso.datetime({ offset: true });
