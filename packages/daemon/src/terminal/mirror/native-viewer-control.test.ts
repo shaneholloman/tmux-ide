@@ -45,6 +45,7 @@ function fixture(options?: {
     wake?: () => void;
     unsubscribe: ReturnType<typeof vi.fn>;
     fail?: "get" | "subscribe";
+    synchronous?: boolean;
   };
 }) {
   const proc = Object.assign(new EventEmitter(), {
@@ -81,6 +82,7 @@ function fixture(options?: {
             subscribe: (wake: () => void) => {
               if (options.late!.fail === "subscribe") throw new Error("subscriber cap");
               options.late!.wake = wake;
+              if (options.late!.synchronous) wake();
               return options.late!.unsubscribe;
             },
           },
@@ -406,4 +408,23 @@ it("isolates failing readiness disposal", async () => {
   await f.channel.dispose();
   await f.channel.dispose();
   expect(late.unsubscribe).toHaveBeenCalledOnce();
+});
+
+it("does not recursively subscribe on a synchronous still-pending notification", async () => {
+  const late = {
+    ready: false,
+    synchronous: true,
+    unsubscribe: vi.fn(),
+    wake: undefined as undefined | (() => void),
+  };
+  const f = fixture({ late });
+  await start(f);
+  expect(f.writes).toEqual([]);
+  late.ready = true;
+  late.wake!();
+  expect(f.writes).toEqual(["tmux-ide-events -i\n"]);
+  f.proc.stdout.write(block(2, [JSON.stringify(identity)]));
+  expect(f.channel.nativeViewerIdentity).toEqual(identity);
+  expect(late.unsubscribe).toHaveBeenCalledOnce();
+  await f.channel.dispose();
 });

@@ -1083,6 +1083,7 @@ export class MirrorControlChannel implements MirrorChannelIo {
   }
   private viewerReadyUnsubscribe: (() => void) | null = null;
   private viewerHandshakeStarted = false;
+  private viewerReadySubscribing = false;
   private viewerConfig: NativeViewerControlOptions | undefined;
   private unsubscribeNativeViewerReady(): void {
     const unsubscribe = this.viewerReadyUnsubscribe;
@@ -1114,7 +1115,12 @@ export class MirrorControlChannel implements MirrorChannelIo {
       return Promise.resolve();
     }
     if (!config) {
-      if (!this.viewerReadyUnsubscribe && this.opts.nativeViewerReady) {
+      if (
+        !this.viewerReadyUnsubscribe &&
+        !this.viewerReadySubscribing &&
+        this.opts.nativeViewerReady
+      ) {
+        this.viewerReadySubscribing = true;
         try {
           const unsubscribe = this.opts.nativeViewerReady.subscribe(() => {
             void this.initializeNativeViewer();
@@ -1125,6 +1131,8 @@ export class MirrorControlChannel implements MirrorChannelIo {
             this.unsubscribeNativeViewerReady();
         } catch {
           this.retireNativeViewer();
+        } finally {
+          this.viewerReadySubscribing = false;
         }
       }
       return Promise.resolve();
