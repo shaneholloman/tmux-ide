@@ -594,6 +594,9 @@ export class TmuxExternalInteractionObserver {
       // acknowledgement: that would invent success after uncertain delivery.
       this.#reportGap("detach-failed");
       finish(false);
+      // Unread work may remain. The unread-aware waiter would immediately
+      // retry otherwise, so persistent transport failures must also back off.
+      await this.#io.delay(RETRY_MS, this.#abort.signal);
       return false;
     }
     const acknowledgement = acknowledged.trimEnd().split("\n").at(-1);

@@ -967,7 +967,56 @@ describe("prefix consumption acknowledgement", () => {
         reason: failure === "mismatch" ? "overflow" : "detach-failed",
         recovery: "future-observations-only",
       });
-      expect(delay).toHaveBeenCalledTimes(failure === "lost" ? 0 : 1);
+      expect(delay).toHaveBeenCalledTimes(1);
     },
   );
+});
+
+it("backs off persistent consume failures and aborts the backoff on disposal", async () => {
+  let attempts = 0;
+  const releases: Array<() => void> = [];
+  const delays: number[] = [];
+  const observer = new TmuxExternalInteractionObserver({
+    daemonInstanceId: DAEMON,
+    tmuxAuthority: { executablePath: "/unused", socketSelector: { kind: "name", name: "unused" } },
+    onObserved: () => {
+      throw new Error("must never project uncertain consumption");
+    },
+    healthcheck: { baseMs: 30_000, maxMs: 30_000 },
+    io: {
+      runTmux: async (args) => {
+        if (args.includes("if-shell")) {
+          attempts += 1;
+          throw new Error("persistent consumption failure");
+        }
+        return "";
+      },
+      waitForSignal: async () => undefined,
+      delay: (ms, signal) =>
+        new Promise<void>((resolve) => {
+          delays.push(ms);
+          const done = () => {
+            signal.removeEventListener("abort", done);
+            resolve();
+          };
+          releases.push(done);
+          if (signal.aborted) done();
+          else signal.addEventListener("abort", done, { once: true });
+        }),
+    },
+  });
+  await observer.start();
+  try {
+    await vi.waitFor(() => expect(attempts).toBe(1));
+    expect(delays).toEqual([1_000]);
+    // Flush repeated microtasks: an unread waiter cannot bypass the barrier.
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+    expect(attempts).toBe(1);
+    releases[0]!();
+    await vi.waitFor(() => expect(attempts).toBe(2));
+    expect(delays).toEqual([1_000, 1_000]);
+  } finally {
+    await observer.dispose();
+  }
+  expect(attempts).toBe(2);
 });
