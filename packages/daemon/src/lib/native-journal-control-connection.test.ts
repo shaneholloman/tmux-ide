@@ -27,7 +27,7 @@ const capability = {
   degraded: 0,
   readerTransport: "sessionless-control-v1",
 };
-function fixture(mode = "normal") {
+function fixture(mode = "normal", replyMs = 5000) {
   const directory = mkdtempSync(join(tmpdir(), "native-control-unit-"));
   const binary = join(directory, "peer");
   const pidPath = join(directory, "pid");
@@ -52,6 +52,16 @@ createInterface({input:process.stdin}).on('line',line=>{
  if(mode==='wait')return;
  n++;
  if(mode==='notify'){process.stdout.write('%sessions-changed\\n');return;}
+ if(mode==='partial-begin'){process.stdout.write('%beg');return;}
+ if(mode==='partial-payload'){process.stdout.write('%begin 2 '+n+' 1\\n{');return;}
+ if(mode==='missing-end'){process.stdout.write('%begin 2 '+n+' 1\\n{}\\n');return;}
+ if(mode==='trickle'){process.stdout.write('%begin 2 '+n+' 1\\n{');setInterval(()=>process.stdout.write(' '),100);return;}
+ if(mode==='parked'){
+   process.stdout.write('%begin 2 '+n+' 1\\n');
+   setTimeout(()=>process.stdout.write(JSON.stringify({request:line})+'\\n%end 2 '+n+' 1\\n'),1800);
+   return;
+ }
+
  const body=mode==='oversize'?'x'.repeat(65537):JSON.stringify({request:line});
  const end=mode==='guard'?n+1:n;
  process.stdout.write('%begin 2 '+n+' 1\\n'+body+'\\n%end 2 '+end+' 1\\n'+(mode==='trailing'?'%sessions-changed\\n':''));
@@ -62,6 +72,7 @@ createInterface({input:process.stdin}).on('line',line=>{
   const connection = new NativeJournalControlConnection(
     { executablePath: binary, socketSelector: { kind: "path", path: join(directory, "socket") } },
     epoch,
+    replyMs,
   );
   return {
     connection,
@@ -126,6 +137,36 @@ describe("bounded sessionless native connection", () => {
       abort.abort();
       await expect(pending).rejects.toThrow("cancelled");
       expect(() => process.kill(f.pid(), 0)).toThrow();
+    } finally {
+      await f.close();
+    }
+  });
+  it.each(["wait", "partial-begin", "partial-payload", "missing-end", "trickle"])(
+    "bounds %s framing without waiting for lifetime cancellation",
+    async (mode) => {
+      const f = fixture(mode, 750);
+      try {
+        await f.connection.start(AbortSignal.timeout(2000));
+        await expect(f.connection.read(cursor, new AbortController().signal)).rejects.toThrow(
+          "phase deadline",
+        );
+        expect(() => process.kill(f.pid(), 0)).toThrow();
+        await expect(f.connection.read(cursor, new AbortController().signal)).rejects.toThrow();
+      } finally {
+        await f.close();
+      }
+    },
+  );
+  it("keeps a valid begun event wait on the same peer beyond reply deadlines", async () => {
+    const f = fixture("parked", 750);
+    try {
+      await f.connection.start(AbortSignal.timeout(2000));
+      const pid = f.pid();
+      expect(JSON.parse(await f.connection.read(cursor, new AbortController().signal))).toEqual({
+        request: `read ${journal} 0 64 1`,
+      });
+      expect(f.pid()).toBe(pid);
+      expect(f.connection.connectionId).toBe("8");
     } finally {
       await f.close();
     }

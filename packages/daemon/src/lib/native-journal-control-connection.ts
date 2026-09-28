@@ -12,6 +12,7 @@ import type { WorkspacePaneTmuxAuthority } from "./workspace-pane-creation.ts";
 const MAX_REPLY_BYTES = 65_536;
 type Pending = {
   flags: number;
+  phase: "begin" | "waiting" | "payload";
   maxLines: number;
   resolve: (lines: string[]) => void;
   reject: (error: Error) => void;
@@ -21,6 +22,8 @@ type Pending = {
 export class NativeJournalControlConnection {
   readonly #authority: WorkspacePaneTmuxAuthority;
   readonly #serverEpoch: string;
+  readonly #replyMs: number;
+  #phaseTimer: ReturnType<typeof setTimeout> | null = null;
   #process: ChildProcessWithoutNullStreams | null = null;
   #exited: Promise<void> = Promise.resolve();
   #pending: Pending | null = null;
@@ -32,7 +35,10 @@ export class NativeJournalControlConnection {
   #disposing: Promise<void> | null = null;
   #connectionId: string | null = null;
 
-  constructor(authority: WorkspacePaneTmuxAuthority, serverEpoch: string) {
+  constructor(authority: WorkspacePaneTmuxAuthority, serverEpoch: string, replyMs = 5_000) {
+    if (!Number.isSafeInteger(replyMs) || replyMs < 1 || replyMs > 300_000)
+      throw new TypeError("Invalid native reply deadline");
+    this.#replyMs = replyMs;
     this.#authority = structuredClone(authority);
     this.#serverEpoch = NativeJournalCursorSchemaZ.parse({
       serverEpoch,
@@ -132,7 +138,8 @@ export class NativeJournalControlConnection {
     signal.addEventListener("abort", abort, { once: true });
     try {
       return await new Promise<string[]>((resolve, reject) => {
-        this.#pending = { flags, maxLines, resolve, reject };
+        this.#pending = { flags, phase: "begin", maxLines, resolve, reject };
+        this.#armPhaseDeadline();
         try {
           write();
         } catch {
@@ -144,10 +151,26 @@ export class NativeJournalControlConnection {
       throw error;
     } finally {
       signal.removeEventListener("abort", abort);
+      this.#clearPhaseDeadline();
     }
   }
 
+  #clearPhaseDeadline(): void {
+    if (this.#phaseTimer !== null) clearTimeout(this.#phaseTimer);
+    this.#phaseTimer = null;
+  }
+
+  #armPhaseDeadline(): void {
+    this.#clearPhaseDeadline();
+    this.#phaseTimer = setTimeout(
+      () => this.#fail("Native journal reply phase deadline"),
+      this.#replyMs,
+    );
+    this.#phaseTimer.unref?.();
+  }
+
   #fail(message: string): void {
+    this.#clearPhaseDeadline();
     this.#failure ??= new Error(message);
     this.#pending?.reject(this.#failure);
     this.#pending = null;
@@ -163,6 +186,12 @@ export class NativeJournalControlConnection {
       if (chunk.length > MAX_REPLY_BYTES * 2) throw new Error("Oversized native control chunk");
       this.#buffer += chunk.toString("latin1");
       for (;;) {
+        // A valid begun read may wait indefinitely for an event. Once ANY
+        // payload bytes arrive, even an incomplete line, completion is bounded.
+        if (this.#pending?.phase === "waiting" && this.#buffer.length) {
+          this.#pending.phase = "payload";
+          this.#armPhaseDeadline();
+        }
         const end = this.#buffer.indexOf("\n");
         if (end < 0) {
           if (this.#buffer.length > MAX_REPLY_BYTES)
@@ -184,6 +213,10 @@ export class NativeJournalControlConnection {
           )
             throw new Error("Invalid native control guard");
           this.#frame = { num: event.num, flags: event.flags, lines: [], bytes: 0 };
+          if (pending.flags === 1) {
+            pending.phase = "waiting";
+            this.#clearPhaseDeadline();
+          }
         } else if (event.kind === "reply-line") {
           const frame = this.#frame;
           if (!frame || frame.lines.length >= pending.maxLines)
@@ -202,6 +235,7 @@ export class NativeJournalControlConnection {
             throw new Error("Mismatched native control guard");
           this.#frame = null;
           this.#pending = null;
+          this.#clearPhaseDeadline();
           pending.resolve(frame.lines);
         } else throw new Error("Unexpected native control frame");
       }

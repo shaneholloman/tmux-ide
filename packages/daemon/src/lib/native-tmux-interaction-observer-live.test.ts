@@ -42,6 +42,24 @@ function fixture(waitMs = 1000) {
     observer,
     events,
     capability,
+    readerPid() {
+      const matches = execFileSync("ps", ["-axo", "pid=,ppid=,command="], { encoding: "utf8" })
+        .split("\n")
+        .map((line) => line.trim().split(/\s+/, 3))
+        .filter((fields) => Number(fields[1]) === process.pid);
+      // Read complete command separately: command paths can contain spaces.
+      return matches
+        .map((fields) => Number(fields[0]))
+        .filter((child) => {
+          try {
+            return execFileSync("ps", ["-o", "command=", "-p", String(child)], {
+              encoding: "utf8",
+            }).includes(socket);
+          } catch {
+            return false;
+          }
+        });
+    },
     async close() {
       await observer.dispose();
       try {
@@ -112,6 +130,36 @@ describe.skipIf(!binary)("native observer with isolated production tmux", () => 
       await new Promise((resolve) => setTimeout(resolve, 100));
       expect(f.capability().enabled).toBe(false);
       expect(f.events.some((e) => e.type === "batch")).toBe(false);
+    } finally {
+      await f.close();
+    }
+  }, 15000);
+  it("keeps one persistent peer across old lease boundaries and observes a wake once", async () => {
+    const f = fixture(30);
+    try {
+      await f.observer.start();
+      await until(() => f.capability().waitingReaders === 1);
+      const peer = f.readerPid();
+      expect(peer).toHaveLength(1);
+      await new Promise((resolve) => setTimeout(resolve, 125));
+      expect(f.readerPid()).toEqual(peer);
+      f.run("send-keys", "-t", "probe", "-l", "x");
+      await until(
+        () =>
+          f.events
+            .filter((e) => e.type === "batch")
+            .flatMap((e) => (e.type === "batch" ? e.batch.records : [])).length === 2,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(
+        f.events
+          .filter((e) => e.type === "batch")
+          .flatMap((e) => (e.type === "batch" ? e.batch.records : [])),
+      ).toHaveLength(2);
+      expect(f.readerPid()).toEqual(peer);
+      await f.observer.dispose();
+      await until(() => f.capability().waitingReaders === 0);
+      expect(() => process.kill(peer[0]!, 0)).toThrow();
     } finally {
       await f.close();
     }

@@ -209,24 +209,29 @@ export class NativeTmuxInteractionObserver {
     const request = new AbortController();
     const abort = () => request.abort(this.#lifetime.signal.reason);
     this.#lifetime.signal.addEventListener("abort", abort, { once: true });
+    const persistent =
+      !this.#options.io &&
+      args[0] === "tmux-ide-events" &&
+      args[1] === "-r" &&
+      this.#capability?.readerTransport === "sessionless-control-v1";
     let expired = false;
-    const deadline = setTimeout(() => {
-      expired = true;
-      request.abort(new Error("Native journal deadline"));
-    }, timeoutMs);
-    deadline.unref?.();
+    // Legacy helper leases retire a subprocess. A healthy parked peer instead
+    // waits on lifetime cancellation; its begin/payload phases remain bounded.
+    const deadline = persistent
+      ? undefined
+      : setTimeout(() => {
+          expired = true;
+          request.abort(new Error("Native journal deadline"));
+        }, timeoutMs);
+    deadline?.unref?.();
     try {
-      const persistent =
-        !this.#options.io &&
-        args[0] === "tmux-ide-events" &&
-        args[1] === "-r" &&
-        this.#capability?.readerTransport === "sessionless-control-v1";
       let output: string;
       if (persistent) {
         const opening = this.#control === null;
         const control = (this.#control ??= new NativeJournalControlConnection(
           this.#options.tmuxAuthority,
           this.#capability!.serverEpoch,
+          this.#commandMs,
         ));
         try {
           if (opening) {
