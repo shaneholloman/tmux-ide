@@ -11,7 +11,14 @@ import { createOpenTuiPaneStreamSocket } from "../packages/daemon/src/tui/mirror
 const workspaceName = required("TMUX_IDE_REFERENCE_WORKSPACE");
 const semanticPaneId = required("TMUX_IDE_REFERENCE_PANE");
 const daemon = JSON.parse(
-  readFileSync(join(process.env.HOME ?? "", ".tmux-ide", "daemon.json"), "utf8"),
+  readFileSync(
+    join(
+      process.env.TMUX_IDE_TESTDRIVE_CANONICAL_HOME?.trim() ||
+        join(process.env.HOME ?? "", ".tmux-ide"),
+      "daemon.json",
+    ),
+    "utf8",
+  ),
 ) as {
   bindHostname: string;
   port: number;

@@ -6,6 +6,7 @@ import { hostname, arch, cpus, platform, release, tmpdir, version as osVersion }
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { referenceTarget } from "./lib/performance-reference-target.mjs";
 
 import {
   PERFORMANCE_STAGES,
@@ -23,8 +24,9 @@ const budgets = JSON.parse(
 );
 const options = parseOptions(process.argv.slice(2));
 const reportPath = resolve(root, options.report);
-const lifecyclePath = resolve(root, ".tasks/tui-testdrive/performance.jsonl");
-const testdriveStatePath = resolve(root, ".tasks/tui-testdrive/home/app-state.json");
+const reference = referenceTarget(root);
+const lifecyclePath = join(reference.runtimeDir, "performance.jsonl");
+const testdriveStatePath = join(reference.runtimeDir, "home/app-state.json");
 const target = `tmux-ide-reference-${process.pid}`;
 const referenceProjectDir = mkdtempSync(join(tmpdir(), `${target}-`));
 const source = gitSourceIdentity(root);
@@ -89,7 +91,9 @@ try {
 } finally {
   if (!options.keepOnFailure || succeeded) {
     spawnSync("node", ["scripts/tui-testdrive.mjs", "stop"], { cwd: root, stdio: "ignore" });
-    spawnSync("tmux", ["kill-session", "-t", `=${target}`], { stdio: "ignore" });
+    spawnSync("tmux", [...reference.socketArgs, "kill-session", "-t", `=${target}`], {
+      stdio: "ignore",
+    });
     await unregisterReferenceProject().catch(() => undefined);
     rmSync(referenceProjectDir, { recursive: true, force: true });
   } else {
@@ -259,7 +263,7 @@ function qualifyBunPaneStream(readiness) {
 }
 
 function readDaemonInfo() {
-  const path = resolve(process.env.HOME ?? "", ".tmux-ide/daemon.json");
+  const path = reference.daemonInfoPath;
   const daemon = JSON.parse(readFileSync(path, "utf8"));
   if (!daemon.authToken || !daemon.port || !daemon.bindHostname)
     throw new Error("Reference qualification requires the canonical daemon");
@@ -395,7 +399,7 @@ async function collectInputTrace() {
         frame.includes(target) && frame.includes("TERMINAL INPUT") && frame.includes("Echo"),
       10_000,
     );
-    tmux(["send-keys", "-t", "=_tmux-ide-testdrive:0.0", "F2"]);
+    tmux(["send-keys", "-t", `=${reference.hostSession}:0.0`, "F2"]);
     await waitForCapturedFrame(
       (frame) =>
         frame.includes(target) && frame.includes("TERMINAL INPUT") && frame.includes("Echo"),
@@ -407,7 +411,13 @@ async function collectInputTrace() {
       // Keep the measured host free of a second Node startup/teardown per
       // keystroke. The trace clock begins inside OpenTUI, but that short-lived
       // wrapper still competes with the render process after injecting input.
-      tmux(["send-keys", "-t", "=_tmux-ide-testdrive:0.0", "-l", ordinal % 2 === 0 ? "x" : "y"]);
+      tmux([
+        "send-keys",
+        "-t",
+        `=${reference.hostSession}:0.0`,
+        "-l",
+        ordinal % 2 === 0 ? "x" : "y",
+      ]);
       const deadline = Date.now() + 2_000;
       while (Date.now() < deadline && countCompletedLocalTraces(tracePath) <= prior) await delay(5);
       if (countCompletedLocalTraces(tracePath) <= prior)
@@ -415,7 +425,7 @@ async function collectInputTrace() {
           `Timed out waiting for input-to-paint sample ${ordinal + 1}\n\n` +
             `--- initial canvas ---\n${canvasFrame}\n\n` +
             `--- current frame ---\n${captureTestdrive()}\n\n` +
-            `--- stderr ---\n${readFileSync(resolve(root, ".tasks/tui-testdrive/stderr.log"), "utf8")}`,
+            `--- stderr ---\n${readFileSync(join(reference.runtimeDir, "stderr.log"), "utf8")}`,
         );
     }
   } finally {
@@ -661,7 +671,7 @@ function run(command, args, env = process.env) {
 }
 
 function tmux(args) {
-  execFileSync("tmux", args, {
+  execFileSync("tmux", [...reference.socketArgs, ...args], {
     cwd: root,
     env: { ...process.env, TMUX: "", TMUX_TMPDIR: "" },
     stdio: "pipe",
