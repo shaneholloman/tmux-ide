@@ -68,6 +68,18 @@ export class InteractionObservationStatusStore {
       droppedCount: sum !== null && BigInt(sum) > 18446744073709551615n ? null : sum,
     });
   }
+  /** Preserve owner-local gap history without copying a public snapshot on every batch. */
+  setNativeReady(capabilityVersion: number, cursor?: InteractionObservationStatus["cursor"]): void {
+    this.#update({
+      ...this.#status,
+      method: "native-journal",
+      capabilityVersion,
+      coverage: "declared-capabilities",
+      commands: ["send-keys", "capture-pane", "paste-buffer", "send-prefix"],
+      effects: ["input-enqueued", "snapshot-produced"],
+      cursor: cursor === undefined ? this.#status.cursor : cursor,
+    });
+  }
   setNativeStatus(status: InteractionObservationStatus): void {
     if (status.method !== "native-journal" && status.method !== "unavailable")
       throw new Error("Invalid native observer status method");

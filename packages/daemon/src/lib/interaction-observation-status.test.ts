@@ -59,3 +59,44 @@ describe("interaction observation status", () => {
     expect(store.getSnapshot().droppedCount).toBeNull();
   });
 });
+it("updates native readiness without exposing or losing retained gap history", async () => {
+  const store = create(),
+    changed = vi.fn();
+  store.subscribe(changed);
+  store.noteGap("unresolved-target", 3);
+  const gap = store.getSnapshot().lastGap;
+  const cursor = { epoch: scope.generation, sequence: "3" };
+  store.setNativeReady(2, cursor);
+  cursor.sequence = "99";
+  const snapshot = store.getSnapshot();
+  expect(snapshot).toMatchObject({
+    method: "native-journal",
+    capabilityVersion: 2,
+    coverage: "declared-capabilities",
+    cursor: { sequence: "3" },
+    lastGap: gap,
+    droppedCount: "3",
+  });
+  snapshot.cursor!.sequence = "88";
+  snapshot.commands.length = 0;
+  store.setNativeReady(2);
+  expect(store.getSnapshot().cursor?.sequence).toBe("3");
+  expect(store.getSnapshot().commands).toHaveLength(4);
+  await Promise.resolve();
+  expect(changed).toHaveBeenCalledTimes(1);
+  store.setNativeReady(2);
+  await Promise.resolve();
+  expect(changed).toHaveBeenCalledTimes(1);
+  store.setNativeReady(2, null);
+  expect(store.getSnapshot().cursor).toBeNull();
+});
+it("strictly rejects invalid native readiness metadata without changing state", () => {
+  const store = create(),
+    before = store.getSnapshot();
+  expect(() => store.setNativeReady(-1)).toThrow();
+  expect(() => store.setNativeReady(2, { epoch: scope.generation, sequence: "-1" })).toThrow();
+  expect(store.getSnapshot()).toEqual(before);
+  store.dispose();
+  store.setNativeReady(2);
+  expect(store.getSnapshot()).toEqual(before);
+});

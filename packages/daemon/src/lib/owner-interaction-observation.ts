@@ -265,16 +265,7 @@ export class OwnerInteractionObservation {
       serverScope: this.#options.serverScope,
       serverEpoch: capability.serverEpoch,
     });
-    const current = this.#options.status.getSnapshot();
-    this.#options.status.setNativeStatus({
-      ...current,
-      method: "native-journal",
-      capabilityVersion: capability.schemaVersion,
-      coverage: "declared-capabilities",
-      commands: ["send-keys", "capture-pane", "paste-buffer", "send-prefix"],
-      effects: ["input-enqueued", "snapshot-produced"],
-      cursor: cursor === undefined ? current.cursor : cursor,
-    });
+    this.#options.status.setNativeReady(capability.schemaVersion, cursor);
   }
   #publish(items: readonly NativeInteractionProjection[]) {
     if (this.#disposed) return;
