@@ -1,5 +1,8 @@
 import { expect, it } from "vitest";
-import { decodeNativeOperationReply } from "./native-operation-reply.ts";
+import {
+  decodeNativeOperationReply,
+  decodeNativeOperationInvocation,
+} from "./native-operation-reply.ts";
 const expected = {
   serverEpoch: "00000000-0000-4000-8000-000000000001",
   operationId: "00000000-0000-4000-8000-000000000002",
@@ -11,6 +14,33 @@ const acknowledgement = {
   connectionId: "3",
   wrapperCommandId: "4",
 };
+const identity = {
+  schemaVersion: 2,
+  type: "identity",
+  serverEpoch: expected.serverEpoch,
+  connectionId: "3",
+};
+it("accepts identity and acknowledgement only from the same execution connection", () => {
+  const prefix = `${JSON.stringify(identity)}\n${JSON.stringify(acknowledgement)}\n`;
+  expect(decodeNativeOperationInvocation(`${prefix}private\n\n`, expected)).toEqual({
+    identity,
+    acknowledgement,
+    output: "private\n\n",
+  });
+  for (const wrong of [
+    { ...identity, connectionId: "9" },
+    { ...identity, serverEpoch: expected.operationId },
+  ])
+    expect(() =>
+      decodeNativeOperationInvocation(
+        `${JSON.stringify(wrong)}\n${JSON.stringify(acknowledgement)}\nprivate`,
+        expected,
+      ),
+    ).toThrow("identity mismatch");
+  expect(() => decodeNativeOperationInvocation(`private\n${prefix}`, expected)).toThrow(
+    "Invalid native connection identity",
+  );
+});
 it("preserves the transient capture tail including empty lines and embedded JSON", () => {
   const captured = `\nprivate terminal text\n${JSON.stringify(acknowledgement)}\n\n`;
   expect(

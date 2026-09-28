@@ -1,3 +1,5 @@
+import { createAuthoredNativeCommandRunner } from "./authored-native-command-runner.ts";
+import { consumeAuthoredNativeEvidence } from "./authored-native-receipt-enrichment.ts";
 import {
   OwnerInteractionObservation,
   nativeInteractionObservationRequested,
@@ -1241,6 +1243,7 @@ async function startEmbeddedDaemonGeneration(
       daemonInstanceId: instanceId,
       registry: workspaceRegistry,
     });
+    let authoredNativeRunner: ReturnType<typeof createAuthoredNativeCommandRunner> | null = null;
     const workspaceMultiplexer = new WorkspaceMultiplexerAuthority({
       daemonInstanceId: instanceId,
       registry: workspaceRegistry,
@@ -1249,6 +1252,8 @@ async function startEmbeddedDaemonGeneration(
         ? {
             io: {
               runTmux: nativeGenerationTmuxRunner,
+              runAuthoredNative: (request, options) =>
+                authoredNativeRunner?.(request, options) ?? null,
             },
           }
         : {}),
@@ -1660,9 +1665,17 @@ async function startEmbeddedDaemonGeneration(
             nativeServerIdentity: initialNativeServerIdentity,
             enabled: nativeObservationRequested,
             status: interactionObservation,
+            publishOwnedEvidence: (decision) =>
+              consumeAuthoredNativeEvidence(interactionReceipts, decision),
             publishEvidence: (evidence) => {
               interactionReceipts.appendEvidence(evidence);
             },
+          });
+          authoredNativeRunner = createAuthoredNativeCommandRunner({
+            environmentId,
+            serverScope: scope,
+            observation: () => observationSelector,
+            runTmux: nativeGenerationTmuxRunner,
           });
           observationSelector.stockAvailable(externalInteractionObserver.available);
           if (nativeObservationRequested) interactionObservation.noteGap("uncertain-consume");

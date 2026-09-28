@@ -1,3 +1,5 @@
+import { createAuthoredNativeCommandRunner } from "./authored-native-command-runner.ts";
+import { consumeAuthoredNativeEvidence } from "./authored-native-receipt-enrichment.ts";
 import {
   OwnerInteractionObservation,
   nativeInteractionObservationRequested,
@@ -151,7 +153,15 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
     daemonInstanceId: generation,
     registry: workspaceRegistry,
     tmuxAuthority: authority,
-    io: { runTmux: generationRun },
+    io: {
+      runTmux: generationRun,
+      runAuthoredNative: createAuthoredNativeCommandRunner({
+        environmentId: options.environmentId,
+        serverScope: { serverId: options.serverId, generation },
+        observation: () => observationSelector,
+        runTmux: generationRun,
+      }),
+    },
   });
   const paneCreation = new WorkspacePaneCreationAuthority({
     daemonInstanceId: generation,
@@ -178,6 +188,8 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
     nativeServerIdentity,
     enabled: nativeInteractionObservationRequested(),
     status: interactionObservation,
+    publishOwnedEvidence: (decision) =>
+      consumeAuthoredNativeEvidence(interactionReceipts, decision),
     publishEvidence: (evidence) => {
       interactionReceipts.appendEvidence(evidence);
     },
