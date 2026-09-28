@@ -320,6 +320,11 @@ describe("WorkspacePaneCreationAuthority", () => {
         await expect(run(["capture-pane", text], undefined, raw)).resolves.toBe(text);
         await expect(run(["capture-pane", text])).resolves.toBe(text.replace(/(?:\r?\n)+$/u, ""));
       }
+      const changingOptions = { preserveTrailingNewlines: true, maxOutputBytes: 2050 };
+      const pendingCapture = run(["capture-pane", "identity\nack\n\n"], undefined, changingOptions);
+      changingOptions.preserveTrailingNewlines = false;
+      changingOptions.maxOutputBytes = 1;
+      await expect(pendingCapture).resolves.toBe("identity\nack\n\n");
       await expect(run(["capture-pane", "large"], undefined, raw)).resolves.toHaveLength(65541);
       await expect(run(["capture-pane", "large"])).rejects.toThrow();
       await expect(

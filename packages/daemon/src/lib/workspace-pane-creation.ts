@@ -371,6 +371,7 @@ export function createPinnedWorkspaceTmuxAsyncRunner(
       : null;
   return (args, signal, runOptions) => {
     const maxBuffer = runOptions?.maxOutputBytes ?? TMUX_OUTPUT_BYTES;
+    const preserveTrailingNewlines = runOptions?.preserveTrailingNewlines === true;
     if (!Number.isSafeInteger(maxBuffer) || maxBuffer < 1 || maxBuffer > TMUX_OUTPUT_BYTES + 2050)
       throw new TypeError("Pinned async tmux output bound is invalid.");
     const selector = socketIdentity
@@ -382,9 +383,7 @@ export function createPinnedWorkspaceTmuxAsyncRunner(
         maxBuffer,
         timeoutMs,
         signal,
-      }).then((stdout) =>
-        runOptions?.preserveTrailingNewlines ? stdout : stdout.replace(/(?:\r?\n)+$/u, ""),
-      );
+      }).then((stdout) => (preserveTrailingNewlines ? stdout : stdout.replace(/(?:\r?\n)+$/u, "")));
     if (!namedFence) return execute(selector);
     return namedFence
       .resolveAsync(signal)
