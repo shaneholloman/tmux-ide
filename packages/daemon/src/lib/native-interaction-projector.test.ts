@@ -1,3 +1,4 @@
+import { InteractionEvidenceSchemaZ, NativeJournalRecordSchemaZ } from "@tmux-ide/contracts";
 import {
   parseNativeJournalResponse,
   parseNativeJournalBatch,
@@ -319,5 +320,101 @@ describe("immutable native batch structural proof", () => {
     const result = p.consume(batch([record("2")]));
     expect(result[0]!.native.uncertainty).toBeNull();
     expect(result[0]!.native.record.issuerId).toBe("7");
+  });
+});
+
+describe("constructed native evidence schema conformance", () => {
+  it("conforms across all record kinds, valid flags/outcomes, zero/max identities and degradation", () => {
+    let cases = 0;
+    const ids = ["0", "1", "18446744073709551615"];
+    for (let kind = 1; kind <= 6; kind++) {
+      for (let flags = 0; flags <= 63; flags++) {
+        for (let outcome = 1; outcome <= 3; outcome++) {
+          for (const id of ids) {
+            const candidate = record("1", kind, {
+              flags,
+              outcome,
+              commandId: id,
+              issuerId: id,
+              requestId: id,
+              parentCommandId: id,
+              targetBirthId: flags & 1 ? id : "0",
+              targetId: flags & 1 ? 4294967295 : 0,
+              count: kind >= 5 ? "18446744073709551615" : "0",
+              monotonicUs: "18446744073709551615",
+              transport: 2,
+              derivation: 3,
+              correlation: otherEpoch,
+            });
+            if (!NativeJournalRecordSchemaZ.safeParse(candidate).success) continue;
+            for (const degraded of [0, 31]) {
+              const projected = projector().consume(batch([candidate], { degraded }));
+              expect(projected).toHaveLength(1);
+              for (const { evidence } of projected) {
+                expect(InteractionEvidenceSchemaZ.parse(evidence)).toEqual(evidence);
+                expect(evidence.endpoints.source).toBeNull();
+                expect(evidence.observation).toMatchObject({ correlatedOperationId: null });
+              }
+              cases++;
+            }
+          }
+        }
+      }
+    }
+    expect(cases).toBeGreaterThan(500);
+  });
+  it("conforms for assembled command/effect pairs and explicit incomplete flushes", () => {
+    for (const kind of [1, 2, 3, 4]) {
+      const effect = kind === 2 ? 6 : 5;
+      const p = projector();
+      const results = p.consume(batch([record("1", effect), record("2", kind)]));
+      expect(results).toHaveLength(1);
+      for (const { evidence } of results)
+        expect(InteractionEvidenceSchemaZ.parse(evidence)).toEqual(evidence);
+    }
+    for (const finish of ["dispose", "reset"] as const) {
+      const p = projector();
+      expect(p.consume(batch([record("1", 5)], { newest: "2" }))).toEqual([]);
+      const results = finish === "dispose" ? p.dispose() : p.reset(otherEpoch);
+      for (const { evidence } of results)
+        expect(InteractionEvidenceSchemaZ.parse(evidence)).toEqual(evidence);
+    }
+  });
+  it("rejects malformed records and constructor identities before constructing evidence", () => {
+    for (const extra of [
+      { issuerId: "18446744073709551616" },
+      { targetBirthId: "-1" },
+      { commandId: "01" },
+      { kind: 7 },
+      { outcome: 0 },
+      { flags: 64 },
+      { correlation: "forged" },
+      { transport: 3 },
+      { derivation: 4 },
+      { kind: 5, count: "0" },
+      { flags: 0, targetBirthId: "1" },
+    ])
+      expect(() => projector().consume(batch([record("1", 1, extra)]))).toThrow();
+    expect(() => projector({ environmentId: "invalid" })).toThrow();
+    expect(() => projector({ serverScope: { ...serverScope, generation: "invalid" } })).toThrow();
+    expect(() => projector({ serverEpoch: "invalid" })).toThrow();
+  });
+  it("emits canonical timestamp years and rejects invalid or extended dates", () => {
+    for (const iso of ["0000-01-01T00:00:00.000Z", "9999-12-31T23:59:59.999Z"]) {
+      const result = projector({ now: () => new Date(iso) }).consume(batch([record("1")]));
+      expect(InteractionEvidenceSchemaZ.parse(result[0]!.evidence).receivedAt).toBe(iso);
+    }
+    for (const iso of ["invalid", "+010000-01-01T00:00:00.000Z", "-000001-01-01T00:00:00.000Z"])
+      expect(() => projector({ now: () => new Date(iso) }).consume(batch([record("1")]))).toThrow();
+  });
+  it("does not expose retained authority through generated evidence objects", () => {
+    const p = projector();
+    const first = p.consume(batch([record("1")]))[0]!.evidence;
+    first.endpoints.destination.serverScope.generation = otherEpoch;
+    first.actor = { kind: "unknown", reason: "unavailable" };
+    const next = p.consume(batch([record("2")]))[0]!.evidence;
+    expect(next.endpoints.destination.serverScope).toEqual(serverScope);
+    expect(next.actor.kind).toBe("native");
+    expect(InteractionEvidenceSchemaZ.parse(next)).toEqual(next);
   });
 });

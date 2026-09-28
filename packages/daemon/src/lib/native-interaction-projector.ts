@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import {
   EnvironmentIdSchema,
-  InteractionEvidenceSchemaZ,
   NativeJournalCursorSchemaZ,
   TmuxServerScopeSchemaZ,
   type InteractionEvidence,
@@ -145,7 +144,13 @@ export class NativeInteractionProjector {
     const origin = command ?? record;
     const commandId =
       origin.commandId === "0" ? null : this.#reference("command", origin.commandId);
-    const evidence = InteractionEvidenceSchemaZ.parse({
+    // All identity inputs are validated at construction/ingestion. Keep the
+    // generated shape typed here; the publication journal remains the strict
+    // external ingestion boundary rather than parsing this tree twice.
+    const receivedAt = Date.prototype.toISOString.call(this.#options.now?.() ?? new Date());
+    // Wire timestamps require four-digit years; Date also permits extended years.
+    if (receivedAt.length !== 24) throw new RangeError("Unsupported observation timestamp");
+    const evidence = {
       schemaVersion: 1,
       interactionId,
       revision: 0,
@@ -180,8 +185,8 @@ export class NativeInteractionProjector {
             : { kind: "unknown" },
       occurredAt: null,
       timeBasis: "unknown",
-      receivedAt: (this.#options.now?.() ?? new Date()).toISOString(),
-    });
+      receivedAt,
+    } satisfies InteractionEvidence;
     return {
       evidence,
       native: {
