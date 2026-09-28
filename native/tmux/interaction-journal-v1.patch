@@ -50,6 +50,22 @@ index f0c3637..585e6b7 100644
  		cmdq_append(c, new_item);
  	} else {
  		new_item = cmdq_get_command(cmdlist, cmdq_get_state(item));
+diff --git a/cmd-parse.y b/cmd-parse.y
+index 0b32f5d..213f1dc 100644
+--- a/cmd-parse.y
++++ b/cmd-parse.y
+@@ -785,6 +785,11 @@ cmd_parse_expand_alias(struct cmd_parse_command *cmd,
+ 	}
+ 	name = first->string;
+ 
++	/* Reserved native protocol names cannot be rewritten by user aliases. */
++	if (strcmp(name, "tmux-ide-events") == 0 ||
++	    strcmp(name, "tmux-ide-run") == 0)
++		return (0);
++
+ 	alias = cmd_get_alias(name);
+ 	if (alias == NULL)
+ 		return (0);
 diff --git a/cmd-paste-buffer.c b/cmd-paste-buffer.c
 index 7233b7d..6487b7d 100644
 --- a/cmd-paste-buffer.c
@@ -793,10 +809,10 @@ index 49cac8b..d592a11 100644
  		return (0);
 diff --git a/tmux-ide-journal.c b/tmux-ide-journal.c
 new file mode 100644
-index 0000000..1a3113b
+index 0000000..2a36a61
 --- /dev/null
 +++ b/tmux-ide-journal.c
-@@ -0,0 +1,632 @@
+@@ -0,0 +1,665 @@
 +/*
 + * Copyright (c) 2026 wavyrai
 + *
@@ -1124,7 +1140,7 @@ index 0000000..1a3113b
 +	    "\"coverage\":[\"command-outcome-v1\",\"pty-enqueue-v1\",\"capture-"
 +	    "produced-v1\",\"cooperative-operation-v1\",\"pane-identity-v1\"],\"capacity\":%u,"
 +	    "\"maxBatch\":%u,\"maxWaiters\":%u,\"waitingReaders\":%u,"
-+	    "\"degraded\":%u,\"readerTransport\":\"sessionless-control-v1\"}",
++	    "\"degraded\":%u,\"readerTransport\":\"sessionless-control-v1\",\"ownedOperationTransport\":\"direct-wrapper-v1\"}",
 +	    ti_server_epoch, ti_journal_epoch, ti_journal ? "true" : "false",
 +	    TI_CAPACITY, TI_MAX_BATCH, TI_MAX_WAITERS, waiting, ti_degraded);
 +}
@@ -1407,17 +1423,50 @@ index 0000000..1a3113b
 +	struct args *args = cmd_get_args(self);
 +	const char *operation = args_get(args, 'O');
 +	struct cmd_list *commands;
++	struct cmd_parse_result *parsed;
++	struct cmd_parse_input parse = { .flags = CMD_PARSE_NOALIAS | CMD_PARSE_PARSEONLY };
++	struct args_value *body = args_value(args, 0);
 +	struct cmdq_item *child;
 +	struct ti_origin origin = cmdq_origin_child(item, TI_CHILD);
++	struct client *client = cmdq_get_origin_client(item);
 +	if (!ti_operation_uuid(operation)) {
 +		cmdq_error(item, "operation must be a canonical UUID");
 +		return CMD_RETURN_ERROR;
 +	}
-+	commands = args_make_commands_now(self, item, 0, 0);
-+	if (!commands)
++	if (args_has(args, 'I') && (!ti_journal || !origin.parent_id ||
++	    !origin.issuer_id || !client ||
++	    client->tmux_ide_connection_id != origin.issuer_id)) {
++		cmdq_error(item, "operation identity unavailable");
 +		return CMD_RETURN_ERROR;
++	}
++	if (args_has(args, 'I')) {
++		if (!body || body->type != ARGS_STRING) {
++			cmdq_error(item, "operation identity requires a string command body");
++			return CMD_RETURN_ERROR;
++		}
++		parse.c = client;
++		cmd_find_copy_state(&parse.fs, cmdq_get_target(item));
++		parsed = cmd_parse_from_string(body->string, &parse);
++		if (parsed->status != CMD_PARSE_SUCCESS) {
++			cmdq_error(item, "%s", parsed->error);
++			free(parsed->error);
++			return CMD_RETURN_ERROR;
++		}
++		commands = parsed->cmdlist;
++	} else {
++		commands = args_make_commands_now(self, item, 0, 0);
++		if (!commands)
++			return CMD_RETURN_ERROR;
++	}
++	if (args_has(args, 'I'))
++		cmdq_print(item, "{\"schemaVersion\":2,\"type\":\"operation-identity\","
++		    "\"serverEpoch\":\"%s\",\"connectionId\":\"%" PRIu64
++		    "\",\"wrapperCommandId\":\"%" PRIu64 "\",\"operationId\":\"%s\"}",
++		    ti_server_epoch, origin.issuer_id, origin.parent_id, operation);
 +	memcpy(origin.correlation, operation, sizeof origin.correlation);
 +	child = cmdq_get_command(commands, cmdq_get_state(item));
++	if (args_has(args, 'I'))
++		cmd_list_free(commands);
 +	cmdq_set_origin(child, &origin);
 +	cmdq_insert_after(item, child);
 +	return CMD_RETURN_NORMAL;
@@ -1425,8 +1474,8 @@ index 0000000..1a3113b
 +const struct cmd_entry cmd_tmux_ide_run_entry = {
 +    .name = "tmux-ide-run",
 +    .alias = NULL,
-+    .args = {"O:", 1, 1, ti_run_parse},
-+    .usage = "-O operation-uuid { commands }",
++    .args = {"IO:", 1, 1, ti_run_parse},
++    .usage = "[-I] -O operation-uuid { commands }",
 +    .flags = 0,
 +    .exec = ti_run_exec};
 diff --git a/tmux-ide-journal.h b/tmux-ide-journal.h

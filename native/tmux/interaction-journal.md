@@ -169,3 +169,46 @@ identification may race an unrelated global notification. Consumers must reject
 unexpected handshake traffic and retry with bounded backoff; this is not valid
 journal evidence. After parking, notifications are suppressed. This limitation
 avoids changing startup behavior for ordinary control clients.
+
+## Strict owned-operation acknowledgement
+
+Capability optionally advertises `ownedOperationTransport: "direct-wrapper-v1"`.
+With that capability, `tmux-ide-run -I -O UUID 'COMMAND STRING'` emits one private
+wire2 acknowledgement before executing children:
+
+```json
+{
+  "schemaVersion": 2,
+  "type": "operation-identity",
+  "serverEpoch": "UUID",
+  "connectionId": "UINT64",
+  "wrapperCommandId": "UINT64",
+  "operationId": "UUID"
+}
+```
+
+`-I` requires enabled observation, a positive command ID, and an actual originating
+connection whose ID matches the immutable issuer. Otherwise it errors before
+executing children. It accepts only a string body, parsed explicitly without
+command aliases or parse-time global environment assignments. A braced/preparsed command list is rejected without executing its child commands: aliases might
+already have inserted additional commands before the wrapper executes. Ordinary
+non-`-I` wrapper behavior is unchanged.
+
+The exact registered names `tmux-ide-events` and `tmux-ide-run` bypass user alias
+expansion in every parser context, including nested guarded commands. All other
+ordinary aliases retain their usual behavior. Strict `-I` bodies also bypass
+ordinary aliases during their direct parse, so an alias for `send-keys` cannot
+inject extra direct commands under the acknowledged wrapper.
+
+The acknowledgement is not evidence that input was consumed or that an agent
+performed it. An owned binding must match serverEpoch, connectionId, operationId
+and the native record's parentCommandId against wrapperCommandId, together with
+its admitted target/effect policy. Hook descendants may preserve correlation and
+issuer and regain a `child` derivation through if-shell; their immediate parent
+still differs. They must not be suppressed as intended direct operations.
+
+The no-child-execution guarantee does not undo parsing that tmux already performed
+outside the private string body. Ordinary `command-error` hooks can still run on
+an invalid owned wrapper; their effects are separate observations and do not gain
+direct-child ownership proof. The daemon must construct the string from known
+command/argument arrays with literal escaping, not accept arbitrary scripts.
