@@ -41,6 +41,7 @@ describe("owner receipt journal", () => {
       actor: { kind: "unknown" as const, reason: "unavailable" as const },
       observation: {
         kind: "native-journal" as const,
+        serverEpoch: "00000000-0000-4000-8000-000000000007",
         command: "unknown" as const,
         cursor: { epoch: "00000000-0000-4000-8000-000000000008", sequence: "1" },
         commandId: null,

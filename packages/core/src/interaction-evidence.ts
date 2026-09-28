@@ -58,6 +58,7 @@ export function canEnrichInteractionEvidence(
   if (x.kind === "native-journal") {
     return (
       y.kind === "native-journal" &&
+      x.serverEpoch === y.serverEpoch &&
       x.command === y.command &&
       x.commandId === y.commandId &&
       x.parentCommandId === y.parentCommandId &&

@@ -514,6 +514,7 @@ describe("native evidence journal projection", () => {
         actor: { kind: "unknown", reason: "unavailable" },
         observation: {
           kind: "native-journal",
+          serverEpoch: fixtureId,
           command: "unknown",
           cursor: { epoch: fixtureId, sequence: String(sequence) },
           commandId: null,

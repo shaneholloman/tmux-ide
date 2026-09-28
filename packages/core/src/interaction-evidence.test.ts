@@ -38,6 +38,7 @@ const native = InteractionEvidenceSchemaZ.parse({
   },
   observation: {
     kind: "native-journal",
+    serverEpoch: id,
     command: "send-keys",
     commandId: id,
     parentCommandId: null,

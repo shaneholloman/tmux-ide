@@ -98,6 +98,7 @@ export const InteractionObservationEvidenceSchemaZ = z.discriminatedUnion("kind"
   z
     .object({
       kind: z.literal("native-journal"),
+      serverEpoch: uuid,
       command: z.union([command, z.literal("unknown")]),
       cursor: NativeInteractionCursorSchemaZ,
       commandId: uuid.nullable(),
@@ -148,7 +149,7 @@ export const InteractionEvidenceSchemaZ = z
     for (const endpoint of [endpoints.destination, endpoints.source]) {
       if (
         endpoint?.kind === "native-pane" &&
-        (observation.kind !== "native-journal" || endpoint.serverEpoch !== observation.cursor.epoch)
+        (observation.kind !== "native-journal" || endpoint.serverEpoch !== observation.serverEpoch)
       )
         issue(["endpoints"], "physical pane identity requires matching native server epoch");
     }

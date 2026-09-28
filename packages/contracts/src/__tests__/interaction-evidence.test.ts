@@ -38,6 +38,7 @@ const native = {
   },
   observation: {
     kind: "native-journal",
+    serverEpoch: id,
     command: "send-keys",
     commandId: id,
     parentCommandId: null,
@@ -259,4 +260,29 @@ describe("immutable native pane identity", () => {
       }).success,
     ).toBe(false);
   });
+});
+
+it("keeps immutable server birth independent from journal resets", () => {
+  const destination = {
+    kind: "native-pane",
+    environmentId: id,
+    serverScope: endpoint.serverScope,
+    serverEpoch: id,
+    paneBirthId: "3",
+  };
+  for (const journalEpoch of [
+    "22222222-2222-4222-8222-222222222222",
+    "33333333-3333-4333-8333-333333333333",
+  ]) {
+    const parsed = InteractionEvidenceSchemaZ.parse({
+      ...native,
+      endpoints: { source: null, destination },
+      observation: {
+        ...native.observation,
+        serverEpoch: id,
+        cursor: { epoch: journalEpoch, sequence: "1" },
+      },
+    });
+    expect(parsed.endpoints.destination).toEqual(destination);
+  }
 });
