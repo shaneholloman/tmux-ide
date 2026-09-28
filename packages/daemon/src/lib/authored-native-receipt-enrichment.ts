@@ -3,6 +3,7 @@ import {
   InteractionReceiptSchemaZ,
   NativeOperationIdentitySchemaZ,
   type InteractionReceipt,
+  type InteractionEvidence,
 } from "@tmux-ide/contracts";
 import { canEnrichInteractionEvidence } from "@tmux-ide/core";
 import type { OwnedNativeInteractionDecision } from "./owned-native-interaction-bindings.ts";
@@ -12,11 +13,10 @@ import type {
 } from "./interaction-receipt-journal.ts";
 import { nativeInteractionReference } from "./native-interaction-projector.ts";
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
-/** Exact owned transport proof can enrich facts, never the operation's phase or result. */
-export function enrichAuthoredNativeReceipt(
+function correlatedEvidence(
   receipt: InteractionReceipt,
   decision: OwnedNativeInteractionDecision,
-): InteractionReceiptDraft | null {
+): InteractionEvidence | null {
   if (
     !InteractionReceiptSchemaZ.safeParse(receipt).success ||
     !InteractionEvidenceSchemaZ.safeParse(decision.evidence).success
@@ -29,7 +29,6 @@ export function enrichAuthoredNativeReceipt(
     !proof ||
     !proof.authoredDestination ||
     receipt.origin === "external" ||
-    receipt.phase === "accepted" ||
     (receipt.operationKind !== "workspace.pane.read" &&
       receipt.operationKind !== "workspace.pane.send") ||
     receipt.operationId !== proof.acknowledgement.operationId ||
@@ -89,7 +88,17 @@ export function enrichAuthoredNativeReceipt(
     same(before.effect, next.data.effect)
   )
     return null;
-  const parsed = InteractionReceiptSchemaZ.safeParse({ ...receipt, evidence: next.data });
+  return next.data;
+}
+/** Exact owned transport proof can enrich facts, never the operation's phase or result. */
+export function enrichAuthoredNativeReceipt(
+  receipt: InteractionReceipt,
+  decision: OwnedNativeInteractionDecision,
+): InteractionReceiptDraft | null {
+  if (receipt.phase === "accepted") return null;
+  const evidence = correlatedEvidence(receipt, decision);
+  if (!evidence) return null;
+  const parsed = InteractionReceiptSchemaZ.safeParse({ ...receipt, evidence });
   if (!parsed.success) return null;
   const { type: _type, sequence: _sequence, ...draft } = parsed.data;
   void _type;
@@ -108,4 +117,12 @@ export function consumeAuthoredNativeEvidence(
   if (!draft) return false;
   journal.publish(draft);
   return true;
+}
+
+/** An accepted operation may retain matching proof, but cannot publish an invented phase. */
+export function canStageAuthoredNativeEvidence(
+  receipt: InteractionReceipt,
+  decision: OwnedNativeInteractionDecision,
+): boolean {
+  return receipt.phase === "accepted" && correlatedEvidence(receipt, decision) !== null;
 }
