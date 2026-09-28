@@ -87,7 +87,7 @@ try {
   const names = new Map();
   const licenseFiles = [];
   mkdirSync(join(stage, "licenses"));
-  if (provenance.experimentalExtensions?.includes("tmux-ide-interaction-journal-v1")) {
+  if (provenance.experimentalExtensions?.includes("tmux-ide-interaction-journal-v2")) {
     const name = "licenses/interaction-journal.txt";
     copyFileSync(join(root, "native/tmux/interaction-journal.LICENSE"), join(stage, name));
     licenseFiles.push(name);
@@ -293,20 +293,21 @@ try {
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
       if (!captured) throw new Error("Patched native-grid capture qualification failed");
-      if (provenance.experimentalExtensions?.includes("tmux-ide-interaction-journal-v1")) {
+      if (provenance.experimentalExtensions?.includes("tmux-ide-interaction-journal-v2")) {
         const capability = JSON.parse(text(executable, ["-S", socket, "tmux-ide-events", "-V"]));
-        if (capability.schemaVersion !== 1 || capability.enabled !== false)
+        if (capability.schemaVersion !== 2 || capability.enabled !== false)
           throw new Error("Native journal must ship disabled");
         text(executable, ["-S", socket, "tmux-ide-events", "-e"]);
-        let testCommandAccepted = false;
-        try {
-          text(executable, ["-S", socket, "tmux-ide-events", "-T"]);
-          testCommandAccepted = true;
-        } catch {
-          /* Production parser must reject test-only injection. */
+        for (const flag of ["-T", "-B"]) {
+          let accepted = false;
+          try {
+            text(executable, ["-S", socket, "tmux-ide-events", flag]);
+            accepted = true;
+          } catch {
+            /* Production parser must reject test-only injection. */
+          }
+          if (accepted) throw new Error("Native journal test instrumentation in release build");
         }
-        if (testCommandAccepted)
-          throw new Error("Native journal test instrumentation in release build");
       }
       nativeGridProbe = {
         version: captured.version,

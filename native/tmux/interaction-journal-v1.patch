@@ -12,14 +12,14 @@ index ba9142f..a99d83e 100644
  	cmd-rename-session.c \
  	cmd-rename-window.c \
 diff --git a/cmd-capture-pane.c b/cmd-capture-pane.c
-index ee91f05..6eaff08 100644
+index ee91f05..180f183 100644
 --- a/cmd-capture-pane.c
 +++ b/cmd-capture-pane.c
 @@ -404,5 +404,6 @@ cmd_capture_pane_exec(struct cmd *self, struct cmdq_item *item)
  		}
  	}
  
-+	tmux_ide_interaction_effect(wp->id, 6, len);
++	tmux_ide_interaction_effect(wp->id, wp->tmux_ide_birth_id, 6, len);
  	return (CMD_RETURN_NORMAL);
  }
 diff --git a/cmd-if-shell.c b/cmd-if-shell.c
@@ -51,7 +51,7 @@ index f0c3637..585e6b7 100644
  	} else {
  		new_item = cmdq_get_command(cmdlist, cmdq_get_state(item));
 diff --git a/cmd-paste-buffer.c b/cmd-paste-buffer.c
-index 7233b7d..a07a0c8 100644
+index 7233b7d..6487b7d 100644
 --- a/cmd-paste-buffer.c
 +++ b/cmd-paste-buffer.c
 @@ -64,12 +64,16 @@ cmd_paste_buffer_exec(struct cmd *self, struct cmdq_item *item)
@@ -78,13 +78,13 @@ index 7233b7d..a07a0c8 100644
 +	if (measure) {
 +		after = EVBUFFER_LENGTH(wp->event->output);
 +		if (after > before)
-+			tmux_ide_interaction_effect(wp->id, 5, after - before);
++			tmux_ide_interaction_effect(wp->id, wp->tmux_ide_birth_id, 5, after - before);
 +	}
  	if (pb != NULL && args_has(args, 'd'))
  		paste_free(pb);
  
 diff --git a/cmd-queue.c b/cmd-queue.c
-index 2a22151..7d8f084 100644
+index 2a22151..5308660 100644
 --- a/cmd-queue.c
 +++ b/cmd-queue.c
 @@ -39,6 +39,10 @@ enum cmdq_type {
@@ -255,12 +255,13 @@ index 2a22151..7d8f084 100644
  	if (retval == CMD_RETURN_ERROR)
  		goto out;
  
-@@ -663,6 +734,41 @@ cmdq_fire_command(struct cmdq_item *item)
+@@ -663,6 +734,43 @@ cmdq_fire_command(struct cmdq_item *item)
  	}
  
  out:
 +	if (tmux_ide_interaction_enabled()) {
 +		unsigned kind = 0, variant = 0, target_id = 0;
++		uint64_t target_birth = 0;
 +		if (strcmp(entry->name, "send-keys") == 0)
 +			kind = 1;
 +		else if (strcmp(entry->name, "capture-pane") == 0)
@@ -272,6 +273,7 @@ index 2a22151..7d8f084 100644
 +		if (kind != 0) {
 +			if (cmd_find_valid_state(&item->target)) {
 +				target_id = item->target.wp->id;
++				target_birth = item->target.wp->tmux_ide_birth_id;
 +				variant |= 1;
 +			}
 +			if (kind == 1) {
@@ -291,7 +293,7 @@ index 2a22151..7d8f084 100644
 +			    retval == CMD_RETURN_ERROR	? 2
 +			    : retval == CMD_RETURN_WAIT ? 3
 +							: 1,
-+			    target_id, variant);
++			    target_id, target_birth, variant);
 +		}
 +	}
  	item->client = saved;
@@ -359,8 +361,38 @@ index b88072d..2974180 100644
  		status = cmd_parse_and_append(line, NULL, c, state, &error);
  		if (status == CMD_PARSE_ERROR)
  			cmdq_append(c, cmdq_get_callback(control_error, error));
+diff --git a/format.c b/format.c
+index 1a6d73a..8835742 100644
+--- a/format.c
++++ b/format.c
+@@ -2147,6 +2147,15 @@ format_cb_pane_height(struct format_tree *ft)
+ 	return (NULL);
+ }
+ 
++/* Immutable server-local pane birth identity, zero if unavailable. */
++static void *
++format_cb_pane_birth_id(struct format_tree *ft)
++{
++	if (ft->wp != NULL)
++		return (format_printf("%llu", (unsigned long long)ft->wp->tmux_ide_birth_id));
++	return (NULL);
++}
++
+ /* Callback for pane_id. */
+ static void *
+ format_cb_pane_id(struct format_tree *ft)
+@@ -3416,6 +3425,9 @@ static const struct format_table_entry format_table[] = {
+ 	{ "pane_bg", FORMAT_TABLE_STRING,
+ 	  format_cb_pane_bg
+ 	},
++	{ "pane_birth_id", FORMAT_TABLE_STRING,
++	  format_cb_pane_birth_id
++	},
+ 	{ "pane_bottom", FORMAT_TABLE_STRING,
+ 	  format_cb_pane_bottom
+ 	},
 diff --git a/input-keys.c b/input-keys.c
-index fdce540..70d9b0a 100644
+index fdce540..6aeb4c8 100644
 --- a/input-keys.c
 +++ b/input-keys.c
 @@ -397,6 +397,8 @@ input_key_build(void)
@@ -382,7 +414,7 @@ index fdce540..70d9b0a 100644
 +	if (measure) {
 +		after = EVBUFFER_LENGTH(wp->event->output);
 +		if (after > before)
-+			tmux_ide_interaction_effect(wp->id, 5, after - before);
++			tmux_ide_interaction_effect(wp->id, wp->tmux_ide_birth_id, 5, after - before);
  	}
 -	return (input_key(wp->screen, wp->event, key));
 +	return retval;
@@ -484,10 +516,10 @@ index 49cac8b..3517036 100644
  	status_prompt_save_history();
 diff --git a/tmux-ide-journal.c b/tmux-ide-journal.c
 new file mode 100644
-index 0000000..1c72ec5
+index 0000000..19f45e7
 --- /dev/null
 +++ b/tmux-ide-journal.c
-@@ -0,0 +1,588 @@
+@@ -0,0 +1,608 @@
 +/*
 + * Copyright (c) 2026 wavyrai
 + *
@@ -516,6 +548,7 @@ index 0000000..1c72ec5
 +static struct ti_ring *ti_journal;
 +static char ti_server_epoch[37], ti_journal_epoch[37];
 +static uint64_t ti_connection_counter, ti_request_counter, ti_command_counter;
++static uint64_t ti_pane_birth_counter;
 +static unsigned ti_degraded;
 +static struct event ti_wakeup;
 +static int ti_wakeup_initialized, ti_wakeup_pending;
@@ -535,7 +568,7 @@ index 0000000..1c72ec5
 +    .name = "tmux-ide-events",
 +    .alias = NULL,
 +#ifdef TMUX_IDE_JOURNAL_TEST
-+    .args = {"VeirwE:a:n:TFXWD", 0, 0, NULL},
++    .args = {"VeirwE:a:n:TFXWDB", 0, 0, NULL},
 +#else
 +    .args = {"VeirwE:a:n:", 0, 0, NULL},
 +#endif
@@ -595,6 +628,16 @@ index 0000000..1c72ec5
 +	return ++ti_connection_counter;
 +}
 +uint64_t
++tmux_ide_interaction_pane_birth(void)
++{
++	/* Allocate even while observation is disabled; never recycle. */
++	if (ti_pane_birth_counter == UINT64_MAX) {
++		ti_degrade(16);
++		return 0;
++	}
++	return ++ti_pane_birth_counter;
++}
++uint64_t
 +tmux_ide_interaction_request(void)
 +{
 +	if (ti_request_counter == UINT64_MAX) {
@@ -617,7 +660,7 @@ index 0000000..1c72ec5
 +void
 +tmux_ide_interaction_done(uint64_t id, const struct ti_origin *origin,
 +			  unsigned kind, unsigned outcome, unsigned target,
-+			  unsigned flags)
++			  uint64_t target_birth, unsigned flags)
 +{
 +	struct ti_record record = {0};
 +	struct timespec now;
@@ -632,6 +675,7 @@ index 0000000..1c72ec5
 +	record.kind = kind;
 +	record.outcome = outcome;
 +	record.target_id = target;
++	record.target_birth_id = target_birth;
 +	record.flags = flags;
 +	if (clock_gettime(CLOCK_MONOTONIC, &now) == 0)
 +		record.monotonic_us =
@@ -646,7 +690,7 @@ index 0000000..1c72ec5
 +	struct ti_origin origin;
 +	struct {
 +		unsigned pane, kind;
-+		uint64_t count;
++		uint64_t count, birth_id;
 +	} targets[TI_EFFECT_TARGETS];
 +} ti_effects;
 +void
@@ -668,13 +712,15 @@ index 0000000..1c72ec5
 +	return ti_effects.depth == 1;
 +}
 +void
-+tmux_ide_interaction_effect(unsigned pane, unsigned kind, uint64_t count)
++tmux_ide_interaction_effect(unsigned pane, uint64_t birth, unsigned kind,
++			    uint64_t count)
 +{
 +	unsigned i;
 +	if (ti_effects.depth != 1)
 +		return;
 +	for (i = 0; i < ti_effects.used; i++)
 +		if (ti_effects.targets[i].pane == pane &&
++		    ti_effects.targets[i].birth_id == birth &&
 +		    ti_effects.targets[i].kind == kind)
 +			break;
 +	if (i == TI_EFFECT_TARGETS) {
@@ -684,6 +730,7 @@ index 0000000..1c72ec5
 +	if (i == ti_effects.used) {
 +		ti_effects.used++;
 +		ti_effects.targets[i].pane = pane;
++		ti_effects.targets[i].birth_id = birth;
 +		ti_effects.targets[i].kind = kind;
 +		ti_effects.targets[i].count = 0;
 +	}
@@ -717,6 +764,7 @@ index 0000000..1c72ec5
 +	for (i = 0; i < ti_effects.used; i++) {
 +		record.kind = ti_effects.targets[i].kind;
 +		record.target_id = ti_effects.targets[i].pane;
++		record.target_birth_id = ti_effects.targets[i].birth_id;
 +		record.count = ti_effects.targets[i].count;
 +		tmux_ide_interaction_append(&record);
 +	}
@@ -794,10 +842,10 @@ index 0000000..1c72ec5
 +			waiting++;
 +	cmdq_print(
 +	    item,
-+	    "{\"schemaVersion\":1,\"type\":\"capability\","
++	    "{\"schemaVersion\":2,\"type\":\"capability\","
 +	    "\"serverEpoch\":\"%s\",\"journalEpoch\":\"%s\",\"enabled\":%s,"
 +	    "\"coverage\":[\"command-outcome-v1\",\"pty-enqueue-v1\",\"capture-"
-+	    "produced-v1\",\"cooperative-operation-v1\"],\"capacity\":%u,"
++	    "produced-v1\",\"cooperative-operation-v1\",\"pane-identity-v1\"],\"capacity\":%u,"
 +	    "\"maxBatch\":%u,\"maxWaiters\":%u,\"waitingReaders\":%u,"
 +	    "\"degraded\":%u}",
 +	    ti_server_epoch, ti_journal_epoch, ti_journal ? "true" : "false",
@@ -830,7 +878,7 @@ index 0000000..1c72ec5
 +	const struct ti_record *record;
 +	if (strcmp(epoch, ti_journal_epoch)) {
 +		cmdq_print(item,
-+			   "{\"schemaVersion\":1,\"type\":\"reset\","
++			   "{\"schemaVersion\":2,\"type\":\"reset\","
 +			   "\"serverEpoch\":\"%s\",\"journalEpoch\":\"%s\"}",
 +			   ti_server_epoch, ti_journal_epoch);
 +		return;
@@ -849,7 +897,7 @@ index 0000000..1c72ec5
 +		if (!ti_format(out, sizeof out, &used, __VA_ARGS__))           \
 +			goto too_large;                                        \
 +	} while (0)
-+	TI_OUT("{\"schemaVersion\":1,\"type\":\"batch\",\"serverEpoch\":\"%s\","
++	TI_OUT("{\"schemaVersion\":2,\"type\":\"batch\",\"serverEpoch\":\"%s\","
 +	       "\"journalEpoch\":\"%s\",\"oldest\":\"%" PRIu64
 +	       "\",\"newest\":\"%" PRIu64 "\",\"gap\":",
 +	       ti_server_epoch, ti_journal_epoch, oldest, ti_journal->newest);
@@ -868,14 +916,14 @@ index 0000000..1c72ec5
 +		    "%s{\"sequence\":\"%" PRIu64 "\",\"commandId\":\"%" PRIu64
 +		    "\",\"issuerId\":\"%" PRIu64 "\",\"monotonicUs\":\"%" PRIu64
 +		    "\",\"count\":\"%" PRIu64
-+		    "\",\"targetId\":%u,\"kind\":%u,\"outcome\":%u,\"flags\":%"
++		    "\",\"targetBirthId\":\"%" PRIu64 "\",\"targetId\":%u,\"kind\":%u,\"outcome\":%u,\"flags\":%"
 +		    "u,\"requestId\":\"%" PRIu64
 +		    "\",\"parentCommandId\":\"%" PRIu64
 +		    "\",\"transport\":%u,\"derivation\":%u,\"correlation\":%s%"
 +		    "s%s}",
 +		    seq == first ? "" : ",", record->sequence,
 +		    record->command_id, record->issuer_id, record->monotonic_us,
-+		    record->count, record->target_id, record->kind,
++		    record->count, record->target_birth_id, record->target_id, record->kind,
 +		    record->outcome, record->flags, record->request_id,
 +		    record->parent_id, record->transport, record->derivation,
 +		    record->correlation[0] ? "\"" : "",
@@ -922,6 +970,10 @@ index 0000000..1c72ec5
 +		    args_has(args, 'i') + args_has(args, 'r');
 +	ti_initialize();
 +#ifdef TMUX_IDE_JOURNAL_TEST
++	if (args_has(args, 'B')) {
++		ti_pane_birth_counter = UINT64_MAX;
++		return CMD_RETURN_NORMAL;
++	}
 +	if (args_has(args, 'D')) {
 +		ti_connection_counter = ti_request_counter =
 +		    ti_command_counter = UINT64_MAX;
@@ -980,7 +1032,7 @@ index 0000000..1c72ec5
 +	}
 +	if (args_has(args, 'i')) {
 +		cmdq_print(item,
-+			   "{\"schemaVersion\":1,\"type\":\"identity\","
++			   "{\"schemaVersion\":2,\"type\":\"identity\","
 +			   "\"serverEpoch\":\"%s\",\"connectionId\":\"%" PRIu64
 +			   "\"}",
 +			   ti_server_epoch,
@@ -1078,7 +1130,7 @@ index 0000000..1c72ec5
 +    .exec = ti_run_exec};
 diff --git a/tmux-ide-journal.h b/tmux-ide-journal.h
 new file mode 100644
-index 0000000..0fbf69b
+index 0000000..2c8e446
 --- /dev/null
 +++ b/tmux-ide-journal.h
 @@ -0,0 +1,73 @@
@@ -1119,7 +1171,7 @@ index 0000000..0fbf69b
 +/* Metadata only. Zero ids mean unavailable, never an inferred target client. */
 +struct ti_record {
 +	uint64_t sequence, command_id, issuer_id, monotonic_us, count;
-+	uint64_t request_id, parent_id;
++	uint64_t request_id, parent_id, target_birth_id;
 +	uint32_t target_id, kind, outcome, flags, transport, derivation;
 +	char correlation[37];
 +};
@@ -1156,10 +1208,18 @@ index 0000000..0fbf69b
 +}
 +#endif
 diff --git a/tmux.h b/tmux.h
-index c9f8a32..03810ba 100644
+index c9f8a32..a16c3bd 100644
 --- a/tmux.h
 +++ b/tmux.h
-@@ -2032,6 +2032,7 @@ typedef int (*overlay_key_cb)(struct client *, void *, struct key_event *);
+@@ -1249,6 +1249,7 @@ struct visible_ranges {
+ 
+ /* Child window structure. */
+ struct window_pane {
++	uint64_t tmux_ide_birth_id;
+ 	u_int		 id;
+ 	u_int		 active_point;
+ 
+@@ -2032,6 +2033,7 @@ typedef int (*overlay_key_cb)(struct client *, void *, struct key_event *);
  typedef void (*overlay_free_cb)(struct client *, void *);
  typedef void (*overlay_resize_cb)(struct client *, void *);
  struct client {
@@ -1167,21 +1227,22 @@ index c9f8a32..03810ba 100644
  	const char		*name;
  	struct tmuxpeer		*peer;
  	const char		*user;
-@@ -2935,6 +2936,29 @@ struct cmd_parse_result *cmd_parse_from_buffer(const void *, size_t,
+@@ -2935,6 +2937,30 @@ struct cmd_parse_result *cmd_parse_from_buffer(const void *, size_t,
  struct cmd_parse_result *cmd_parse_from_arguments(struct args_value *, u_int,
  		     struct cmd_parse_input *);
  
 +/* tmux-ide-journal.c: optional metadata observer, never input authority. */
 +#include "tmux-ide-journal.h"
++uint64_t tmux_ide_interaction_pane_birth(void);
 +uint64_t tmux_ide_interaction_request(void);
 +uint64_t tmux_ide_interaction_command(void);
 +int tmux_ide_interaction_enabled(void);
 +void tmux_ide_interaction_begin(uint64_t, const struct ti_origin *);
 +void tmux_ide_interaction_end(void);
 +int tmux_ide_interaction_measuring(void);
-+void tmux_ide_interaction_effect(unsigned, unsigned, uint64_t);
++void tmux_ide_interaction_effect(unsigned, uint64_t, unsigned, uint64_t);
 +void tmux_ide_interaction_done(uint64_t, const struct ti_origin *, unsigned,
-+			       unsigned, unsigned, unsigned);
++			       unsigned, unsigned, uint64_t, unsigned);
 +void cmdq_set_origin(struct cmdq_item *, const struct ti_origin *);
 +void cmdq_set_origin_client(struct cmdq_item *, struct client *, unsigned);
 +void cmdq_set_state_origin_client(struct cmdq_state *, struct client *,
@@ -1197,3 +1258,15 @@ index c9f8a32..03810ba 100644
  /* cmd-queue.c */
  struct cmdq_state *cmdq_new_state(struct cmd_find_state *, struct key_event *,
  		     int);
+diff --git a/window.c b/window.c
+index 87d6df4..749b7eb 100644
+--- a/window.c
++++ b/window.c
+@@ -1051,6 +1051,7 @@ window_pane_create(struct window *w, u_int sx, u_int sy, u_int hlimit)
+ 	wp->flags = PANE_STYLECHANGED;
+ 
+ 	wp->id = next_window_pane_id++;
++	wp->tmux_ide_birth_id = tmux_ide_interaction_pane_birth();
+ 	RB_INSERT(window_pane_tree, &all_window_panes, wp);
+ 
+ 	wp->fd = -1;

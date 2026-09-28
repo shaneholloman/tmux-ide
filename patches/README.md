@@ -60,7 +60,7 @@ capability consumed by canonical terminal capture. The
 [builder](../scripts/build-bundled-tmux.mjs) verifies the source and every ordered
 patch identity. The second patch,
 [interaction-journal-v1.patch](../native/tmux/interaction-journal-v1.patch), adds an
-experimental bounded metadata journal foundation. It ships disabled and currently
+experimental bounded metadata journal (wire v2 with immutable server-scoped pane birth identities). It ships disabled and currently
 advertises `command-outcome-v1` for send-keys, capture-pane, paste-buffer and
 send-prefix. Command completion is not evidence of delivered input or application
 consumption. Separate `pty-enqueue-v1` and `capture-produced-v1` coverage

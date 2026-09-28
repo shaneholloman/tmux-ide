@@ -1,4 +1,4 @@
-# Experimental native interaction journal v1
+# Experimental native interaction journal wire v2
 
 Disabled by default; enable explicitly on a live server with `tmux-ide-events -e`.
 Probe that same server with `-V`. An executable's version alone proves nothing
@@ -105,3 +105,22 @@ additional real actions. Preserve command/effect lineage and operation scope.
 No mutable pane marker or claimed process ID participates in this mechanism.
 The wrapper is cooperative metadata, not a security boundary against other
 processes running as the same OS user.
+
+## Wire version2: immutable pane identity
+
+All capability/read/reset/identity responses now use schemaVersion2 and capability
+adds `pane-identity-v1`. Version1 readers must reject this capability. Every record
+includes `targetBirthId` as a uint64 decimal string;0 means unavailable. The
+existing targetId remains a numeric tmux address, never a lifetime identity.
+
+A birth counter is allocated for every new pane even while observation is off.
+It remains stable across join/break/link operations and respawn, and is scoped by
+serverEpoch rather than journalEpoch. The read-only `#{pane_birth_id}` format
+exposes it for current inventory aliases. No session/workspace at observation time
+is implied. Counter exhaustion returns0, sets degraded bit16, wakes readers and
+still permits pane creation and terminal input. The qualification-only -B option
+forces exhaustion and is absent from production builds.
+
+The fixed record gains one uint64 scalar (128bytes,524296byte ring); synchronous
+64target aggregation additionally retains each actual pane birth identity. No
+per-event allocation or content logging is introduced.

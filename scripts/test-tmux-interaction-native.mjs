@@ -89,6 +89,11 @@ try {
     [join(root, "native/tmux/tests/journal-correlation.py"), join(scratch, "tmux")],
     scratch,
   );
+  run(
+    "python3",
+    [join(root, "native/tmux/tests/journal-pane-identity.py"), join(scratch, "tmux")],
+    scratch,
+  );
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }
