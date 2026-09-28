@@ -49,6 +49,10 @@ export async function runPackedAutomationJourney({
     join(root, "scripts/lib/packed-automation-consumer.mjs"),
     join(consumer, "consumer.mjs"),
   );
+  copyFileSync(
+    join(root, "scripts/lib/packed-automation-cleanup.mjs"),
+    join(consumer, "packed-automation-cleanup.mjs"),
+  );
   const env = { ...environment };
   for (const key of Object.keys(env))
     if (key === "NODE_OPTIONS" || key.startsWith("TMUX_IDE_PACK_")) delete env[key];
@@ -124,6 +128,7 @@ export async function runPackedAutomationJourney({
       ...observations,
       sdkTarballSha256: sha256(tarball),
       installedSdkSha256: sha256(join(consumer, "node_modules/@tmux-ide/sdk/dist/index.js")),
+      cleanupSourceSha256: sha256(join(consumer, "packed-automation-cleanup.mjs")),
       consumerSourceSha256: sha256(join(consumer, "consumer.mjs")),
       canonicalInstanceId: info.instanceId,
       sdkVersion: JSON.parse(

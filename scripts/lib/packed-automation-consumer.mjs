@@ -1,4 +1,5 @@
 // Copied into an external npm consumer. Imports only the installed public SDK.
+import { settleAutomationResources } from "./packed-automation-cleanup.mjs";
 import assert from "node:assert/strict";
 import { isDeepStrictEqual } from "node:util";
 import { spawn, execFileSync } from "node:child_process";
@@ -12,6 +13,7 @@ assert.ok(resolvedSdk.startsWith(`${config.consumer}/node_modules/@tmux-ide/sdk/
 const children = new Map();
 const subscriptions = new Set();
 let interrupted = false;
+const lifetime = new AbortController();
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function until(predicate, label, ms = 15000) {
   const end = Date.now() + ms;
@@ -22,9 +24,9 @@ async function until(predicate, label, ms = 15000) {
   }
   throw new Error(`Timed out: ${label}`);
 }
-function cliProcess(args, input) {
+function cliProcess(args, input, { raw = false, keepInput = false } = {}) {
   assert.equal(interrupted, false, "Packed consumer interrupted");
-  const child = spawn(config.cli, ["automation", ...args, "--json"], {
+  const child = spawn(config.cli, raw ? args : ["automation", ...args, "--json"], {
     env: process.env,
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -53,7 +55,7 @@ function cliProcess(args, input) {
   });
   children.set(child, done);
   child.stdin.on("error", () => {});
-  child.stdin.end(input === undefined ? "" : JSON.stringify(input));
+  if (!keepInput) child.stdin.end(input === undefined ? "" : JSON.stringify(input));
   return { child, done, output: () => stdout };
 }
 async function cli(args, input) {
@@ -74,23 +76,19 @@ async function cli(args, input) {
     clearTimeout(force);
   }
 }
-async function cleanup() {
-  for (const subscription of subscriptions) subscription.close();
-  await Promise.allSettled([...subscriptions].map((subscription) => subscription.done));
-  for (const child of children.keys())
-    if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
-  const all = Promise.all([...children.values()]);
-  await Promise.race([all, delay(1000)]);
-  for (const child of children.keys())
-    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-  await all;
+let cleanupPromise;
+function cleanup() {
+  return (cleanupPromise ??= settleAutomationResources({ children, subscriptions }));
 }
 const onSignal = () => {
   interrupted = true;
-  void cleanup();
+  lifetime.abort();
+  void cleanup().catch(() => {}); // The finalizer awaits and reports this same rejection.
 };
 process.on("SIGTERM", onSignal);
 process.on("SIGINT", onSignal);
+let primaryFailure;
+let report;
 try {
   const found = await until(async () => {
     const result = await cli(["panes"]);
@@ -105,6 +103,57 @@ try {
   )?.endpoint;
   assert.ok(target && source);
   assert.deepEqual(target.serverScope, source.serverScope);
+  // Smoke the installed bundled entrypoint too; the full MCP failure matrix lives
+  // in the separate real HTTP integration test, not duplicated here.
+  const mcp = cliProcess(["mcp"], undefined, { raw: true, keepInput: true });
+  let rpcId = 0;
+  const rpc = async (method, params) => {
+    const id = ++rpcId;
+    mcp.child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+    const response = await until(() => {
+      const lines = mcp.output().split("\n");
+      lines.pop(); // The final transport chunk may be an incomplete JSON frame.
+      for (const line of lines) {
+        if (!line) continue;
+        const frame = JSON.parse(line);
+        assert.equal(frame.jsonrpc, "2.0");
+        if (frame.id === id) return frame;
+      }
+      return null;
+    }, `installed MCP ${method}`);
+    assert.equal(response.error, undefined);
+    return response.result;
+  };
+  const initialized = await rpc("initialize", {
+    protocolVersion: "2025-11-25",
+    capabilities: {},
+    clientInfo: { name: "packed-qualification", version: "1" },
+  });
+  assert.equal(initialized.protocolVersion, "2025-11-25");
+  mcp.child.stdin.write(
+    `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`,
+  );
+  const listed = await rpc("tools/list", {});
+  const mcpTools = listed.tools.map((tool) => tool.name).sort();
+  assert.deepEqual(mcpTools, [
+    "tmux_execute",
+    "tmux_interactions",
+    "tmux_operation_status",
+    "tmux_panes",
+    "tmux_prepare",
+  ]);
+  const mcpPanes = await rpc("tools/call", { name: "tmux_panes", arguments: {} });
+  assert.notEqual(mcpPanes.isError, true);
+  assert.equal(mcpPanes.content[0].type, "text");
+  const mcpDiscovered = JSON.parse(mcpPanes.content[0].text);
+  for (const endpoint of [source, target])
+    assert.ok(mcpDiscovered.panes.some((pane) => isDeepStrictEqual(pane.endpoint, endpoint)));
+  await settleAutomationResources({
+    children: new Map([[mcp.child, mcp.done]]),
+    subscriptions: new Set(),
+  });
+  assert.equal((await mcp.done).oversized, false);
+
   // Reconciliation happens through actual daemon discovery, not fixture-issued credentials.
   const credential = await until(() => {
     let text;
@@ -133,7 +182,7 @@ try {
     ownerToken: config.ownerToken,
     sourceCredential: credential,
   });
-  const sdkPanes = await sdk.discover();
+  const sdkPanes = await sdk.discover({ signal: lifetime.signal });
   assert.ok(sdkPanes.panes.some((pane) => isDeepStrictEqual(pane.endpoint, target)));
   const receipts = [];
   const subscription = sdk.subscribe({
@@ -150,7 +199,11 @@ try {
   for (const origin of ["cli", "sdk"]) {
     const client =
       origin === "sdk"
-        ? sdk
+        ? {
+            reserve: (intent) => sdk.reserve(intent, { signal: lifetime.signal }),
+            execute: (handle, intent) => sdk.execute(handle, intent, { signal: lifetime.signal }),
+            status: (handle) => sdk.status(handle, { signal: lifetime.signal }),
+          }
         : {
             reserve: (intent) => cli(["reserve"], intent),
             execute: (handle, intent) => cli(["execute"], { version: 1, handle, intent }),
@@ -227,19 +280,44 @@ try {
       return null;
     }
   }, "installed CLI scoped event stream");
-  events.child.kill("SIGTERM");
+  await settleAutomationResources({
+    children: new Map([[events.child, events.done]]),
+    subscriptions: new Set(),
+  });
   const eventExit = await events.done;
   assert.equal(eventExit.code, 0);
   assert.ok(batches.every((batch) => isDeepStrictEqual(batch.server, target.serverScope)));
   assert.ok(!JSON.stringify(batches).includes("PACK_PRIVATE_"));
   assert.ok(!JSON.stringify(batches).includes("PACK_READ_PRIVATE"));
-  subscription.close();
-  await subscription.done;
-  process.stdout.write(
-    `${JSON.stringify({ resolvedSdk, source, target, operations: reports, physicalLines: 2, sourcePhysicalLines: 0, cliEvents: true, sdkEvents: true, cursor: subscription.getCursor() })}\n`,
-  );
-} finally {
-  await cleanup();
-  process.off("SIGTERM", onSignal);
-  process.off("SIGINT", onSignal);
+  await settleAutomationResources({ children: new Map(), subscriptions: new Set([subscription]) });
+  report = {
+    resolvedSdk,
+    source,
+    target,
+    mcpTools,
+    installedMcp: true,
+    operations: reports,
+    physicalLines: 2,
+    sourcePhysicalLines: 0,
+    cliEvents: true,
+    sdkEvents: true,
+    cursor: subscription.getCursor(),
+  };
+} catch (error) {
+  primaryFailure = error;
 }
+try {
+  await cleanup();
+} catch (error) {
+  primaryFailure = primaryFailure
+    ? new AggregateError(
+        [primaryFailure, error],
+        "Packed automation failed and cleanup was incomplete",
+        { cause: primaryFailure },
+      )
+    : error;
+}
+process.off("SIGTERM", onSignal);
+process.off("SIGINT", onSignal);
+if (primaryFailure) throw primaryFailure;
+process.stdout.write(`${JSON.stringify(report)}\n`);
