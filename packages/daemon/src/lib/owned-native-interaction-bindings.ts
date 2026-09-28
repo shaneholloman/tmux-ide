@@ -57,6 +57,28 @@ export interface OwnedNativeInteractionDecision {
   } | null;
   readonly reason: "unmatched" | "pending-expired" | "overflow" | "retired" | "matched";
 }
+export interface OwnedNativePlanCompletion {
+  readonly acknowledgement: NativeOperationIdentity;
+  readonly physicalTarget: NativeEndpoint;
+  readonly authoredDestination: SemanticEndpoint;
+  readonly source: OwnedNativeOperationRequest["source"];
+  readonly commands: readonly {
+    readonly commandId: string;
+    readonly kind: Command;
+    readonly outcome: "normal";
+    readonly sequence: string;
+  }[];
+}
+const ownedCompletions = new WeakSet<object>();
+/** Native-shaped wire evidence is never an authenticated completion grant. */
+export function isOwnedNativePlanCompletion(value: unknown): value is OwnedNativePlanCompletion {
+  return value !== null && typeof value === "object" && ownedCompletions.has(value);
+}
+interface CompletedCommand {
+  readonly kind: Command;
+  readonly outcome: number;
+  readonly sequence: string;
+}
 interface Connection {
   readonly token: OwnedNativeConnection;
   readonly identity: NativeJournalIdentity;
@@ -67,7 +89,8 @@ interface Permit {
   readonly token: OwnedNativeOperation;
   readonly request: OwnedNativeOperationRequest;
   readonly expiresAt: number;
-  readonly completed: Map<string, Command>;
+  readonly completed: Map<string, CompletedCommand>;
+  completionEligible: boolean;
   acknowledgement: NativeOperationIdentity | null;
   connection: Connection | null;
 }
@@ -98,6 +121,7 @@ export class OwnedNativeInteractionBindings {
   readonly #serverScope: TmuxServerScope;
   readonly #serverEpoch: string;
   readonly #now: () => number;
+  readonly #onPlanComplete?: (proof: OwnedNativePlanCompletion) => void;
   readonly #maxConnections: number;
   readonly #maxPermits: number;
   readonly #maxPending: number;
@@ -112,6 +136,7 @@ export class OwnedNativeInteractionBindings {
     serverScope: TmuxServerScope;
     serverEpoch: string;
     now?: () => number;
+    onPlanComplete?: (proof: OwnedNativePlanCompletion) => void;
     maxConnections?: number;
     maxPermits?: number;
     maxPending?: number;
@@ -126,6 +151,7 @@ export class OwnedNativeInteractionBindings {
       serverEpoch: options.serverEpoch,
       connectionId: "1",
     }).serverEpoch;
+    this.#onPlanComplete = options.onPlanComplete;
     this.#now = options.now ?? (() => performance.now());
     this.#maxConnections = bound(options.maxConnections, 64, 128);
     this.#maxPermits = bound(options.maxPermits, 256, 4096);
@@ -236,6 +262,7 @@ export class OwnedNativeInteractionBindings {
       request,
       expiresAt: this.#now() + this.#permitMs,
       completed: new Map(),
+      completionEligible: true,
       acknowledgement: null,
       connection: connection ?? null,
     });
@@ -367,15 +394,53 @@ export class OwnedNativeInteractionBindings {
     for (const [id, permit] of this.#permits) if (matches(permit)) this.#permits.delete(id);
     return released;
   }
+  /** A coverage interruption permanently prevents completion from existing partial plans. */
+  invalidateCompletionProof(): void {
+    for (const permit of this.#permits.values()) permit.completionEligible = false;
+  }
   #retireCompleted(): void {
+    const completions: OwnedNativePlanCompletion[] = [];
     for (const [id, permit] of this.#permits) {
       if (!permit.acknowledgement) continue;
       const remaining = [...permit.request.commands];
-      for (const kind of permit.completed.values()) {
-        const index = remaining.indexOf(kind);
+      for (const value of permit.completed.values()) {
+        const index = remaining.indexOf(value.kind);
         if (index >= 0) remaining.splice(index, 1);
       }
-      if (remaining.length === 0) this.#permits.delete(id);
+      if (remaining.length !== 0) continue;
+      this.#permits.delete(id);
+      const commands = [...permit.completed]
+        .map(([commandId, value]) => ({ commandId, ...value }))
+        .sort((a, b) =>
+          BigInt(a.sequence) < BigInt(b.sequence)
+            ? -1
+            : BigInt(a.sequence) > BigInt(b.sequence)
+              ? 1
+              : 0,
+        );
+      if (
+        permit.request.role === "authored" &&
+        permit.request.authoredDestination &&
+        permit.completionEligible &&
+        commands.every(
+          (command, index) =>
+            command.outcome === 1 && command.kind === permit.request.commands[index],
+        ) &&
+        commands.every(
+          (command, index) =>
+            index === 0 || BigInt(command.sequence) > BigInt(commands[index - 1]!.sequence),
+        )
+      ) {
+        const proof: OwnedNativePlanCompletion = freeze({
+          acknowledgement: permit.acknowledgement,
+          physicalTarget: permit.request.target,
+          authoredDestination: permit.request.authoredDestination,
+          source: permit.request.source,
+          commands: commands.map((command) => ({ ...command, outcome: "normal" as const })),
+        });
+        ownedCompletions.add(proof);
+        completions.push(proof);
+      }
     }
     for (const [token, connection] of this.#connections) {
       if (
@@ -384,6 +449,7 @@ export class OwnedNativeInteractionBindings {
       )
         this.#connections.delete(token);
     }
+    for (const proof of completions) this.#onPlanComplete?.(proof);
   }
   #scope(endpoint: InteractionPaneEndpoint): boolean {
     return (
@@ -503,7 +569,7 @@ export class OwnedNativeInteractionBindings {
     if (
       commandKind === null ||
       (!permit.completed.has(r.commandId) &&
-        [...permit.completed.values()].filter((kind) => kind === commandKind).length >=
+        [...permit.completed.values()].filter((value) => value.kind === commandKind).length >=
           permit.request.commands.filter((kind) => kind === commandKind).length)
     )
       return this.#unknown(item, "unmatched");
@@ -533,10 +599,22 @@ export class OwnedNativeInteractionBindings {
     if (
       command !== null &&
       !permit.completed.has(r.commandId) &&
-      [...permit.completed.values()].filter((kind) => kind === command).length <
+      [...permit.completed.values()].filter((value) => value.kind === command).length <
         permit.request.commands.filter((kind) => kind === command).length
     )
-      permit.completed.set(r.commandId, command);
+      permit.completed.set(r.commandId, {
+        kind: command,
+        outcome: item.native.commandOutcome!.outcome,
+        sequence: item.native.commandOutcome!.sequence,
+      });
+    const completed = permit.completed.get(r.commandId);
+    if (
+      completed &&
+      (completed.kind !== command ||
+        completed.outcome !== item.native.commandOutcome!.outcome ||
+        completed.sequence !== item.native.commandOutcome!.sequence)
+    )
+      permit.completionEligible = false;
     return freeze({
       disposition: permit.request.role,
       evidence,

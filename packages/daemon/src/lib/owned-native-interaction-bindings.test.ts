@@ -1,7 +1,10 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import type { NativeJournalRecord } from "@tmux-ide/contracts";
 import { NativeInteractionProjector } from "./native-interaction-projector.ts";
-import { OwnedNativeInteractionBindings } from "./owned-native-interaction-bindings.ts";
+import {
+  OwnedNativeInteractionBindings,
+  isOwnedNativePlanCompletion,
+} from "./owned-native-interaction-bindings.ts";
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const environmentId = id(1),
   serverEpoch = id(3),
@@ -352,4 +355,125 @@ it("accepts only same-owner semantic admission destinations for authored proof",
   expect(authority.ingest(projection())[0]!.proof!.authoredDestination).toEqual(
     authoredDestination,
   );
+});
+function completionRig() {
+  let now = 0;
+  const completed = vi.fn();
+  const authority = new OwnedNativeInteractionBindings({
+    environmentId,
+    serverScope,
+    serverEpoch,
+    now: () => now,
+    onPlanComplete: completed,
+    permitMs: 100,
+    pendingMs: 50,
+  });
+  const authoredDestination = {
+    kind: "pane" as const,
+    environmentId,
+    serverScope,
+    paneLifetimeId: id(70),
+    workspaceName: "space",
+    semanticPaneId: "pane.target",
+  };
+  const permit = authority.admit({
+    operationId,
+    role: "authored",
+    target,
+    commands: ["paste-buffer", "send-keys"],
+    source: null,
+    authoredDestination,
+  })!;
+  const connection = authority.registerConnection(identity, "authored")!;
+  const command = (
+    kind: "paste-buffer" | "send-keys",
+    commandId: string,
+    start: number,
+    outcome = 1,
+  ) => {
+    const item = structuredClone(projection({ commandId }));
+    item.native.record.sequence = String(start);
+    item.native.commandOutcome!.sequence = String(start + 1);
+    item.native.commandOutcome!.outcome = outcome;
+    item.native.commandOutcome!.kind = kind === "paste-buffer" ? 3 : 1;
+    if (item.evidence.observation.kind === "native-journal") {
+      item.evidence.observation.command = kind;
+      item.evidence.observation.cursor.sequence = String(start);
+    }
+    return item;
+  };
+  return {
+    authority,
+    connection,
+    permit,
+    completed,
+    command,
+    tick: (v: number) => {
+      now = v;
+    },
+  };
+}
+it("emits one branded frozen completion only after full paste and Enter outcomes across batches", () => {
+  const r = completionRig();
+  r.authority.acknowledge(r.permit, r.connection, ack);
+  r.authority.ingest(r.command("paste-buffer", "9", 1));
+  expect(r.completed).not.toHaveBeenCalled();
+  r.authority.ingest(r.command("send-keys", "10", 3));
+  expect(r.completed).toHaveBeenCalledTimes(1);
+  const proof = r.completed.mock.calls[0]![0];
+  expect(isOwnedNativePlanCompletion(proof)).toBe(true);
+  expect(isOwnedNativePlanCompletion({ ...proof })).toBe(false);
+  expect(Object.isFrozen(proof.commands)).toBe(true);
+  expect(proof.commands.map((c: { kind: string }) => c.kind)).toEqual([
+    "paste-buffer",
+    "send-keys",
+  ]);
+  r.authority.ingest(r.command("send-keys", "10", 3));
+  expect(r.completed).toHaveBeenCalledTimes(1);
+  expect(r.authority.hasPendingOperations).toBe(false);
+});
+it("staged proof before acknowledgement emits completion only after verified acknowledgement", () => {
+  const r = completionRig();
+  r.authority.ingestBatch([r.command("paste-buffer", "9", 1), r.command("send-keys", "10", 3)]);
+  expect(r.completed).not.toHaveBeenCalled();
+  r.authority.acknowledge(r.permit, r.connection, ack);
+  expect(r.completed).toHaveBeenCalledTimes(1);
+});
+it.each([2, 3])(
+  "error/wait outcome %s never completes despite partial input effects",
+  (outcome) => {
+    const r = completionRig();
+    r.authority.acknowledge(r.permit, r.connection, ack);
+    r.authority.ingestBatch([
+      r.command("paste-buffer", "9", 1),
+      r.command("send-keys", "10", 3, outcome),
+    ]);
+    expect(r.completed).not.toHaveBeenCalled();
+    expect(r.authority.hasPendingOperations).toBe(false);
+  },
+);
+it("coverage interruption is sticky while preserving partial native facts", () => {
+  const r = completionRig();
+  r.authority.acknowledge(r.permit, r.connection, ack);
+  r.authority.ingest(r.command("paste-buffer", "9", 1));
+  r.authority.invalidateCompletionProof();
+  expect(r.authority.ingest(r.command("send-keys", "10", 3))[0]!.disposition).toBe("authored");
+  expect(r.completed).not.toHaveBeenCalled();
+});
+it("wrong command order, foreign wrappers and expired plans do not complete", () => {
+  const reversed = completionRig();
+  reversed.authority.acknowledge(reversed.permit, reversed.connection, ack);
+  reversed.authority.ingestBatch([
+    reversed.command("send-keys", "10", 1),
+    reversed.command("paste-buffer", "9", 3),
+  ]);
+  expect(reversed.completed).not.toHaveBeenCalled();
+  const r = completionRig();
+  r.authority.acknowledge(r.permit, r.connection, { ...ack, wrapperCommandId: "99" });
+  r.authority.ingestBatch([r.command("paste-buffer", "9", 1), r.command("send-keys", "10", 3)]);
+  expect(r.completed).not.toHaveBeenCalled();
+  r.tick(100);
+  r.authority.expire();
+  r.authority.acknowledge(r.permit, r.connection, ack);
+  expect(r.completed).not.toHaveBeenCalled();
 });

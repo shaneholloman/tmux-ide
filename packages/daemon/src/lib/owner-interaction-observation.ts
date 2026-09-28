@@ -17,6 +17,7 @@ import {
   type OwnedNativeOperation,
   type OwnedNativeOperationRequest,
   type OwnedNativeInteractionDecision,
+  type OwnedNativePlanCompletion,
 } from "./owned-native-interaction-bindings.ts";
 import {
   NativeTmuxInteractionObserver,
@@ -38,6 +39,7 @@ export interface OwnerInteractionObservationOptions {
   readonly status: InteractionObservationStatusStore;
   readonly publishEvidence: (evidence: InteractionEvidence) => void;
   /** True means the exact proof enriched an existing authored receipt instead. */
+  readonly onOwnedPlanComplete?: (proof: OwnedNativePlanCompletion) => void;
   readonly publishOwnedEvidence?: (decision: OwnedNativeInteractionDecision) => boolean;
   readonly readerFactory?: (options: NativeTmuxInteractionObserverOptions) => Reader;
 }
@@ -244,6 +246,7 @@ export class OwnerInteractionObservation {
         environmentId: this.#options.environmentId,
         serverScope: this.#options.serverScope,
         serverEpoch: capability.serverEpoch,
+        onPlanComplete: this.#options.onOwnedPlanComplete,
       });
     this.#projector ??= new NativeInteractionProjector({
       environmentId: this.#options.environmentId,
@@ -296,6 +299,7 @@ export class OwnerInteractionObservation {
       }
       if (this.#selection !== "native" || !this.#projector) return;
       if (event.type === "reset") {
+        this.#bindings?.invalidateCompletionProof();
         this.#publish(this.#projector.reset(event.cursor.journalEpoch));
         this.#options.status.setNativeStatus({
           ...this.#options.status.getSnapshot(),
@@ -306,6 +310,7 @@ export class OwnerInteractionObservation {
         return;
       }
       if (event.type === "gap") {
+        this.#bindings?.invalidateCompletionProof();
         const current = this.#options.status.getSnapshot();
         const count = BigInt(event.missing.through) - BigInt(event.missing.from) + 1n;
         const dropped = current.droppedCount === null ? null : BigInt(current.droppedCount) + count;
@@ -325,6 +330,8 @@ export class OwnerInteractionObservation {
         });
         return;
       }
+      if (event.batch.degraded !== 0 || event.batch.gap !== null)
+        this.#bindings?.invalidateCompletionProof();
       this.#publish(this.#projector.consume(event.batch));
       const cursor: InteractionObservationStatus["cursor"] = {
         epoch: event.batch.journalEpoch,

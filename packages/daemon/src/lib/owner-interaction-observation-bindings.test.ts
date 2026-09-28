@@ -58,6 +58,7 @@ async function rig(owned = true, consume = false) {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
   vi.setSystemTime(0);
   let event!: (event: NativeJournalObserverEvent) => void;
+  const completed = vi.fn();
   const publish = vi.fn(),
     publishOwned = vi.fn<(decision: OwnedNativeInteractionDecision) => boolean>(() => consume),
     dispose = vi.fn(async () => {}),
@@ -74,6 +75,7 @@ async function rig(owned = true, consume = false) {
     status,
     publishEvidence: publish,
     publishOwnedEvidence: publishOwned,
+    onOwnedPlanComplete: completed,
     readerFactory: (options: NativeTmuxInteractionObserverOptions) => {
       event = options.onEvent;
       return {
@@ -136,11 +138,22 @@ async function rig(owned = true, consume = false) {
       target,
       commands: ["send-keys"],
       source: null,
+      authoredDestination:
+        role === "authored"
+          ? {
+              kind: "pane",
+              environmentId,
+              serverScope,
+              paneLifetimeId: id(80),
+              workspaceName: "space",
+              semanticPaneId: "pane.target",
+            }
+          : undefined,
       connection,
     })!;
     return { connection, permit };
   };
-  return { owner, event, batch, admit, publish, publishOwned, dispose, status };
+  return { owner, event, batch, admit, publish, publishOwned, dispose, status, completed };
 }
 afterEach(() => vi.useRealTimers());
 it("stages before acknowledgement and reuses one deadline timer", async () => {
@@ -260,3 +273,20 @@ it("reports unproven operation metadata and retires staged proof on asynchronous
   expect(r.dispose).toHaveBeenCalledTimes(1);
   await r.owner.dispose();
 });
+it.each([false, true])(
+  "forwards complete owned plans only with uninterrupted coverage (gap=%s)",
+  async (gap) => {
+    const r = await rig();
+    const { connection, permit } = r.admit("authored");
+    r.owner.acknowledgeOwnedOperation(permit, connection, ack);
+    if (gap)
+      r.event({
+        type: "gap",
+        cursor: { serverEpoch, journalEpoch, sequence: "0" },
+        missing: { from: "1", through: "1" },
+      });
+    r.batch();
+    expect(r.completed).toHaveBeenCalledTimes(gap ? 0 : 1);
+    await r.owner.dispose();
+  },
+);
