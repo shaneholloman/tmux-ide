@@ -43,6 +43,11 @@ export class OwnerInteractionObservation {
     this.#options = options;
     this.#selection = options.enabled && options.nativeServerIdentity ? "pending" : "stock";
   }
+  get nativeServerEpoch(): string | null {
+    return !this.#disposed && !this.#halted && this.#selection === "native"
+      ? (this.#capability?.serverEpoch ?? null)
+      : null;
+  }
   get selection() {
     return this.#selection;
   }

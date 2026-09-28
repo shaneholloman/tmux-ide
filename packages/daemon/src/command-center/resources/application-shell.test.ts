@@ -226,6 +226,7 @@ describe("application-shell resource projector", () => {
           kind: "agent",
           active: false,
           interactionEndpoint: null,
+          nativeIdentity: null,
           attachability: { status: "unavailable", reason: "missing-semantic-stamp" },
         },
         {
@@ -234,6 +235,7 @@ describe("application-shell resource projector", () => {
           kind: "agent",
           active: true,
           interactionEndpoint: null,
+          nativeIdentity: null,
           attachability: { status: "unavailable", reason: "missing-semantic-stamp" },
         },
       ],
@@ -929,6 +931,7 @@ describe("GET /api/project/:name/application-shell", () => {
         title: "Codex",
         kind: "agent",
         interactionEndpoint: null,
+        nativeIdentity: null,
         attachability: { status: "unavailable", reason: "missing-semantic-stamp" },
       }),
     );

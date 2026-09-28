@@ -43,6 +43,7 @@ function paneLine(
     statusText,
     displayName,
     hint,
+    "",
     SENTINEL,
   ].join(SEP);
 }
@@ -266,3 +267,30 @@ describe("GET /api/resources/fleet-catalog", () => {
     expect([...name].every((ch) => ch.charCodeAt(0) >= 32 && ch.charCodeAt(0) !== 127)).toBe(true);
   });
 });
+
+it.each([false, true])(
+  "binds fleet births only to a stable current server epoch (race=%s)",
+  (race) => {
+    let epoch: string | null = DAEMON.instanceId;
+    const raw = paneLine("alpha", "%1", true, "claude", "/tmp", "", "", "").replace(
+      `${SEP}${SEP}${SENTINEL}`,
+      `${SEP}7${SEP}${SENTINEL}`,
+    );
+    const result = readAdoptedFleet(
+      { list: () => [] },
+      (args) => {
+        if (args[0] === "list-sessions") return "alpha\t1";
+        if (args[0] === "list-panes") {
+          if (race) epoch = null;
+          return raw;
+        }
+        return "";
+      },
+      undefined,
+      () => epoch,
+    );
+    expect(result?.[0]?.panes[0]?.nativeIdentity).toEqual(
+      race ? null : { serverEpoch: DAEMON.instanceId, paneBirthId: "7" },
+    );
+  },
+);

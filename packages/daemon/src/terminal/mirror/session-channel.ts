@@ -3148,6 +3148,7 @@ export class SessionChannel {
         name: descriptor.name,
         type: descriptor.type,
         missionStamp: descriptor.missionStamp,
+        nativePaneBirthId: descriptor.nativePaneBirthId ?? null,
         dir: descriptor.cwd ?? "",
       });
     });

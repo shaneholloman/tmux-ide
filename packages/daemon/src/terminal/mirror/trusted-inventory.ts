@@ -4,6 +4,7 @@
  * this type must never be serialized by a command-center or pane-stream route.
  */
 export interface TrustedMirrorPaneInventory {
+  readonly nativePaneBirthId?: string | null;
   readonly runtimeSessionId: string;
   readonly runtimeWindowId: string;
   readonly runtimePaneId: string;

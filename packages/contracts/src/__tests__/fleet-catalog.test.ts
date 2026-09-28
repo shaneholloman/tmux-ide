@@ -43,6 +43,7 @@ function agent(
     name: "reviewer",
     harness: "claude-code",
     interactionEndpoint: null,
+    nativeIdentity: null,
     activity: "running",
     attention: false,
     statusSource: "authority",

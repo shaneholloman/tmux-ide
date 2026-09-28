@@ -3641,7 +3641,9 @@ describe("native window link projection", () => {
       const first = rig.state.windowRows[0]!.split("\t");
       first[3] = "0";
       rig.state.windowRows.push(first.join("\t"));
-      rig.state.descriptorRows = rig.state.descriptorRows.map((row) => row.replace(/\t2$/, "\t3"));
+      rig.state.descriptorRows = rig.state.descriptorRows.map((row) =>
+        row.replace(/\t2\t$/, "\t3\t"),
+      );
       rig.state.descriptorRows.push(
         ...rig.state.descriptorRows.slice(0, 2).map((row) => {
           const p = row.split("\t");

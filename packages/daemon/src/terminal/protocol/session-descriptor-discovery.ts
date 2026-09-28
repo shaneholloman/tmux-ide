@@ -1,4 +1,5 @@
 export interface SessionPaneDescriptor {
+  nativePaneBirthId?: string | null;
   sessionName: string;
   runtimePaneId: string;
   runtimeSessionId: string;
@@ -49,6 +50,7 @@ export const SESSION_PANE_DESCRIPTOR_FORMAT = [
   "#{qa:session_name}",
   "#{window_panes}",
   "#{session_windows}",
+  "#{pane_birth_id}",
 ].join("\t");
 
 /** Decode the escapes emitted by tmux's `qa` format modifier. */
@@ -128,7 +130,7 @@ export function parseSessionPaneDescriptorReply(
       continue;
     }
     const encoded = utf8Line.split("\t");
-    if (encoded.length !== 20) continue;
+    if (encoded.length !== 21) continue;
     const [
       runtimePaneId = "",
       semanticPaneId = "",
@@ -150,6 +152,7 @@ export function parseSessionPaneDescriptorReply(
       sessionName = "",
       windowPaneCountRaw = "",
       sessionWindowCountRaw = "",
+      nativePaneBirthId = "",
     ] = encoded.map(decodeTmuxArgument);
     if (!/^%(?:0|[1-9][0-9]*)$/u.test(runtimePaneId) || runtimePaneId.length > 32) continue;
     if (!/^\$(?:0|[1-9][0-9]*)$/u.test(runtimeSessionId) || runtimeSessionId.length > 32) continue;
@@ -209,6 +212,7 @@ export function parseSessionPaneDescriptorReply(
       // stays wire-compatible. Generated names are recognized deterministically.
       nameSource: null,
       missionStamp: nonempty(missionStamp),
+      nativePaneBirthId: nonempty(nativePaneBirthId),
       paneActive: paneActiveRaw === "1",
       windowActive: windowActiveRaw === "1",
       windowPaneCount,

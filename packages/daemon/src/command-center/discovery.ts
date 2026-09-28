@@ -1,3 +1,5 @@
+import type { NativePaneIdentity } from "@tmux-ide/contracts";
+import { nativePaneIdentity } from "../lib/native-pane-identity.ts";
 import type { InteractionPaneEndpoint } from "@tmux-ide/contracts";
 import { liveSessionIdForNativeIdentity } from "../terminal/protocol/live-session-identity.ts";
 import { runtimeTmuxArgs } from "../lib/runtime-namespace.ts";
@@ -221,6 +223,8 @@ export function readAdoptedSessionNames(runTmux: TmuxRunner = _tmuxRunner): stri
 
 /** One live pane, with the raw agent-authority options gathered for the fleet. */
 export interface FleetPaneFacts {
+  readonly nativeIdentity?: NativePaneIdentity | null;
+  readonly nativePaneBirthId?: string | null;
   readonly interactionEndpoint?: Extract<InteractionPaneEndpoint, { kind: "pane" }> | null;
   readonly runtimePaneId: string;
   /** Durable semantic pane stamp owned by tmux-ide, when one has been assigned. */
@@ -266,6 +270,7 @@ const FLEET_PANE_FORMAT = [
   "#{@agent_status_text}",
   "#{@agent_display_name}",
   "#{@agent_hint}",
+  "#{pane_birth_id}",
   FLEET_LINE_SENTINEL,
 ].join(FLEET_FIELD_SEPARATOR);
 
@@ -290,7 +295,9 @@ export function readAdoptedFleet(
     sessionName: string,
     pane: FleetPaneFacts,
   ) => Extract<InteractionPaneEndpoint, { kind: "pane" }> | null,
+  nativeServerEpoch?: () => string | null,
 ): FleetSessionFacts[] | null {
+  const nativeEpoch = nativeServerEpoch?.() ?? null;
   const adopted = readAdoptedSessionNames(runTmux);
   if (adopted === null) return null;
   const adoptedSet = new Set(adopted);
@@ -310,7 +317,7 @@ export function readAdoptedFleet(
     const fields = line.split(FLEET_FIELD_SEPARATOR);
     // session, pane, semantic pane, incarnation pid, active, command, path, state,
     // statusText, displayName, hint, sentinel
-    if (fields.length !== 12 || fields[11] !== FLEET_LINE_SENTINEL) continue;
+    if (fields.length !== 13 || fields[12] !== FLEET_LINE_SENTINEL) continue;
     const sessionName = fields[0]!;
     if (!adoptedSet.has(sessionName)) continue;
     const runtimePaneId = fields[1]!;
@@ -333,6 +340,7 @@ export function readAdoptedFleet(
       agentStatusTextRaw: emptyToNull(fields[8]!),
       agentDisplayNameRaw: emptyToNull(fields[9]!),
       agentHintRaw: emptyToNull(fields[10]!),
+      nativePaneBirthId: fields[11]!,
     });
   }
 
@@ -346,6 +354,10 @@ export function readAdoptedFleet(
       panes: panes.map((pane) => ({
         ...pane,
         interactionEndpoint: resolveInteractionEndpoint?.(name, pane) ?? null,
+        nativeIdentity: nativePaneIdentity(
+          nativeEpoch === nativeServerEpoch?.() ? nativeEpoch : null,
+          pane.nativePaneBirthId,
+        ),
       })),
     };
   });

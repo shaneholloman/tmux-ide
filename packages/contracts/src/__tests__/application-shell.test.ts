@@ -123,6 +123,7 @@ describe("semantic application shell", () => {
             kind: "agent" as const,
             active: true,
             interactionEndpoint: null,
+            nativeIdentity: null,
             attachability: {
               status: "available" as const,
               semanticPaneId: "pane.implementer",
@@ -134,6 +135,7 @@ describe("semantic application shell", () => {
             kind: "terminal" as const,
             active: false,
             interactionEndpoint: null,
+            nativeIdentity: null,
             attachability: {
               status: "unavailable" as const,
               reason: "missing-semantic-stamp" as const,
@@ -217,6 +219,7 @@ describe("semantic application shell", () => {
               kind: "terminal",
               active: true,
               interactionEndpoint: null,
+              nativeIdentity: null,
               attachability: {
                 status: "available",
                 semanticPaneId: "terminal.discovered.fallback",
@@ -307,6 +310,7 @@ describe("semantic application shell", () => {
       ApplicationShellTerminalResourceSchemaZ.safeParse({
         ...base,
         interactionEndpoint: null,
+        nativeIdentity: null,
         attachability: { status: "available", semanticPaneId: "pane.grouped" },
         windowResourceId: "terminal-window.0123456789abcdef0123",
       }).success,
@@ -316,6 +320,7 @@ describe("semantic application shell", () => {
       ApplicationShellTerminalResourceSchemaZ.safeParse({
         ...base,
         interactionEndpoint: null,
+        nativeIdentity: null,
         attachability: { status: "unavailable", reason: "missing-window-stamp" },
         windowResourceId: "terminal-window.0123456789abcdef0123",
       }).success,

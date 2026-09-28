@@ -141,9 +141,9 @@ export const FIXTURE = {
     `@2\twindow.test.two\taux\t0\t${layoutW2}\t0\toff`,
   ],
   descriptorRows: [
-    "%1\tpane.alpha\t\t\tzsh\t/tmp/a\t0\tmain\t@1\tAlpha\t$1\t0\tAlpha IDE\tmission-a\t1\t1\twindow.test.one\tzz-sim\t2\t2",
-    "%2\tpane.beta\t\t\tzsh\t/tmp/b\t0\tmain\t@1\tBeta\t$1\t1\tBeta IDE\t\t0\t1\twindow.test.one\tzz-sim\t2\t2",
-    "%3\t\t\t\tzsh\t/tmp/c\t1\taux\t@2\tGamma\t$1\t0\tGamma IDE\t\t1\t0\t\tzz-sim\t1\t2",
+    "%1\tpane.alpha\t\t\tzsh\t/tmp/a\t0\tmain\t@1\tAlpha\t$1\t0\tAlpha IDE\tmission-a\t1\t1\twindow.test.one\tzz-sim\t2\t2\t",
+    "%2\tpane.beta\t\t\tzsh\t/tmp/b\t0\tmain\t@1\tBeta\t$1\t1\tBeta IDE\t\t0\t1\twindow.test.one\tzz-sim\t2\t2\t",
+    "%3\t\t\t\tzsh\t/tmp/c\t1\taux\t@2\tGamma\t$1\t0\tGamma IDE\t\t1\t0\t\tzz-sim\t1\t2\t",
   ],
 };
 

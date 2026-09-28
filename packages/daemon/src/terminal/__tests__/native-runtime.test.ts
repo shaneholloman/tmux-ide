@@ -185,6 +185,7 @@ function applicationShellPaneWire(
     options.cwd ?? "/repo",
     options.windowStamp ?? "",
     "0",
+    "",
     "tmux-ide-pane-v2",
   ].join(INVENTORY_SEPARATOR);
 }
@@ -275,6 +276,7 @@ describe("workspace-registry semantic pane discovery", () => {
       "/repo",
       options.windowStamp ?? "",
       String(options.windowIndex ?? Number((options.windowId ?? "@2").slice(1))),
+      "",
       "tmux-ide-pane-v2",
     ].join(INVENTORY_SEPARATOR);
   }
@@ -922,6 +924,38 @@ describe("async terminal inventory reads", () => {
     expect(calls).toHaveLength(6);
     runtime.dispose();
   });
+
+  it.each([false, true])(
+    "binds birth metadata only across a stable observed server epoch (race=%s)",
+    async (race) => {
+      const { registry, root } = createRegistry("workspace.alpha", "runtime:session");
+      let epoch: string | null = "00000000-0000-4000-8000-000000000001";
+      const base = asyncInventory("runtime:session", []);
+      const runtime = new WorkspaceTerminalInventoryRuntime({
+        registry,
+        tmuxAuthority: authority(root),
+        commandExecutor: syncStartup,
+        nativeServerEpoch: () => epoch,
+        readCommandExecutor: async (...args) => {
+          const result = await base(...args);
+          if (args[1].includes("list-panes")) {
+            if (race) epoch = "00000000-0000-4000-8000-000000000002";
+            return result.replace(
+              `${INVENTORY_SEPARATOR}${INVENTORY_SEPARATOR}tmux-ide-pane-v2`,
+              `${INVENTORY_SEPARATOR}17${INVENTORY_SEPARATOR}tmux-ide-pane-v2`,
+            );
+          }
+          return result;
+        },
+      });
+      await runtime.whenReady();
+      const snapshot = await runtime.discoverTerminalInventory();
+      expect(snapshot.panes[0]?.nativeIdentity).toEqual(
+        race ? null : { serverEpoch: epoch, paneBirthId: "17" },
+      );
+      runtime.dispose();
+    },
+  );
 
   it("publishes each authoritative inventory snapshot to the generation-owned cache seam", async () => {
     const { registry, root } = createRegistry("workspace.alpha", "runtime:session");

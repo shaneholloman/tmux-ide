@@ -161,6 +161,7 @@ function projectSession(
       attention: presentation.attention,
       statusSource: presentation.statusSource,
       interactionEndpoint: pane.interactionEndpoint ?? null,
+      nativeIdentity: pane.nativeIdentity ?? null,
     });
   }
   return {

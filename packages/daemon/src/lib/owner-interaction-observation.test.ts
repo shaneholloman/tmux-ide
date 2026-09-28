@@ -231,6 +231,7 @@ it("updates the reset cursor and gap together even when the new journal stays id
   r.finish("ready");
   await start;
   const nextEpoch = "00000000-0000-4000-8000-000000000003";
+  expect(r.selector.nativeServerEpoch).toBe(id);
   r.event({
     type: "reset",
     previous: { serverEpoch: id, journalEpoch: epoch, sequence: "7" },
@@ -242,7 +243,9 @@ it("updates the reset cursor and gap together even when the new journal stays id
     lastGap: { reason: "epoch-reset" },
     droppedCount: null,
   });
+  expect(r.selector.nativeServerEpoch).toBe(id);
   await r.selector.dispose();
+  expect(r.selector.nativeServerEpoch).toBeNull();
 });
 it("retires permanently even if reader disposal rejects", async () => {
   const r = rig();

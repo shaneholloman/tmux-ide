@@ -1,3 +1,4 @@
+import type { NativePaneIdentity } from "@tmux-ide/contracts";
 import { hostname } from "node:os";
 import { basename } from "node:path";
 import {
@@ -33,6 +34,7 @@ import { agentDisplayMetadata, resolveAgentStatus } from "../../tui/detect/agent
 import { fleetSessionIdForName } from "./fleet-catalog.ts";
 
 export interface ApplicationShellPanePresentationFacts {
+  readonly nativeIdentity?: NativePaneIdentity | null;
   readonly interactionEndpoint?: Extract<InteractionPaneEndpoint, { kind: "pane" }> | null;
   /** Durable tmux-ide pane stamp. A live `%pane_id` is never accepted as identity. */
   readonly semanticPaneId: string | null;
@@ -733,6 +735,7 @@ export function projectApplicationShellResource(
       kind: isAgentPane(pane) ? ("agent" as const) : ("terminal" as const),
       active: identity.resourceId === focusedPaneId,
       attachability: identity.attachability,
+      nativeIdentity: pane.nativeIdentity ?? null,
       interactionEndpoint:
         identity.attachability.status === "available" ? (pane.interactionEndpoint ?? null) : null,
       ...(identity.windowResourceId !== undefined

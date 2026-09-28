@@ -1,3 +1,5 @@
+import type { NativePaneIdentity } from "@tmux-ide/contracts";
+import { nativePaneIdentity } from "../../lib/native-pane-identity.ts";
 import type { InteractionPaneEndpoint } from "@tmux-ide/contracts";
 type ResolvedInteractionEndpoint = Extract<InteractionPaneEndpoint, { kind: "pane" }>;
 import {
@@ -475,6 +477,8 @@ export type NativeTerminalInventoryCatalogIssue =
   | "duplicate-runtime-pane-binding";
 
 export interface NativeTerminalInventoryPaneSnapshot extends TrustedSemanticPaneSnapshot {
+  readonly nativePaneBirthId?: string | null;
+  readonly nativeIdentity?: NativePaneIdentity | null;
   readonly interactionEndpoint?: ResolvedInteractionEndpoint | null;
   readonly sessionName: string;
   readonly index: number;
@@ -571,6 +575,7 @@ function projectTrustedMirrorInventory(
     return Object.freeze({
       workspaceName,
       semanticPaneId: nullable(pane.semanticPaneId),
+      nativePaneBirthId: pane.nativePaneBirthId ?? null,
       windowStamp: nullable(pane.semanticWindowId),
       sessionId: pane.runtimeSessionId,
       windowId: pane.runtimeWindowId,
@@ -617,6 +622,8 @@ function analyzeInventoryPanes(panes: readonly NativeTerminalInventoryPaneSnapsh
         missionStamp: _missionStamp,
         dir: _dir,
         interactionEndpoint: _interactionEndpoint,
+        nativeIdentity: _nativeIdentity,
+        nativePaneBirthId: _nativePaneBirthId,
         ...row
       }) => row,
     ),
@@ -708,6 +715,7 @@ const PANE_FORMAT = [
   // window is attachable.
   "#{@tmux_ide_window_id}",
   "#{window_index}",
+  "#{pane_birth_id}",
   PANE_WIRE_SENTINEL,
 ].join(WIRE_SEPARATOR);
 
@@ -766,7 +774,7 @@ function parsePaneSnapshot(
   const links = new Map<number, { windowId: string; active: boolean; panes: Set<string> }>();
   for (const line of strictLines(stdout, MAX_DISCOVERED_PANES)) {
     const fields = line.split(WIRE_SEPARATOR);
-    if (fields.length !== 20 || fields[19] !== PANE_WIRE_SENTINEL) {
+    if (fields.length !== 21 || fields[20] !== PANE_WIRE_SENTINEL) {
       throw new NativeTerminalAttachmentRuntimeError("invalid-tmux-output");
     }
     const [
@@ -789,7 +797,9 @@ function parsePaneSnapshot(
       dir,
       windowStampValue,
       windowIndexValue,
+      nativePaneBirthId,
     ] = fields as [
+      string,
       string,
       string,
       string,
@@ -831,6 +841,7 @@ function parsePaneSnapshot(
       windowPaneCount: positiveInteger(paneCountValue),
       sessionWindowCount: positiveInteger(windowCountValue),
       semanticPaneId: nullable(stamp),
+      nativePaneBirthId: nativePaneBirthId || null,
       windowStamp: nullable(windowStampValue),
       index: nonnegativeInteger(indexValue),
       title: boundedWireValue(title, 1_024),
@@ -980,6 +991,8 @@ export async function discoverWorkspaceRegistryTerminalInventory(
         missionStamp: _missionStamp,
         dir: _dir,
         interactionEndpoint: _interactionEndpoint,
+        nativeIdentity: _nativeIdentity,
+        nativePaneBirthId: _nativePaneBirthId,
         ...row
       }) => row,
     ),
@@ -1007,6 +1020,8 @@ export async function discoverWorkspaceRegistrySemanticPanes(
       missionStamp: _missionStamp,
       dir: _dir,
       interactionEndpoint: _interactionEndpoint,
+      nativeIdentity: _nativeIdentity,
+      nativePaneBirthId: _nativePaneBirthId,
       ...row
     }) => row,
   );
@@ -1189,6 +1204,7 @@ type AdmissionRuntimeOptions = Omit<
 >;
 
 export interface WorkspaceTerminalInventoryRuntimeOptions {
+  readonly nativeServerEpoch?: () => string | null;
   readonly resolveInteractionEndpoint?: (
     workspaceName: string,
     semanticPaneId: string,
@@ -1242,6 +1258,7 @@ async function enumerateStartupMarkedViews(
  * legacy attachment stack.
  */
 export class WorkspaceTerminalInventoryRuntime {
+  readonly #nativeServerEpoch: (() => string | null) | undefined;
   readonly #resolveInteractionEndpoint: WorkspaceTerminalInventoryRuntimeOptions["resolveInteractionEndpoint"];
   readonly semanticPaneCatalog: SemanticPaneCatalog;
   readonly runner: TmuxAttachmentCommandRunner;
@@ -1297,6 +1314,7 @@ export class WorkspaceTerminalInventoryRuntime {
     this.#registry = options.registry;
     this.#observability = options.observability ?? DISABLED_SESSION_RUNTIME_OBSERVABILITY;
     this.#resolveInteractionEndpoint = options.resolveInteractionEndpoint;
+    this.#nativeServerEpoch = options.nativeServerEpoch;
     this.#onInventory = options.onInventory ?? null;
     this.#onSessionInventory = options.onSessionInventory ?? null;
     this.#discoverTerminalInventory = (signal) => this.#readInventory(signal);
@@ -1318,6 +1336,8 @@ export class WorkspaceTerminalInventoryRuntime {
               missionStamp: _missionStamp,
               dir: _dir,
               interactionEndpoint: _interactionEndpoint,
+              nativeIdentity: _nativeIdentity,
+              nativePaneBirthId: _nativePaneBirthId,
               ...row
             }) => row,
           );
@@ -1499,20 +1519,31 @@ export class WorkspaceTerminalInventoryRuntime {
     );
   }
 
-  #publishInventory(snapshot: NativeTerminalInventorySnapshot): NativeTerminalInventorySnapshot {
+  #publishInventory(
+    snapshot: NativeTerminalInventorySnapshot,
+    nativeEpoch: string | null,
+  ): NativeTerminalInventorySnapshot {
     try {
       this.#onInventory?.(snapshot);
     } catch {
       // Inventory still renders; stale evidence must not escape a failed adoption.
       return {
         ...snapshot,
-        panes: snapshot.panes.map((pane) => ({ ...pane, interactionEndpoint: null })),
+        panes: snapshot.panes.map((pane) => ({
+          ...pane,
+          interactionEndpoint: null,
+          nativeIdentity: null,
+        })),
       };
     }
     return {
       ...snapshot,
       panes: snapshot.panes.map((pane) => ({
         ...pane,
+        nativeIdentity: nativePaneIdentity(
+          nativeEpoch === this.#nativeServerEpoch?.() ? nativeEpoch : null,
+          pane.nativePaneBirthId,
+        ),
         interactionEndpoint: pane.semanticPaneId
           ? (this.#resolveInteractionEndpoint?.(pane.workspaceName, pane.semanticPaneId) ?? null)
           : null,
@@ -1526,6 +1557,7 @@ export class WorkspaceTerminalInventoryRuntime {
   ): Promise<NativeTerminalInventorySnapshot> {
     if (this.#disposed) throw new NativeTerminalAttachmentRuntimeError("runtime-disposed");
     const epoch = this.#inventoryEpoch;
+    const nativeEpoch = this.#nativeServerEpoch?.() ?? null;
     if (signal) {
       if (signal.aborted) throw new NativeTerminalAttachmentRuntimeError("runtime-disposed");
       let snapshot: NativeTerminalInventorySnapshot;
@@ -1543,7 +1575,7 @@ export class WorkspaceTerminalInventoryRuntime {
         if (staleRetry < 1) return this.#readInventory(signal, staleRetry + 1);
         throw new NativeTerminalAttachmentRuntimeError("discovery-failed");
       }
-      return this.#publishInventory(snapshot);
+      return this.#publishInventory(snapshot, nativeEpoch);
     }
     if (this.#inventoryRead?.epoch === epoch) return this.#inventoryRead.promise;
     const abort = new AbortController();
@@ -1562,7 +1594,7 @@ export class WorkspaceTerminalInventoryRuntime {
         if (staleRetry < 1) return this.#readInventory(undefined, staleRetry + 1);
         throw new NativeTerminalAttachmentRuntimeError("discovery-failed");
       }
-      return this.#publishInventory(value);
+      return this.#publishInventory(value, nativeEpoch);
     })().finally(() => {
       if (this.#inventoryRead?.promise === promise) this.#inventoryRead = null;
     });
@@ -1632,6 +1664,7 @@ export class WorkspaceTerminalInventoryRuntime {
       return Promise.reject(new NativeTerminalAttachmentRuntimeError("discovery-failed"));
     };
     assertLive();
+    const nativeEpoch = this.#nativeServerEpoch?.() ?? null;
     const memberships = this.#registry
       .list()
       .filter((workspace) => workspace.sessionName === requestedSessionName);
@@ -1821,6 +1854,12 @@ export class WorkspaceTerminalInventoryRuntime {
               ...pane,
               ...(trustedInventory
                 ? {
+                    nativeIdentity: trustedInteractionInventoryAdopted
+                      ? nativePaneIdentity(
+                          nativeEpoch === this.#nativeServerEpoch?.() ? nativeEpoch : null,
+                          pane.nativePaneBirthId,
+                        )
+                      : null,
                     interactionEndpoint:
                       trustedInteractionInventoryAdopted && pane.semanticPaneId
                         ? (this.#resolveInteractionEndpoint?.(
@@ -1991,6 +2030,8 @@ export class NativeTerminalAttachmentRuntime {
               missionStamp: _missionStamp,
               dir: _dir,
               interactionEndpoint: _interactionEndpoint,
+              nativeIdentity: _nativeIdentity,
+              nativePaneBirthId: _nativePaneBirthId,
               ...row
             }) => row,
           );
@@ -2263,6 +2304,8 @@ export class NativeTerminalAttachmentRuntime {
           missionStamp: _missionStamp,
           dir: _dir,
           interactionEndpoint: _interactionEndpoint,
+          nativeIdentity: _nativeIdentity,
+          nativePaneBirthId: _nativePaneBirthId,
           ...row
         }) => row,
       ),

@@ -8,7 +8,7 @@ import {
 } from "./session-descriptor-discovery.ts";
 
 function line(runtimePaneId: string, cwd = "/repo", title = "Shell"): string {
-  return `${runtimePaneId}\tpane-one\tshell\tshell\tzsh\t${cwd}\t0\tmain\t@1\t${title}\t$1\t0\tShell\tmission-one\t1\t1\twindow-one\tzz-sim\t1\t1`;
+  return `${runtimePaneId}\tpane-one\tshell\tshell\tzsh\t${cwd}\t0\tmain\t@1\t${title}\t$1\t0\tShell\tmission-one\t1\t1\twindow-one\tzz-sim\t1\t1\t`;
 }
 
 function controlModeBytes(value: string): string {
@@ -44,7 +44,7 @@ describe("SessionDescriptorDiscovery", () => {
     const cwd = "/repo/café 😀";
     const title = "Review café 😀";
     const replyLine = controlModeBytes(
-      `%21\t"pane-one"\t"lead"\t"agent"\t"codex"\t"${cwd}"\t0\t"mission"\t@1\t"${title}"\t$1\t0\t"Agent"\t"mission-one"\t1\t1\t"window-one"\t"zz-sim"\t1\t1`,
+      `%21\t"pane-one"\t"lead"\t"agent"\t"codex"\t"${cwd}"\t0\t"mission"\t@1\t"${title}"\t$1\t0\t"Agent"\t"mission-one"\t1\t1\t"window-one"\t"zz-sim"\t1\t1\t`,
     );
 
     expect(parseSessionPaneDescriptors([replyLine])).toEqual([
@@ -72,7 +72,7 @@ describe("SessionDescriptorDiscovery", () => {
       Buffer.from("%7\tpane-one\tshell\tshell\tzsh\t/repo/", "ascii"),
       Buffer.from([0xff]),
       Buffer.from(
-        "\t0\tmain\t@1\tShell\t$1\t0\tShell\tmission-one\t1\t1\twindow-one\tzz-sim\t1\t1",
+        "\t0\tmain\t@1\tShell\t$1\t0\tShell\tmission-one\t1\t1\twindow-one\tzz-sim\t1\t1\t",
         "ascii",
       ),
     ]).toString("latin1");
@@ -101,7 +101,7 @@ describe("SessionDescriptorDiscovery", () => {
       Buffer.from("%8\tpane-two\tshell\tshell\tzsh\t/repo/", "ascii"),
       Buffer.from([0xff]),
       Buffer.from(
-        "\t0\tmain\t@1\tBroken\t$1\t0\tShell\tmission-one\t1\t1\twindow-one\tzz-sim\t1\t1",
+        "\t0\tmain\t@1\tBroken\t$1\t0\tShell\tmission-one\t1\t1\twindow-one\tzz-sim\t1\t1\t",
         "ascii",
       ),
     ]).toString("latin1");
