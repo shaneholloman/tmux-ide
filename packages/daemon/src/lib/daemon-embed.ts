@@ -1651,6 +1651,7 @@ async function startEmbeddedDaemonGeneration(
             } finally {
               interactionReceipts.dispose();
               interactionEvidence?.dispose();
+              interactionEvidence = null;
             }
             const failures = [...transportResults, ...authorityResults].flatMap((result) =>
               result.status === "rejected" ? [result.reason] : [],

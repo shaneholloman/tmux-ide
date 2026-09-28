@@ -112,24 +112,27 @@ export async function createEmbeddedTmuxServerOwners(options: {
       };
     },
   });
-  if (defaultObservation && defaultObservation.fingerprint === options.expectedDefaultProofDigest) {
-    await options.onDefaultScope?.({
-      serverId: defaultRegistration.serverId,
-      generation: options.defaultGeneration,
-    });
-    owners.adopt(
-      defaultRegistration,
-      { serverId: defaultRegistration.serverId, generation: options.defaultGeneration },
-      defaultObservation,
-      {
-        ...options.defaultOwner,
+  try {
+    if (
+      defaultObservation &&
+      defaultObservation.fingerprint === options.expectedDefaultProofDigest
+    ) {
+      await options.onDefaultScope?.({
         serverId: defaultRegistration.serverId,
         generation: options.defaultGeneration,
-        dispose: retireDefault,
-      },
-    );
-  }
-  try {
+      });
+      owners.adopt(
+        defaultRegistration,
+        { serverId: defaultRegistration.serverId, generation: options.defaultGeneration },
+        defaultObservation,
+        {
+          ...options.defaultOwner,
+          serverId: defaultRegistration.serverId,
+          generation: options.defaultGeneration,
+          dispose: retireDefault,
+        },
+      );
+    }
     if (
       !defaultObservation ||
       defaultObservation.fingerprint !== options.expectedDefaultProofDigest
@@ -141,7 +144,7 @@ export async function createEmbeddedTmuxServerOwners(options: {
     }
     writeTmuxServerRegistrations(path, owners.registrations());
   } catch (error) {
-    await owners.dispose();
+    await Promise.allSettled([owners.dispose(), retireDefault()]);
     throw error;
   }
   const refuseUnknownScope = (request: IncomingMessage, socket: Socket) => {
