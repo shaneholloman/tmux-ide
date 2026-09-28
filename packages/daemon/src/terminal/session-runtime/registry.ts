@@ -1,3 +1,4 @@
+import type { OwnedNativePlanCompletion } from "../../lib/owned-native-interaction-bindings.ts";
 import type {
   NativeBackingIdentity,
   TerminalNativeBackingResponse,
@@ -910,6 +911,10 @@ export class SessionRuntimeRegistry implements PaneStreamMirror {
       authenticatedSourceSemanticPaneId,
       authorizeBeforeEffect,
     });
+  }
+
+  observeOwnedNativePlan(proof: OwnedNativePlanCompletion): boolean {
+    return this.#semanticMutations?.observeOwnedNativePlan(proof) ?? false;
   }
 
   observeTmuxInteraction(observation: SessionRuntimeTmuxObservation): boolean {

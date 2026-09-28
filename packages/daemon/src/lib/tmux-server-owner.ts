@@ -196,6 +196,9 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
     nativeServerIdentity,
     enabled: nativeInteractionObservationRequested(),
     status: interactionObservation,
+    onOwnedPlanComplete: (proof) => {
+      sessionRuntimeRegistry.observeOwnedNativePlan(proof);
+    },
     publishOwnedEvidence: (decision) => authoredReceiptEnricher.consume(decision),
     publishEvidence: (evidence) => {
       interactionReceipts.appendEvidence(evidence);

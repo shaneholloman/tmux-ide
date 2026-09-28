@@ -1,3 +1,8 @@
+import { isDeepStrictEqual } from "node:util";
+import {
+  isOwnedNativePlanCompletion,
+  type OwnedNativePlanCompletion,
+} from "../../lib/owned-native-interaction-bindings.ts";
 import {
   InteractionReceiptSchemaZ,
   SessionRuntimeSemanticIntentSchemaZ,
@@ -125,6 +130,8 @@ export class SessionRuntimeIntentError extends Error {
 
 interface PendingObservation {
   readonly expected: SessionRuntimeTmuxObservation;
+  readonly interactionContext: CapturedInteractionContext | null;
+  readonly nativeCommands: readonly string[];
   resolve(): void;
   reject(error: Error): void;
 }
@@ -332,6 +339,31 @@ export class SessionSemanticMutationExecutor {
     return true;
   }
 
+  /** Only the same owner's proof authority can release the existing observation barrier. */
+  observeOwnedNativePlan(proof: OwnedNativePlanCompletion): boolean {
+    if (this.#disposed || !isOwnedNativePlanCompletion(proof)) return false;
+    const destination = proof.authoredDestination;
+    const session = this.#options.resolveSession(destination.workspaceName);
+    if (session === null) return false;
+    const pending = this.#pending.get(session)?.get(proof.acknowledgement.operationId);
+    const context = pending?.interactionContext;
+    if (!pending || !context || !isDeepStrictEqual(context.destination, destination)) return false;
+    const source = proof.source
+      ? { endpoint: proof.source.endpoint, bindingId: proof.source.bindingId }
+      : null;
+    if (
+      !isDeepStrictEqual(context.source, source) ||
+      !isDeepStrictEqual(
+        pending.nativeCommands,
+        proof.commands.map((command) => command.kind),
+      )
+    )
+      return false;
+    // Completion still requires the primitive result and semantic readback in #run.
+    pending.resolve();
+    return true;
+  }
+
   onReceipt(listener: (receipt: InteractionReceipt) => void): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
@@ -431,6 +463,13 @@ export class SessionSemanticMutationExecutor {
         this.#pending.set(session, sessionPending);
       }
       sessionPending.set(operationId, {
+        interactionContext: interactionContext ? structuredClone(interactionContext) : null,
+        nativeCommands:
+          intent.verb === "workspace.pane.read"
+            ? ["capture-pane"]
+            : intent.verb === "workspace.pane.send" && intent.submit
+              ? ["paste-buffer", "send-keys"]
+              : ["send-keys"],
         expected: {
           operationId,
           workspaceName: intent.workspaceName,
