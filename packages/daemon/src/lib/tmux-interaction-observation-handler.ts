@@ -1,13 +1,32 @@
+import { InteractionEvidenceSchemaZ, type InteractionPaneEndpoint } from "@tmux-ide/contracts";
 import type { ExternalTmuxInteraction } from "./tmux-external-interaction-observer.ts";
 import { randomUUID } from "node:crypto";
 import type { InteractionReceiptDraft } from "./interaction-receipt-journal.ts";
 
 export function externalTmuxInteractionDraft(
   observation: ExternalTmuxInteraction,
+  destination: InteractionPaneEndpoint,
 ): InteractionReceiptDraft {
   const { workspaceName, semanticPaneId, operationKind } = observation;
+  const operationId = randomUUID();
+  const at = new Date().toISOString();
   return {
-    operationId: randomUUID(),
+    evidence: InteractionEvidenceSchemaZ.parse({
+      schemaVersion: 1,
+      interactionId: operationId,
+      revision: 0,
+      endpoints: { destination, source: null },
+      actor: { kind: "unknown", reason: "stock-hook" },
+      observation: {
+        kind: "stock-hook",
+        command: operationKind === "workspace.pane.read" ? "capture-pane" : "send-keys",
+      },
+      effect: { kind: "unknown" },
+      occurredAt: null,
+      timeBasis: "unknown",
+      receivedAt: at,
+    }),
+    operationId,
     origin: "external",
     workspaceName,
     sourceSemanticPaneId: null,
@@ -19,7 +38,7 @@ export function externalTmuxInteractionDraft(
         ? { operationKind, observedOnly: true }
         : { operationKind, observedOnly: true },
     proof: { operationKind, observed: true, semanticPaneId },
-    at: new Date().toISOString(),
+    at,
     resourceRevision: null,
   };
 }

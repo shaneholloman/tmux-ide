@@ -141,6 +141,16 @@ export class InteractionEvidenceAuthority {
     return structuredClone(candidates[0]!.endpoint);
   }
 
+  captureUnavailableEndpoint(): InteractionPaneEndpoint {
+    this.#assertOpen();
+    return {
+      kind: "unresolved-pane",
+      environmentId: this.#environmentId,
+      serverScope: structuredClone(this.#serverScope),
+      observationRef: randomUUID(),
+    };
+  }
+
   /** Requires the hook's immutable session id and semantic stamp, not a late lookup. */
   captureObservedEndpoint(record: {
     runtimePaneId: string;

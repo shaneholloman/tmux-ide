@@ -1276,7 +1276,13 @@ async function startEmbeddedDaemonGeneration(
             operationId: observation.operationId!,
           }) ?? false,
         publishExternal: (observation) => {
-          const draft = externalTmuxInteractionDraft(observation);
+          if (!interactionEvidence) throw new Error("Scoped interaction evidence is unavailable");
+          const draft = externalTmuxInteractionDraft(
+            observation,
+            observation.capturedTarget
+              ? interactionEvidence.captureObservedEndpoint(observation.capturedTarget)
+              : interactionEvidence.captureUnavailableEndpoint(),
+          );
           interactionReceipts.publish(draft);
           broadcastInteractionReceipt(draft, instanceId);
         },
@@ -1405,6 +1411,26 @@ async function startEmbeddedDaemonGeneration(
         generation: instanceId,
         ...(runtimeObservability ? { observability: runtimeObservability } : {}),
         semanticMutations: {
+          captureInteractionContext: (intent) => {
+            if (!interactionEvidence) throw new Error("Scoped interaction evidence is unavailable");
+            return {
+              destination:
+                ("semanticPaneId" in intent &&
+                  interactionEvidence.captureAuthoredEndpoint(
+                    intent.workspaceName,
+                    intent.semanticPaneId,
+                  )) ||
+                interactionEvidence.captureUnavailableEndpoint(),
+              source: null,
+            };
+          },
+          validateInteractionContext: (context) => {
+            if (
+              context.destination.kind !== "pane" ||
+              !interactionEvidence?.isCurrent(context.destination)
+            )
+              throw new Error("Interaction target lifetime is no longer current");
+          },
           resolveSession: (workspaceName) =>
             workspaceRegistry.get(workspaceName)?.sessionName ?? null,
           execute: executeRuntimeIntent,

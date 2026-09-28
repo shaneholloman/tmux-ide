@@ -1,9 +1,38 @@
 import {
   InteractionReceiptSchemaZ,
   type InteractionReceipt,
+  type InteractionPaneEndpoint,
+  type InteractionEffectEvidence,
   type InteractionSafeSummary,
   type PaneSendSafeSummary,
 } from "@tmux-ide/contracts";
+
+import { canEnrichInteractionEvidence } from "./interaction-evidence.ts";
+
+type ResolvedInteractionEndpoint = Extract<InteractionPaneEndpoint, { kind: "pane" }>;
+export function interactionPaneEndpointKey(endpoint: ResolvedInteractionEndpoint): string {
+  return JSON.stringify([
+    endpoint.environmentId,
+    endpoint.serverScope.serverId,
+    endpoint.serverScope.generation,
+    endpoint.workspaceName,
+    endpoint.paneLifetimeId,
+    endpoint.semanticPaneId,
+  ]);
+}
+function receiptOwnerKey(receipt: InteractionReceipt): string {
+  const endpoint = receipt.evidence?.endpoints.destination;
+  return endpoint
+    ? JSON.stringify([
+        endpoint.environmentId,
+        endpoint.serverScope.serverId,
+        endpoint.serverScope.generation,
+      ])
+    : "structural";
+}
+function receiptOperationKey(receipt: InteractionReceipt): string {
+  return `${receiptOwnerKey(receipt)}:${receipt.operationId}`;
+}
 
 export const INTERACTION_ACTIVITY_LIMIT = 64;
 /** One shared transient presence window for DOM and OpenTUI chrome. */
@@ -26,6 +55,11 @@ export function interactionPresenceIsFresh(
 }
 
 export interface PaneInteractionProjection {
+  readonly endpoint: ResolvedInteractionEndpoint;
+  readonly sourceEndpoint: ResolvedInteractionEndpoint | null;
+  readonly destinationEndpoint: ResolvedInteractionEndpoint;
+  readonly effect: InteractionEffectEvidence;
+  readonly operationKey: string;
   /** The pane whose chrome owns this projection. */
   readonly paneId: string;
   readonly direction: "incoming" | "outgoing";
@@ -39,11 +73,6 @@ export interface PaneInteractionProjection {
   readonly sequence: number;
   readonly at: string;
 }
-
-type PaneInteractionReceipt = InteractionReceipt & {
-  readonly operationKind: "workspace.pane.send" | "workspace.pane.read";
-  readonly target: { readonly kind: "pane"; readonly semanticPaneId: string };
-};
 
 /**
  * Renderer-neutral presence semantics shared by the web and OpenTUI hosts.
@@ -82,8 +111,14 @@ export function paneInteractionPresence(
   let badge: string;
   if (failed) badge = "FAILED";
   else if (kind === "read")
-    badge = endpoint === "source" && interaction.phase === "accepted" ? "READING" : "READ";
+    badge =
+      interaction.phase === "accepted"
+        ? "READING"
+        : interaction.effect.kind === "snapshot-produced"
+          ? "READ"
+          : "READ OBSERVED";
   else if (interaction.phase === "accepted") badge = endpoint === "source" ? "SENDING" : "INPUT";
+  else if (interaction.effect.kind !== "input-enqueued") badge = "INPUT OBSERVED";
   else badge = endpoint === "source" ? "SENT" : "RECEIVED";
   return {
     role,
@@ -98,6 +133,7 @@ export function paneInteractionPresence(
 export interface InteractionFeedState {
   /** Last contiguous replay-journal sequence incorporated by this feed. */
   readonly sequence: number;
+  readonly cursors: Readonly<Record<string, number>>;
   /** One latest receipt per operation, newest first and strictly bounded. */
   readonly activity: readonly InteractionReceipt[];
   /** Latest visible interaction for each semantic pane. */
@@ -105,7 +141,7 @@ export interface InteractionFeedState {
 }
 
 export function initialInteractionFeedState(): InteractionFeedState {
-  return { sequence: 0, activity: [], panes: Object.freeze({}) };
+  return { sequence: 0, cursors: Object.freeze({}), activity: [], panes: Object.freeze({}) };
 }
 
 export function paneSendSummaryLabel(summary: PaneSendSafeSummary, observed = false): string {
@@ -159,7 +195,13 @@ export function interactionSummaryLabel(
 }
 
 export function interactionReceiptLabel(receipt: InteractionReceipt): string {
-  const action = interactionSummaryLabel(receipt.operationKind, receipt.summary, receipt.phase);
+  const commandOnly = receipt.phase === "observed" && receipt.evidence?.effect.kind === "unknown";
+  const action =
+    commandOnly && receipt.operationKind === "workspace.pane.send"
+      ? "input command observed"
+      : commandOnly && receipt.operationKind === "workspace.pane.read"
+        ? "read command observed"
+        : interactionSummaryLabel(receipt.operationKind, receipt.summary, receipt.phase);
   if (receipt.phase === "accepted") return `${receipt.origin} accepted · ${action}`;
   if (receipt.phase === "rejected") return `${receipt.origin} rejected · ${action}`;
   if (receipt.phase === "timed-out") return `${receipt.origin} timed out · ${action}`;
@@ -189,6 +231,7 @@ export function interactionReceiptIdentity(receipt: InteractionReceipt): string 
     target: receipt.target,
     operationKind: receipt.operationKind,
     summary: receipt.summary,
+    destination: receipt.evidence?.endpoints.destination ?? null,
   });
 }
 
@@ -263,51 +306,65 @@ export function reduceInteractionReceipt(
   raw: InteractionReceipt,
 ): InteractionFeedState {
   const receipt = InteractionReceiptSchemaZ.parse(raw);
-  if (receipt.sequence <= previous.sequence) return previous;
-
-  const existing = previous.activity.find((entry) => entry.operationId === receipt.operationId);
+  const ownerKey = receiptOwnerKey(receipt);
+  if (receipt.sequence <= (previous.cursors[ownerKey] ?? 0)) return previous;
+  const sequence = Math.max(previous.sequence, receipt.sequence);
+  const nextCursors = { ...previous.cursors, [ownerKey]: receipt.sequence };
+  const ownerKeys = Object.keys(nextCursors);
+  for (const expired of ownerKeys.slice(0, Math.max(0, ownerKeys.length - 128)))
+    delete nextCursors[expired];
+  const cursors = Object.freeze(nextCursors);
+  const operationKey = receiptOperationKey(receipt);
+  const existing = previous.activity.find((entry) => receiptOperationKey(entry) === operationKey);
   if (existing) {
-    const invalidIdentity =
-      interactionReceiptIdentity(existing) !== interactionReceiptIdentity(receipt);
-    const invalidTransition = !interactionPhaseCanAdvance(existing.phase, receipt.phase);
-    if (receipt.sequence <= existing.sequence || invalidIdentity || invalidTransition) {
-      return { ...previous, sequence: receipt.sequence };
-    }
+    const enriches =
+      existing.evidence !== null &&
+      receipt.evidence !== null &&
+      canEnrichInteractionEvidence(existing.evidence, receipt.evidence);
+    const validTransition =
+      interactionPhaseCanAdvance(existing.phase, receipt.phase) ||
+      (existing.phase === receipt.phase && enriches);
+    if (
+      interactionReceiptIdentity(existing) !== interactionReceiptIdentity(receipt) ||
+      !validTransition ||
+      (existing.evidence !== null && receipt.evidence !== null && !enriches)
+    )
+      return { ...previous, sequence, cursors };
   }
-
   const activity = [
     receipt,
-    ...previous.activity.filter((entry) => entry.operationId !== receipt.operationId),
+    ...previous.activity.filter((entry) => receiptOperationKey(entry) !== operationKey),
   ].slice(0, INTERACTION_ACTIVITY_LIMIT);
-  const panesWithoutThisOperation = Object.fromEntries(
+  const panes: Record<string, PaneInteractionProjection> = Object.fromEntries(
     Object.entries(previous.panes).filter(
-      ([, projection]) => projection.operationId !== receipt.operationId,
+      ([, projection]) => projection.operationKey !== operationKey,
     ),
   );
-  const isPaneInteraction =
-    (receipt.operationKind === "workspace.pane.send" ||
-      receipt.operationKind === "workspace.pane.read") &&
-    receipt.target.kind === "pane";
-  if (!isPaneInteraction) {
-    return {
-      sequence: receipt.sequence,
-      activity,
-      panes: Object.freeze(panesWithoutThisOperation),
-    };
-  }
-  const paneReceipt = receipt as PaneInteractionReceipt;
-  const relationship = {
-    sourcePaneId: paneReceipt.sourceSemanticPaneId,
-    destinationPaneId: paneReceipt.target.semanticPaneId,
-    operationKind: paneReceipt.operationKind,
-  } as const;
+  const evidence = receipt.evidence;
+  const destination = evidence?.endpoints.destination;
+  if (
+    receipt.target.kind !== "pane" ||
+    (receipt.operationKind !== "workspace.pane.send" &&
+      receipt.operationKind !== "workspace.pane.read") ||
+    !evidence ||
+    destination?.kind !== "pane"
+  )
+    return { sequence, cursors, activity, panes: Object.freeze(panes) };
+  const source = evidence.endpoints.source?.kind === "pane" ? evidence.endpoints.source : null;
   const projection = (
-    paneId: string,
+    endpoint: ResolvedInteractionEndpoint,
     direction: PaneInteractionProjection["direction"],
   ): PaneInteractionProjection => ({
-    paneId,
+    endpoint,
+    sourceEndpoint: source,
+    destinationEndpoint: destination,
+    effect: evidence.effect,
+    operationKey,
+    paneId: endpoint.semanticPaneId,
     direction,
-    ...relationship,
+    sourcePaneId: source?.semanticPaneId ?? null,
+    destinationPaneId: destination.semanticPaneId,
+    operationKind: receipt.operationKind,
     operationId: receipt.operationId,
     phase: receipt.phase,
     origin: receipt.origin,
@@ -315,26 +372,15 @@ export function reduceInteractionReceipt(
     sequence: receipt.sequence,
     at: receipt.at,
   });
-  const panes: Record<string, PaneInteractionProjection> = {
-    ...panesWithoutThisOperation,
-    [paneReceipt.target.semanticPaneId]: projection(paneReceipt.target.semanticPaneId, "incoming"),
-  };
-  if (
-    paneReceipt.sourceSemanticPaneId !== null &&
-    paneReceipt.sourceSemanticPaneId !== paneReceipt.target.semanticPaneId
-  ) {
-    panes[paneReceipt.sourceSemanticPaneId] = projection(
-      paneReceipt.sourceSemanticPaneId,
-      "outgoing",
-    );
-  }
-
-  return { sequence: receipt.sequence, activity, panes: Object.freeze(panes) };
+  panes[interactionPaneEndpointKey(destination)] = projection(destination, "incoming");
+  if (source && interactionPaneEndpointKey(source) !== interactionPaneEndpointKey(destination))
+    panes[interactionPaneEndpointKey(source)] = projection(source, "outgoing");
+  return { sequence, cursors, activity, panes: Object.freeze(panes) };
 }
 
 export function interactionForPane(
   state: InteractionFeedState,
-  semanticPaneId: string,
+  endpoint: ResolvedInteractionEndpoint,
 ): PaneInteractionProjection | null {
-  return state.panes[semanticPaneId] ?? null;
+  return state.panes[interactionPaneEndpointKey(endpoint)] ?? null;
 }

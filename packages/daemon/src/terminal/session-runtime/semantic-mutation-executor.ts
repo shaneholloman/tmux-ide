@@ -10,6 +10,10 @@ import {
 } from "@tmux-ide/contracts";
 import { z } from "zod";
 import {
+  authoredInteractionEvidence,
+  type CapturedInteractionContext,
+} from "./interaction-evidence-facts.ts";
+import {
   sessionRuntimeInteractionFacts,
   sessionRuntimeIntentNeedsTmuxObservation,
   sessionRuntimeObservedProof,
@@ -66,6 +70,10 @@ export interface SessionRuntimeSubmissionAuthority {
 export type SessionRuntimeReceiptInput = Omit<InteractionReceipt, "type" | "sequence">;
 
 export interface SessionSemanticMutationExecutorOptions {
+  readonly captureInteractionContext?: (
+    intent: SessionRuntimeSemanticIntent,
+  ) => CapturedInteractionContext;
+  readonly validateInteractionContext?: (context: CapturedInteractionContext) => void;
   readonly resolveSession: (workspaceName: string) => string | null;
   readonly execute: (
     operationId: string,
@@ -208,7 +216,23 @@ export class SessionSemanticMutationExecutor {
     // retain an attacker-controlled workspace-name alias as a ledger key.
     const ledger = this.#ledger(session ?? MISSING_SESSION_LEDGER);
     const origin = authority.origin;
-    const fingerprint = JSON.stringify([intent, authenticatedSourceSemanticPaneId, origin]);
+    const paneInteraction =
+      intent.verb === "workspace.pane.send" || intent.verb === "workspace.pane.read";
+    const interactionContext = paneInteraction
+      ? structuredClone(
+          authority.interactionContext ?? this.#options.captureInteractionContext?.(intent) ?? null,
+        )
+      : null;
+    if (paneInteraction && !interactionContext)
+      return Promise.reject(
+        new SessionRuntimeIntentError("rejected", "Scoped interaction evidence is unavailable"),
+      );
+    const fingerprint = JSON.stringify([
+      intent,
+      authenticatedSourceSemanticPaneId,
+      origin,
+      interactionContext,
+    ]);
     const existing = ledger.get(operationId);
     if (existing) {
       if (existing.fingerprint !== fingerprint) {
@@ -231,13 +255,13 @@ export class SessionSemanticMutationExecutor {
         ),
       );
     }
-    this.#publish(operationId, intent, "accepted", null, undefined, origin);
+    this.#publish(operationId, intent, "accepted", null, undefined, origin, interactionContext);
     if (session === null) {
       const error = new SessionRuntimeIntentError(
         "rejected",
         `Workspace ${intent.workspaceName} has no live tmux session`,
       );
-      this.#publish(operationId, intent, "rejected", null, undefined, origin);
+      this.#publish(operationId, intent, "rejected", null, undefined, origin, interactionContext);
       const rejected = Promise.reject<SessionRuntimeIntentResult>(error);
       this.#remember(ledger, operationId, fingerprint, rejected);
       return rejected;
@@ -253,6 +277,7 @@ export class SessionSemanticMutationExecutor {
           authenticatedSourceSemanticPaneId,
           authority.authorizeBeforeEffect,
           origin,
+          interactionContext,
         ),
       () =>
         this.#run(
@@ -262,6 +287,7 @@ export class SessionSemanticMutationExecutor {
           authenticatedSourceSemanticPaneId,
           authority.authorizeBeforeEffect,
           origin,
+          interactionContext,
         ),
     );
     const tail = result.then(
@@ -366,13 +392,14 @@ export class SessionSemanticMutationExecutor {
     authenticatedSourceSemanticPaneId: string | null,
     authorizeBeforeEffect?: () => void,
     origin: AuthoredInteractionOrigin = "sdk",
+    interactionContext: CapturedInteractionContext | null = null,
   ): Promise<SessionRuntimeIntentResult> {
     if (this.#disposed) {
       const error = new SessionRuntimeIntentError(
         "rejected",
         "Session semantic mutation executor shut down before execution",
       );
-      this.#publish(operationId, intent, "rejected", null, undefined, origin);
+      this.#publish(operationId, intent, "rejected", null, undefined, origin, interactionContext);
       throw error;
     }
 
@@ -444,6 +471,7 @@ export class SessionSemanticMutationExecutor {
     try {
       // Admission can wait behind prior work. Revalidate the opaque principal
       // at the last synchronous boundary before tmux receives any effect.
+      if (interactionContext) this.#options.validateInteractionContext?.(interactionContext);
       authorizeBeforeEffect?.();
       result = await this.#options.execute(operationId, intent, timing);
     } catch (cause) {
@@ -453,7 +481,7 @@ export class SessionSemanticMutationExecutor {
         "tmux rejected the semantic interaction",
         { cause },
       );
-      this.#publish(operationId, intent, "rejected", null, undefined, origin);
+      this.#publish(operationId, intent, "rejected", null, undefined, origin, interactionContext);
       throw error;
     } finally {
       if (tmuxStarted !== null)
@@ -482,7 +510,7 @@ export class SessionSemanticMutationExecutor {
         "tmux returned invalid semantic mutation proof",
         { cause },
       );
-      this.#publish(operationId, intent, "rejected", null, undefined, origin);
+      this.#publish(operationId, intent, "rejected", null, undefined, origin, interactionContext);
       throw error;
     }
 
@@ -513,7 +541,15 @@ export class SessionSemanticMutationExecutor {
             : new SessionRuntimeIntentError("rejected", "Interaction observation was cancelled", {
                 cause,
               });
-        this.#publish(operationId, intent, error.outcome, null, undefined, origin);
+        this.#publish(
+          operationId,
+          intent,
+          error.outcome,
+          null,
+          undefined,
+          origin,
+          interactionContext,
+        );
         throw error;
       } finally {
         timeout?.cancel();
@@ -528,6 +564,7 @@ export class SessionSemanticMutationExecutor {
       authenticatedSourceSemanticPaneId,
       result,
       origin,
+      interactionContext,
     );
     for (const change of semanticMutationResourceChanges(result)) {
       try {
@@ -552,21 +589,37 @@ export class SessionSemanticMutationExecutor {
     authenticatedSourceSemanticPaneId: string | null = null,
     result?: SessionRuntimeIntentResult,
     authenticatedOrigin?: AuthoredInteractionOrigin,
+    interactionContext: CapturedInteractionContext | null = null,
   ): void {
     const facts = sessionRuntimeInteractionFacts(intent);
     const origin = authenticatedOrigin ?? ("origin" in intent ? intent.origin : "sdk");
+    const at = (this.#options.now ?? (() => new Date()))().toISOString();
     const receipt = InteractionReceiptSchemaZ.parse(
       this.#options.publishReceipt({
+        evidence: interactionContext
+          ? authoredInteractionEvidence(operationId, intent, phase, interactionContext, at, result)
+          : null,
         operationId,
         origin,
         workspaceName: intent.workspaceName,
-        sourceSemanticPaneId: phase === "observed" ? authenticatedSourceSemanticPaneId : null,
+        sourceSemanticPaneId:
+          phase === "observed" &&
+          intent.verb === "workspace.pane.send" &&
+          interactionContext?.source?.endpoint.workspaceName === intent.workspaceName &&
+          interactionContext.source.endpoint.serverScope.serverId ===
+            interactionContext.destination.serverScope.serverId &&
+          interactionContext.source.endpoint.serverScope.generation ===
+            interactionContext.destination.serverScope.generation &&
+          interactionContext.source.endpoint.environmentId ===
+            interactionContext.destination.environmentId
+            ? interactionContext.source.endpoint.semanticPaneId
+            : null,
         target: facts.target,
         operationKind: intent.verb,
         phase,
         summary: facts.summary,
         proof: phase === "observed" ? sessionRuntimeObservedProof(intent, result) : null,
-        at: (this.#options.now ?? (() => new Date()))().toISOString(),
+        at,
         resourceRevision: null,
       }),
     );

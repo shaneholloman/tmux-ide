@@ -552,5 +552,5 @@ export const InteractionReceiptV2SchemaZ = InteractionReceiptV1SchemaZ.safeExten
     });
 });
 export type InteractionReceiptV2 = z.infer<typeof InteractionReceiptV2SchemaZ>;
-export const InteractionReceiptSchemaZ = InteractionReceiptV1SchemaZ;
+export const InteractionReceiptSchemaZ = InteractionReceiptV2SchemaZ;
 export type InteractionReceipt = z.infer<typeof InteractionReceiptSchemaZ>;

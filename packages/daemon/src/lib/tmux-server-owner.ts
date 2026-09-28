@@ -184,6 +184,23 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
   const sessionRuntimeRegistry: SessionRuntimeRegistry = new SessionRuntimeRegistry({
     generation,
     semanticMutations: {
+      captureInteractionContext: (intent) => ({
+        destination:
+          ("semanticPaneId" in intent &&
+            interactionEvidence.captureAuthoredEndpoint(
+              intent.workspaceName,
+              intent.semanticPaneId,
+            )) ||
+          interactionEvidence.captureUnavailableEndpoint(),
+        source: null,
+      }),
+      validateInteractionContext: (context) => {
+        if (
+          context.destination.kind !== "pane" ||
+          !interactionEvidence.isCurrent(context.destination)
+        )
+          throw new Error("Interaction target lifetime is no longer current");
+      },
       resolveSession: (name) => workspaceRegistry.get(name)?.sessionName ?? null,
       execute: (operationId, intent, timing) => {
         assertOpen();
@@ -257,7 +274,14 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
           operationId: observation.operationId!,
         }),
       publishExternal: (observation) => {
-        interactionReceipts.publish(externalTmuxInteractionDraft(observation));
+        interactionReceipts.publish(
+          externalTmuxInteractionDraft(
+            observation,
+            observation.capturedTarget
+              ? interactionEvidence.captureObservedEndpoint(observation.capturedTarget)
+              : interactionEvidence.captureUnavailableEndpoint(),
+          ),
+        );
       },
       reportPublicationFailure: () => {
         terminalInventoryRuntime.invalidate();

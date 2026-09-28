@@ -5,8 +5,8 @@ import { z } from "zod";
  * health responses, REST resources, and WebSocket transports. This is
  * intentionally independent from npm/package marketing versions.
  */
-// v3 requires link-aware terminal topology and actions; v2 peers must upgrade.
-export const DAEMON_WIRE_PROTOCOL_VERSION = 3 as const;
+// v4 requires scoped interaction evidence and current pane-lifetime metadata; v3 peers must upgrade.
+export const DAEMON_WIRE_PROTOCOL_VERSION = 4 as const;
 
 /**
  * Discovery must retain unknown positive versions so a client can report an

@@ -1,3 +1,4 @@
+import { testInteractionContext } from "../../../test-support/interaction-evidence.ts";
 import type { InteractionReceipt, SessionRuntimeSemanticIntent } from "@tmux-ide/contracts";
 import { describe, expect, it, vi } from "vitest";
 
@@ -116,6 +117,7 @@ function rig(
     return receipt;
   };
   const executor = new SessionSemanticMutationExecutor({
+    captureInteractionContext: testInteractionContext,
     resolveSession: (workspace) => (workspace === "beta" ? "session-beta" : "session-alpha"),
     execute: options.execute ?? resultFor,
     publishReceipt,
@@ -154,6 +156,7 @@ describe("SessionSemanticMutationExecutor", () => {
     const receipts: unknown[] = [];
     let sequence = 0;
     const executor = new SessionSemanticMutationExecutor({
+      captureInteractionContext: testInteractionContext,
       resolveSession: () => "alpha",
       execute,
       publishReceipt: (input) => {
@@ -289,6 +292,7 @@ describe("SessionSemanticMutationExecutor", () => {
       },
     });
     const executor = new SessionSemanticMutationExecutor({
+      captureInteractionContext: testInteractionContext,
       resolveSession: () => "session-alpha",
       traceAuthority: { generation: "daemon-a", incarnation: null },
       observability,
@@ -325,6 +329,7 @@ describe("SessionSemanticMutationExecutor", () => {
     const order: string[] = [];
     let sequence = 0;
     const executor = new SessionSemanticMutationExecutor({
+      captureInteractionContext: testInteractionContext,
       resolveSession: () => "session-alpha",
       execute: resultFor,
       publishReceipt: (input) => {
