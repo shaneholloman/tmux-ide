@@ -8,6 +8,8 @@ import { expect, it } from "vitest";
 import { readSparkCanonicalConfig } from "./qualify-spark-canonical.ts";
 import { createMacProcessIdentity } from "./lib/owned-ssh-fixture.mjs";
 import { qualifySparkHomeRecovery } from "./lib/spark-recovery.ts";
+import { createSparkRetainedTuiObserver } from "./lib/spark-retained-tui.ts";
+import { createSparkRemoteAction } from "./lib/spark-remote-action.ts";
 
 it("selects the actual client Solid runtime before admitting a physical fixture", () => {
   let subscribed = false;
@@ -67,6 +69,7 @@ it.skipIf(!process.env.SPARK_RECOVERY_CONFIG)(
     process.on("SIGTERM", cancel);
     let allocated: { disposeFiles(): Promise<void> } | undefined;
     let result: Awaited<ReturnType<typeof qualifySparkHomeRecovery>> | undefined;
+    let retained: Awaited<ReturnType<typeof createSparkRetainedTuiObserver>> | undefined;
     try {
       const identity = await createMacProcessIdentity({
         parent,
@@ -74,10 +77,27 @@ it.skipIf(!process.env.SPARK_RECOVERY_CONFIG)(
           allocated = value;
         },
       });
+      if (process.env.SPARK_RETAINED_TUI === "1") {
+        const driver = config.remote.driver;
+        const action = createSparkRemoteAction({
+          root: driver.root,
+          node: driver.tools.node.path,
+          target: config.ssh.alias,
+          config: config.ssh.config,
+        });
+        retained = await createSparkRetainedTuiObserver({
+          config,
+          parent,
+          signal: lifetime.signal,
+          identify: identity.identify,
+          remoteOutput: (stage) => action(`tui-output-${stage}`),
+        });
+      }
       result = await qualifySparkHomeRecovery({
         config,
         signal: lifetime.signal,
         identify: identity.identify,
+        ...(retained ? { retainedTui: retained } : {}),
         persistReplacementLease: (lease) =>
           writeFileSync(
             join(parent, "recovery-new-lease.json"),
@@ -96,10 +116,26 @@ it.skipIf(!process.env.SPARK_RECOVERY_CONFIG)(
     } finally {
       process.off("SIGINT", cancel);
       process.off("SIGTERM", cancel);
-      if (result?.cleanup) await allocated?.disposeFiles();
+      if (retained) {
+        try {
+          await retained.close();
+        } catch {
+          /* Keep incomplete cleanup evidence and managed records. */
+        }
+        writeFileSync(
+          join(parent, "retained-tui-result.json"),
+          JSON.stringify(retained.report()) + "\n",
+          {
+            mode: 0o600,
+            flag: "wx",
+          },
+        );
+      }
+      if (result?.cleanup && (!retained || retained.report().cleanup))
+        await allocated?.disposeFiles();
     }
     assert(
-      result?.ok,
+      result?.ok && (!retained || retained.report().retainedTuiQualified),
       "Physical recovery qualification failed; retain private records and perform guarded managed cleanup",
     );
   },
