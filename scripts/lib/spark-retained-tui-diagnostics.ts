@@ -9,6 +9,7 @@ type Checkpoint =
   | "baseline"
   | "admission"
   | "home-frame"
+  | "machine-selection"
   | "terminal-frame"
   | "identity"
   | "output-action"

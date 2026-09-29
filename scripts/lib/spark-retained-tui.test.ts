@@ -5,6 +5,8 @@ import { execFileSync } from "node:child_process";
 import {
   sparkTuiInput,
   sparkTuiAdmission,
+  sparkTuiMachineSessionRow,
+  sparkTuiMachineAdmitted,
   assessSparkRetainedTuiReport,
   createRetainedTuiWorkLifetime,
 } from "./spark-retained-tui.ts";
@@ -206,4 +208,55 @@ test("startup admits Home selection or sole-session automatic open without Enter
     "Your agents, across your machines",
   ])
     assert.equal(sparkTuiAdmission(frame), null);
+});
+
+test("actual sidebar selection binds colliding sessions to their machine and active header", () => {
+  const frame = [
+    "tmux-ide F1 Home F2 Terminals   Local · attribution-collision",
+    " Machines",
+    "▾ Local",
+    "   attribution-collision 1p",
+    "",
+    "▾ spark-private",
+    "   attribution-collision 1p",
+    " F6 Browse all sessions",
+  ].join("\n");
+  assert.equal(sparkTuiMachineSessionRow(frame, "Local"), 4);
+  assert.equal(sparkTuiMachineSessionRow(frame, "spark-private"), 7);
+  assert.equal(sparkTuiMachineAdmitted(frame, "Local"), true);
+  assert.equal(sparkTuiMachineAdmitted(frame, "spark-private"), false);
+  const remote = frame.replace(
+    "Local · attribution-collision",
+    "spark-private · attribution-collision",
+  );
+  assert.equal(sparkTuiMachineAdmitted(remote, "spark-private"), true);
+  assert.equal(sparkTuiMachineAdmitted(remote, "Local"), false);
+  assert.equal(sparkTuiMachineAdmitted(frame.replace("Local · ", ""), "Local"), false);
+  assert.equal(
+    sparkTuiMachineSessionRow(frame.replace("▾ spark-private", "▸ spark-private"), "spark-private"),
+    null,
+  );
+  assert.equal(
+    sparkTuiMachineSessionRow(frame.replace("▾ spark-private", "▾ other"), "spark-private"),
+    null,
+  );
+  assert.equal(
+    sparkTuiMachineSessionRow(
+      frame + "\n▾ spark-private\n   attribution-collision 1p",
+      "spark-private",
+    ),
+    null,
+  );
+  assert.equal(
+    sparkTuiMachineSessionRow(
+      frame.replace("▾ spark-private", "▾ spark-private\n   attribution-collision 1p"),
+      "spark-private",
+    ),
+    null,
+  );
+  const mainBodyOnly = frame.replace(
+    "   attribution-collision 1p\n F6",
+    " ".repeat(28) + "attribution-collision 1p\n F6",
+  );
+  assert.equal(sparkTuiMachineSessionRow(mainBodyOnly, "spark-private"), null);
 });

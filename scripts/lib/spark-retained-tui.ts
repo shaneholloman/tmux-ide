@@ -38,7 +38,28 @@ import {
 export function sparkTuiAdmission(frame: string): "home" | "terminal" | null {
   if (!/(?:^|[^A-Za-z0-9_.-])attribution-collision(?:$|[^A-Za-z0-9_.-])/u.test(frame)) return null;
   if (frame.includes("Your agents, across your machines")) return "home";
-  return /\bF2\s+Terminals\b/u.test(frame) && !frame.includes("PASSIVE PREVIEW") ? "terminal" : null;
+  return /\bF2\s+Terminals\b/u.test(frame) && !frame.includes("PASSIVE PREVIEW")
+    ? "terminal"
+    : null;
+}
+
+/** Fixed qualification viewport sidebar; never select a same-named session in another group. */
+export function sparkTuiMachineSessionRow(frame: string, machine: string): number | null {
+  const lines = frame.split("\n").map((line) => line.slice(0, 28).trim());
+  const headings = lines.flatMap((line, index) => (line === `▾ ${machine}` ? [index] : []));
+  if (headings.length !== 1) return null;
+  const start = headings[0]! + 1;
+  const rows: number[] = [];
+  for (let index = start; index < lines.length; index++) {
+    const line = lines[index]!;
+    if (/^[▾▸] /u.test(line) || /^F[0-9] /u.test(line)) break;
+    if (/^attribution-collision [1-9][0-9]*p$/u.test(line)) rows.push(index + 1);
+  }
+  return rows.length === 1 ? rows[0]! : null;
+}
+export function sparkTuiMachineAdmitted(frame: string, machine: string): boolean {
+  const header = frame.split("\n")[0] ?? "";
+  return sparkTuiAdmission(frame) === "terminal" && header.includes(` ${machine} · `);
 }
 
 const execute = promisify(execFile);
@@ -406,17 +427,20 @@ export async function createSparkRetainedTuiObserver(options: {
       writeDevelopmentRecord(receipt, { ...admission, pid: pty.pid, incarnation });
     });
     const client = clients.get(side)!;
-    diagnostics.checkpoint("home-frame", side);
+    const machine = side === "local" ? "Local" : config.ssh.alias;
+    diagnostics.checkpoint("machine-selection", side);
+    let row: number | null = null;
     await wait(() => {
       assert(!client.exited && !client.overflow);
-      return sparkTuiAdmission(client.frame()) !== null;
+      row = sparkTuiMachineSessionRow(client.frame(), machine);
+      return row !== null;
     });
+    // Exercise the actual sidebar mouse route, binding the colliding name to its machine.
+    client.pty.write(`\x1b[<0;10;${row}M\x1b[<0;10;${row}m`);
     diagnostics.checkpoint("terminal-frame", side);
-    // Re-read immediately before input: an automatic local open can race Home paint.
-    if (sparkTuiAdmission(client.frame()) === "home") client.pty.write("\r");
     await wait(() => {
       assert(!client.exited && !client.overflow);
-      return sparkTuiAdmission(client.frame()) === "terminal";
+      return sparkTuiMachineAdmitted(client.frame(), machine);
     });
     await tracker.capture();
   }
@@ -432,9 +456,11 @@ export async function createSparkRetainedTuiObserver(options: {
     const client = clients.get(side)!;
     diagnostics.checkpoint("identity", side);
     await sameClient(client);
+    assert(sparkTuiMachineAdmitted(client.frame(), side === "local" ? "Local" : config.ssh.alias));
     diagnostics.checkpoint("output-frame", side);
     if (output) await wait(() => client.frame().includes(output));
     const frame = client.frame();
+    assert(sparkTuiMachineAdmitted(frame, side === "local" ? "Local" : config.ssh.alias));
     const row = output ? frame.split("\n").findIndex((line) => line.includes(output)) + 1 : 16;
     client.pty.write(`\x1b[<0;55;${row}M\x1b[<0;55;${row}m`);
     const probe = sparkTuiInput(randomUUID().replaceAll("-", ""));
