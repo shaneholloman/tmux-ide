@@ -138,7 +138,10 @@ export async function runPackedAutomationJourney({
       maxBuffer: 1024 * 1024,
     });
     const observations = JSON.parse(result.stdout);
-    assert.equal(readFileSync(targetFile, "utf8"), "PACK_PRIVATE_cli\nPACK_PRIVATE_sdk\n");
+    assert.equal(
+      readFileSync(targetFile, "utf8"),
+      "PACK_PRIVATE_cli\nPACK_PRIVATE_sdk\nPACK_PRIVATE_mcp\n",
+    );
     assert.equal(readFileSync(sourceFile, "utf8"), "");
     Object.assign(evidence, observations, { phase: "consumer-passed" });
     return evidence;

@@ -103,8 +103,49 @@ try {
   )?.endpoint;
   assert.ok(target && source);
   assert.deepEqual(target.serverScope, source.serverScope);
-  // Smoke the installed bundled entrypoint too; the full MCP failure matrix lives
-  // in the separate real HTTP integration test, not duplicated here.
+
+  // Reconciliation happens through actual daemon discovery, not fixture-issued credentials.
+  const credential = await until(() => {
+    let text;
+    try {
+      text = execFileSync(
+        "tmux",
+        [
+          "-S",
+          config.socket,
+          "show-options",
+          "-p",
+          "-v",
+          "-t",
+          config.sourcePane,
+          "@tmux_ide_source_credential_v1",
+        ],
+        { encoding: "utf8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"] },
+      ).trim();
+    } catch {
+      return null;
+    }
+    return text || null;
+  }, "source credential");
+  const sdk = createTmuxIdeAutomationSdk({
+    baseUrl: config.baseUrl,
+    ownerToken: config.ownerToken,
+    sourceCredential: credential,
+  });
+  const sdkPanes = await sdk.discover({ signal: lifetime.signal });
+  assert.ok(sdkPanes.panes.some((pane) => isDeepStrictEqual(pane.endpoint, target)));
+  const receipts = [];
+  const subscription = sdk.subscribe({
+    server: target.serverScope,
+    onBatch: (batch) => {
+      assert.deepEqual(batch.server, target.serverScope);
+      receipts.push(...batch.receipts);
+    },
+  });
+  subscriptions.add(subscription);
+  await subscription.ready;
+  // Exercise every tool through the installed bundled entrypoint. The separate
+  // source integration suite retains the full disconnect/cancellation fault matrix.
   const mcp = cliProcess(["mcp"], undefined, { raw: true, keepInput: true });
   let rpcId = 0;
   const rpc = async (method, params) => {
@@ -148,55 +189,16 @@ try {
   const mcpDiscovered = JSON.parse(mcpPanes.content[0].text);
   for (const endpoint of [source, target])
     assert.ok(mcpDiscovered.panes.some((pane) => isDeepStrictEqual(pane.endpoint, endpoint)));
-  await settleAutomationResources({
-    children: new Map([[mcp.child, mcp.done]]),
-    subscriptions: new Set(),
-  });
-  assert.equal((await mcp.done).oversized, false);
+  const mcpCall = async (name, args) => {
+    const result = await rpc("tools/call", { name, arguments: args });
+    assert.notEqual(result.isError, true, `Installed MCP ${name} failed`);
+    assert.equal(result.content[0]?.type, "text");
+    return JSON.parse(result.content[0].text);
+  };
 
-  // Reconciliation happens through actual daemon discovery, not fixture-issued credentials.
-  const credential = await until(() => {
-    let text;
-    try {
-      text = execFileSync(
-        "tmux",
-        [
-          "-S",
-          config.socket,
-          "show-options",
-          "-p",
-          "-v",
-          "-t",
-          config.sourcePane,
-          "@tmux_ide_source_credential_v1",
-        ],
-        { encoding: "utf8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"] },
-      ).trim();
-    } catch {
-      return null;
-    }
-    return text || null;
-  }, "source credential");
-  const sdk = createTmuxIdeAutomationSdk({
-    baseUrl: config.baseUrl,
-    ownerToken: config.ownerToken,
-    sourceCredential: credential,
-  });
-  const sdkPanes = await sdk.discover({ signal: lifetime.signal });
-  assert.ok(sdkPanes.panes.some((pane) => isDeepStrictEqual(pane.endpoint, target)));
-  const receipts = [];
-  const subscription = sdk.subscribe({
-    server: target.serverScope,
-    onBatch: (batch) => {
-      assert.deepEqual(batch.server, target.serverScope);
-      receipts.push(...batch.receipts);
-    },
-  });
-  subscriptions.add(subscription);
-  await subscription.ready;
   const handles = [];
   const reports = [];
-  for (const origin of ["cli", "sdk"]) {
+  for (const origin of ["cli", "sdk", "mcp"]) {
     const client =
       origin === "sdk"
         ? {
@@ -204,11 +206,17 @@ try {
             execute: (handle, intent) => sdk.execute(handle, intent, { signal: lifetime.signal }),
             status: (handle) => sdk.status(handle, { signal: lifetime.signal }),
           }
-        : {
-            reserve: (intent) => cli(["reserve"], intent),
-            execute: (handle, intent) => cli(["execute"], { version: 1, handle, intent }),
-            status: (handle) => cli(["status", handle.generation, handle.operationId]),
-          };
+        : origin === "mcp"
+          ? {
+              reserve: (intent) => mcpCall("tmux_prepare", { intent }),
+              execute: (handle, intent) => mcpCall("tmux_execute", { handle, intent }),
+              status: (handle) => mcpCall("tmux_operation_status", { handle }),
+            }
+          : {
+              reserve: (intent) => cli(["reserve"], intent),
+              execute: (handle, intent) => cli(["execute"], { version: 1, handle, intent }),
+              status: (handle) => cli(["status", handle.generation, handle.operationId]),
+            };
     const text = `PACK_PRIVATE_${origin}`;
     const intent = { kind: "send", target, source, text, enter: true };
     const { handle } = await client.reserve(intent);
@@ -257,11 +265,54 @@ try {
     }
     reports.push({ origin, send: handle, read: readHandle, readReplay: replay.read.availability });
   }
-  assert.equal(new Set(handles.map((handle) => JSON.stringify(handle))).size, 4);
-  assert.equal(readFileSync(config.targetFile, "utf8"), "PACK_PRIVATE_cli\nPACK_PRIVATE_sdk\n");
+  assert.equal(new Set(handles.map((handle) => JSON.stringify(handle))).size, 6);
+  assert.equal(
+    readFileSync(config.targetFile, "utf8"),
+    "PACK_PRIVATE_cli\nPACK_PRIVATE_sdk\nPACK_PRIVATE_mcp\n",
+  );
   assert.equal(readFileSync(config.sourceFile, "utf8"), "");
   assert.ok(!JSON.stringify(receipts).includes("PACK_PRIVATE_"));
   assert.ok(!JSON.stringify(receipts).includes("PACK_READ_PRIVATE"));
+  const mcpReceipts = [];
+  let mcpCursor = { server: target.serverScope, cursor: 0 };
+  await until(async () => {
+    const result = await mcpCall("tmux_interactions", { resume: mcpCursor, waitMs: 100 });
+    assert.deepEqual(result.cursor.server, target.serverScope);
+    assert.ok(result.cursor.cursor >= mcpCursor.cursor);
+    if (result.batch) {
+      assert.deepEqual(result.batch.server, target.serverScope);
+      assert.equal(result.batch.gap, null);
+      assert.equal(result.batch.after, mcpCursor.cursor);
+      assert.equal(result.batch.cursor, result.cursor.cursor);
+      mcpReceipts.push(...result.batch.receipts);
+      assert.ok(mcpReceipts.length <= 4096, "Installed MCP replay exceeded fixture bound");
+    }
+    mcpCursor = result.cursor;
+    return handles.every((handle) =>
+      mcpReceipts.some(
+        (receipt) => receipt.phase === "observed" && receipt.operationId === handle.operationId,
+      ),
+    );
+  }, "installed MCP scoped receipt replay");
+  for (const handle of handles)
+    assert.equal(
+      mcpReceipts.filter(
+        (receipt) => receipt.phase === "observed" && receipt.operationId === handle.operationId,
+      ).length,
+      1,
+    );
+  assert.ok(!JSON.stringify(mcpReceipts).includes("PACK_PRIVATE_"));
+  assert.ok(!JSON.stringify(mcpReceipts).includes("PACK_READ_PRIVATE"));
+  assert.deepEqual(await mcpCall("tmux_interactions", { resume: mcpCursor, waitMs: 100 }), {
+    cursor: mcpCursor,
+    batch: null,
+  });
+  await settleAutomationResources({
+    children: new Map([[mcp.child, mcp.done]]),
+    subscriptions: new Set(),
+  });
+  assert.equal((await mcp.done).oversized, false);
+
   const events = cliProcess(["events"], { server: target.serverScope, cursor: 0 });
   const batches = await until(() => {
     const lines = events.output().split("\n").filter(Boolean);
@@ -296,8 +347,10 @@ try {
     target,
     mcpTools,
     installedMcp: true,
+    installedMcpAllTools: true,
+    mcpEvents: true,
     operations: reports,
-    physicalLines: 2,
+    physicalLines: 3,
     sourcePhysicalLines: 0,
     cliEvents: true,
     sdkEvents: true,
