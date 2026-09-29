@@ -16,7 +16,9 @@ const output = resolve(process.argv[2] ?? ".tasks/isolated-product-performance")
 mkdirSync(dirname(output), { recursive: true, mode: 0o700 });
 mkdirSync(output, { mode: 0o700 });
 const preflightOnly = process.argv[3] === "--preflight-only";
-if (process.argv[3] && !preflightOnly) throw new Error("Unknown qualification mode");
+const portableOnly = process.argv[3] === "--portable-only";
+if (process.argv[3] && !preflightOnly && !portableOnly)
+  throw new Error("Unknown qualification mode");
 const cancellation = createPackedCancellation();
 const base = { ...process.env };
 for (const key of Object.keys(base))
@@ -70,44 +72,46 @@ try {
   clean();
   if (!provenance.cliSha256 || !provenance.tuiSha256)
     throw new Error("Build both CLI and TUI before qualification");
-  // Single-client paint lane: no ProductTestRig browser/TUI competes here.
-  fleet = await createScratchFleet({ sessions: 1, slug: `paint-${process.pid}` });
-  cleanup.fleet = "pending";
-  daemon = await startDaemon(fleet);
-  cleanup.daemon = "pending";
-  clean();
-  if (sha(join(root, "bin/cli.js")) !== provenance.cliSha256)
-    throw new Error("startDaemon rebuilt a different CLI artifact");
-  deterministicRebuildVerified = true;
-  const referenceEnv = {
-    ...base,
-    ...fleet.environment,
-    TMUX_IDE_TMUX_SOCKET_PATH: fleet.socketPath,
-    TMUX_IDE_TESTDRIVE_CANONICAL_HOME: fleet.daemonInfoDir,
-    TMUX_IDE_TESTDRIVE_RUNTIME_DIR: join(output, "reference-tui"),
-    TMUX_IDE_TESTDRIVE_HOST_SOCKET_PATH: fleet.socketPath,
-    TMUX_IDE_TESTDRIVE_HOST_SESSION: `_paint-${process.pid}`,
-  };
-  await run(
-    "reference",
-    [
-      "scripts/performance-reference.mjs",
-      "--no-build",
-      "--input-samples",
-      "36",
-      "--report",
-      join(output, "reference.json"),
-      "--require-complete",
-      ...(preflightOnly ? ["--preflight-only"] : []),
-    ],
-    referenceEnv,
-  );
-  await daemon.stop();
-  daemon = null;
-  cleanup.daemon = "confirmed";
-  await fleet.dispose();
-  fleet = null;
-  cleanup.fleet = "confirmed";
+  if (!portableOnly) {
+    // Single-client paint lane: no ProductTestRig browser/TUI competes here.
+    fleet = await createScratchFleet({ sessions: 1, slug: `paint-${process.pid}` });
+    cleanup.fleet = "pending";
+    daemon = await startDaemon(fleet);
+    cleanup.daemon = "pending";
+    clean();
+    if (sha(join(root, "bin/cli.js")) !== provenance.cliSha256)
+      throw new Error("startDaemon rebuilt a different CLI artifact");
+    deterministicRebuildVerified = true;
+    const referenceEnv = {
+      ...base,
+      ...fleet.environment,
+      TMUX_IDE_TMUX_SOCKET_PATH: fleet.socketPath,
+      TMUX_IDE_TESTDRIVE_CANONICAL_HOME: fleet.daemonInfoDir,
+      TMUX_IDE_TESTDRIVE_RUNTIME_DIR: join(output, "reference-tui"),
+      TMUX_IDE_TESTDRIVE_HOST_SOCKET_PATH: fleet.socketPath,
+      TMUX_IDE_TESTDRIVE_HOST_SESSION: `_paint-${process.pid}`,
+    };
+    await run(
+      "reference",
+      [
+        "scripts/performance-reference.mjs",
+        "--no-build",
+        "--input-samples",
+        "36",
+        "--report",
+        join(output, "reference.json"),
+        "--require-complete",
+        ...(preflightOnly ? ["--preflight-only"] : []),
+      ],
+      referenceEnv,
+    );
+    await daemon.stop();
+    daemon = null;
+    cleanup.daemon = "confirmed";
+    await fleet.dispose();
+    fleet = null;
+    cleanup.fleet = "confirmed";
+  }
 
   // Separate multi-client coherence lane: actual rig Web+TUI are intentional.
   rigAttempted = true;
@@ -165,7 +169,7 @@ try {
         {
           schemaVersion: 1,
           completed: failures.length === 0,
-          mode: preflightOnly ? "preflight-only" : "measurement",
+          mode: preflightOnly ? "preflight-only" : portableOnly ? "portable-only" : "measurement",
           source: provenance,
           finalSource,
           deterministicRebuildVerified,

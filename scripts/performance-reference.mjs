@@ -348,6 +348,10 @@ async function measureStartup() {
       ordinal,
       class: ordinal === 0 ? "process-cold" : "warm-repeat",
       phases: Object.fromEntries(marks.map((mark) => [mark.phase, mark.elapsedMs])),
+      // Preserve clock/process context so pre-entry delays can be investigated
+      // without relabeling a later warmed process as the first cold launch.
+      lifecycleMarks: marks,
+
       firstUsableMs: Math.max(
         ...marks
           .filter(({ phase }) => phase === "first-frame" || phase === "first-terminal-frame")
