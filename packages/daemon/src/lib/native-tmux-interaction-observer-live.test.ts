@@ -137,7 +137,8 @@ describe.skipIf(!binary)("native observer with isolated production tmux", () => 
   it("keeps one persistent peer across old lease boundaries and observes a wake once", async () => {
     const f = fixture(30);
     try {
-      await f.observer.start();
+      const started = await f.observer.start();
+      expect(started, JSON.stringify(f.events)).toBe("ready");
       await until(() => f.capability().waitingReaders === 1);
       const peer = f.readerPid();
       expect(peer).toHaveLength(1);

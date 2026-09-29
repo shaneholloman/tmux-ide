@@ -160,7 +160,9 @@ export class NativeTmuxInteractionObserver {
       runTmux: createServerGenerationFencedTmuxAsyncRunner(
         options.tmuxAuthority,
         options.nativeServerIdentity,
-        { timeoutMs: this.#waitMs },
+        // Per-request signals enforce their own budget; this shared runner must
+        // accommodate both startup commands and legacy reader leases.
+        { timeoutMs: Math.max(this.#commandMs, this.#waitMs) },
       ),
       delay,
     };
