@@ -71,7 +71,8 @@ function observer() {
       socketSelector: { kind: "path", path: "/test/socket" },
     },
     nativeServerIdentity: { pid: "1", startTime: "1" },
-    timing: { commandMs: 10, waitMs: 1000, retryMs: 1, maxRetryMs: 1 },
+    // Exercise handshake/read deadline retirement independently of batching cadence.
+    timing: { commandMs: 10, waitMs: 1000, retryMs: 1, maxRetryMs: 1, observationBatchMs: 0 },
     onEvent: () => {},
   });
 }

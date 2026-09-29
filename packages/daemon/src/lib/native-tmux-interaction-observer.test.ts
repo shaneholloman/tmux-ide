@@ -401,7 +401,7 @@ describe("native observer lifecycle", () => {
   });
 });
 
-describe("opt-in observation batching", () => {
+describe("observation batching", () => {
   it.each([16, 32] as const)(
     "drains a quiet trailing record after one fixed %ims window",
     async (window) => {
@@ -541,7 +541,7 @@ describe("opt-in observation batching", () => {
 });
 
 describe("observation batching defaults and failure", () => {
-  it.each([undefined, 0] as const)("keeps %s batching immediate", async (window) => {
+  it.each([undefined, 0] as const)("uses the selected %s batching policy", async (window) => {
     let reads = 0;
     const f = fixture(
       async (args, signal) => {
@@ -552,8 +552,15 @@ describe("observation batching defaults and failure", () => {
     );
     await f.observer.start();
     await flush();
+    if (window === undefined) {
+      expect(reads).toBe(1);
+      expect(f.delays).toEqual([32]);
+      f.releases[0]!();
+      await flush();
+    } else {
+      expect(f.delays).toEqual([]);
+    }
     expect(reads).toBe(2);
-    expect(f.delays).toEqual([]);
     await f.observer.dispose();
   });
   it.each([16, 32] as const)("schedules no %ims window after consumer failure", async (window) => {

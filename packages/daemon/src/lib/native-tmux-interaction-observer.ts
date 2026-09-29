@@ -153,7 +153,7 @@ export class NativeTmuxInteractionObserver {
     this.#retryMs = bounded(options.timing?.retryMs, 1_000, 60_000);
     this.#maxRetryMs = bounded(options.timing?.maxRetryMs, 30_000, 300_000);
     if (this.#maxRetryMs < this.#retryMs) throw new TypeError("Invalid native retry bounds");
-    this.#observationBatchMs = options.timing?.observationBatchMs ?? 0;
+    this.#observationBatchMs = options.timing?.observationBatchMs ?? 32;
     if (![0, 16, 32].includes(this.#observationBatchMs))
       throw new TypeError("Invalid native observation batching window");
     this.#io = options.io ?? {
