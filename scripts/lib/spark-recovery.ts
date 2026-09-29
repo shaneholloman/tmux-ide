@@ -52,6 +52,13 @@ type Stage =
   | "stale-endpoint"
   | "local-health"
   | "cleanup";
+type ForwardLossCheckpoint =
+  | "retained-forward-loss"
+  | "primary-forward-identity"
+  | "primary-forward-exit"
+  | "primary-forward-absence"
+  | "machine-endpoint-offline"
+  | "home-stream-settled";
 type FailureCode =
   | "assertion"
   | "deadline"
@@ -126,6 +133,8 @@ export async function qualifySparkHomeRecovery(options: {
   let stage: Stage = "local-admission";
   let failureStage: Stage | null = null;
   let failureCode: FailureCode | null = null;
+  let forwardLossCheckpoint: ForwardLossCheckpoint | null = null;
+  let failureCheckpoint: ForwardLossCheckpoint | null = null;
   const proof = {
     reconnect: false,
     automaticHomeCursor: false,
@@ -140,6 +149,7 @@ export async function qualifySparkHomeRecovery(options: {
   const fail = (error: unknown, failedStage: Stage) => {
     if (failureStage !== null) return;
     failureStage = failedStage;
+    failureCheckpoint = failedStage === "forward-loss" ? forwardLossCheckpoint : null;
     failureCode = sparkRecoveryFailureCode(error, signal);
   };
   const wait = async (predicate: () => boolean, timeout = 20000) => {
@@ -472,16 +482,22 @@ export async function qualifySparkHomeRecovery(options: {
     const witness = await connect({ alias: config.ssh.alias }, true);
     stage = "forward-loss";
     hold();
+    forwardLossCheckpoint = "retained-forward-loss";
     await bound(options.retainedTui?.forwardLost() ?? Promise.resolve());
+    forwardLossCheckpoint = "primary-forward-identity";
     const currentPrimary = (): typeof primary => primary;
     const interrupted = currentPrimary();
     assert(interrupted?.child.pid);
     assert.equal(await options.identify(interrupted.child.pid), interrupted.witness);
     assert(interrupted.child.kill("SIGTERM"));
+    forwardLossCheckpoint = "primary-forward-exit";
     await bound(children.get(interrupted.child)!);
+    forwardLossCheckpoint = "primary-forward-absence";
     assert.equal(await options.identify(interrupted.child.pid), null);
+    forwardLossCheckpoint = "machine-endpoint-offline";
     await wait(() => handle.endpoint().state !== "ready");
     await Promise.resolve();
+    forwardLossCheckpoint = "home-stream-settled";
     await bound(originalSubscription.stream.done.catch(() => {}));
     const savedCursor = originalSubscription.stream.getCursor().cursor;
     assert(savedCursor >= before.sequence);
@@ -655,6 +671,7 @@ export async function qualifySparkHomeRecovery(options: {
     ...proof,
     failureStage,
     failureCode,
+    failureCheckpoint,
     retainedTuiQualified: false,
     nativeIdleQualified: false,
     managedCleanupRequired: true,
