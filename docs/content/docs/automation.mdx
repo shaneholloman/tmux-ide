@@ -72,6 +72,36 @@ same adapter origin. Older automation clients that omit it retain `sdk`.
 Source and target may belong to different registered servers on the same
 daemon. Invalid or stale source claims are rejected rather than reassigned.
 
+## Understand observation coverage
+
+An authored operation and an observed tmux command provide different evidence.
+The automation API records the requested operation and its result. When native
+evidence can be explicitly correlated with that operation, it enriches the same
+interaction rather than appearing as another send or read.
+
+Stock tmux observation has partial coverage. Missing activity does not prove
+that no command ran, and a hook's client is not automatically the original
+sender. Raw commands may have an unknown source. Server registrations and pane
+lifetimes keep evidence from separate tmux servers apart, even when their pane
+numbers match.
+
+Experimental native observation uses a bounded metadata journal on a capable
+tmux server. It is disabled by default and must be selected explicitly. Replacing
+the tmux executable does not upgrade an already running server or enable this
+coverage for existing sessions. Development-instance configuration is described
+in the [development worktree guide](https://github.com/wavyrai/tmux-ide/blob/main/docs/guides/development-worktrees.md).
+
+Observation describes effects, not intent: captured output does not prove an
+agent understood it, and queued input does not prove the recipient acted on it.
+Viewer connections used by tmux-ide do not represent another agent reading or
+messaging the pane. Native connection evidence is not a security boundary against
+another process running as the same user.
+
+History is bounded and can be lost when a server restarts or a reader falls
+behind. Keep the server-scoped cursor and handle reported gaps or unavailable
+coverage explicitly. A lost observation must not trigger a resend of an
+uncertain operation.
+
 ## MCP
 
 Configure your harness to launch this stdio server:
