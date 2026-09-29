@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
     throw new Error("unreaped peer");
   }),
   run: vi.fn(),
+  failRead: undefined as undefined | ((error: Error) => void),
 }));
 vi.mock("./tmux-server-generation-runner.ts", () => ({
   createServerGenerationFencedTmuxAsyncRunner: () => mocks.run,
@@ -17,6 +18,7 @@ vi.mock("./native-journal-control-connection.ts", () => ({
     async start() {}
     read(_cursor: unknown, signal: AbortSignal) {
       return new Promise<string>((_resolve, reject) => {
+        mocks.failRead = reject;
         if (signal.aborted) reject(signal.reason);
         else signal.addEventListener("abort", () => reject(signal.reason), { once: true });
       });
@@ -28,8 +30,9 @@ import { NativeTmuxInteractionObserver } from "./native-tmux-interaction-observe
 afterEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
+  mocks.failRead = undefined;
 });
-it("an expired idle lease cannot respawn after its owned peer fails to reap", async () => {
+it("a failed parked read cannot respawn after its owned peer fails to reap", async () => {
   vi.useFakeTimers();
   mocks.run.mockResolvedValue(
     JSON.stringify({
@@ -66,6 +69,12 @@ it("an expired idle lease cannot respawn after its owned peer fails to reap", as
     },
   });
   await observer.start();
+  await vi.advanceTimersByTimeAsync(100);
+  expect(states).toEqual(["probing", "ready"]);
+  expect(mocks.dispose).not.toHaveBeenCalled();
+  expect(vi.getTimerCount()).toBe(0);
+  expect(mocks.failRead).toBeTypeOf("function");
+  mocks.failRead!(new Error("peer disconnected"));
   await vi.advanceTimersByTimeAsync(100);
   expect(states).toContain("degraded");
   expect(states).not.toContain("retrying");

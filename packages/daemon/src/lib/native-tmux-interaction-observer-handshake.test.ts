@@ -110,7 +110,7 @@ afterEach(() => {
   vi.resetAllMocks();
 });
 
-it("hundreds of completed batches retain only the active read lease, not handshake deadlines", async () => {
+it("hundreds of completed batches leave no idle lease or handshake deadline", async () => {
   const timeout = vi.spyOn(AbortSignal, "timeout");
   let remaining = 300;
   mocks.read.mockImplementation((cursor: NativeJournalCursor, signal: AbortSignal) =>
@@ -124,10 +124,12 @@ it("hundreds of completed batches retain only the active read lease, not handsha
     expect(mocks.construct).toHaveBeenCalledTimes(1);
     expect(mocks.start).toHaveBeenCalledTimes(1);
     expect(timeout).not.toHaveBeenCalled();
-    expect(vi.getTimerCount()).toBe(1);
-    await vi.advanceTimersByTimeAsync(20);
-    expect(vi.getTimerCount()).toBe(1);
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(125_000);
+    expect(vi.getTimerCount()).toBe(0);
     expect(mocks.dispose).not.toHaveBeenCalled();
+    expect(mocks.read).toHaveBeenCalledTimes(301);
+    expect(mocks.construct).toHaveBeenCalledTimes(1);
   } finally {
     await reader.dispose();
     timeout.mockRestore();
