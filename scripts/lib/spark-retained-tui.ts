@@ -1,5 +1,6 @@
 /** Optional physical-recovery observer: real retained compiled TUI PTYs, not Home models. */
 import assert from "node:assert/strict";
+import { createSparkTuiLogCapture } from "./spark-private-diagnostics.ts";
 import { admitSparkQualifiedTui } from "./spark-qualified-tui.ts";
 import { EventEmitter } from "node:events";
 import { execFile } from "node:child_process";
@@ -344,6 +345,8 @@ export async function createSparkRetainedTuiObserver(options: {
     boundary:
       "real PTY input through product transport to parsed TUI output; no optical or latency claim",
   };
+  const diagnosticStreams: Array<NonNullable<ReturnType<typeof createSparkTuiLogCapture>>> = [];
+  const diagnosticReceipts: unknown[] = [];
   const timing = createSparkTuiTimings();
   const clients = new Map<"remote" | "local", Client>();
   const diagnostics = createRetainedTuiDiagnostics(root, () =>
@@ -445,6 +448,12 @@ export async function createSparkRetainedTuiObserver(options: {
       writeDevelopmentRecord(receipt, admission);
       admissions.add(receipt);
       qualifiedTui?.revalidate();
+      const diagnostic = createSparkTuiLogCapture(
+        join(instance.root, `tui-diagnostics-${randomUUID()}.pipe`),
+        join(root, `${side}-diagnostics.jsonl`),
+      );
+      if (diagnostic) diagnosticStreams.push(diagnostic);
+      else diagnosticReceipts.push({ side, captured: false });
       const pty = ptyModule.spawn(
         qualifiedTui?.binary ?? build.tui,
         ["app", ...(side === "remote" ? [`--ssh=${config.ssh.alias}`] : [])],
@@ -453,6 +462,7 @@ export async function createSparkRetainedTuiObserver(options: {
           env: {
             ...ownerEnvironment,
             TERM: "xterm-256color",
+            ...(diagnostic ? { TMUX_IDE_TUI_LOG: diagnostic.path } : {}),
             ...(side === "remote" ? { PATH: `${bin}:${ownerEnvironment.PATH ?? ""}` } : {}),
           },
           cols: 120,
@@ -741,16 +751,26 @@ export async function createSparkRetainedTuiObserver(options: {
       ...report,
       failure: diagnostics.report(),
       timings: timing.snapshot(),
+      diagnosticReceipts: [...diagnosticReceipts],
       retainedTuiQualified: assessSparkRetainedTuiReport(report).qualified,
     }),
   };
   return {
     ...hooks,
     close: () =>
-      (closeFlight ??= hooks.close().catch((error) => {
-        diagnostics.fail(error);
-        throw error;
-      })),
+      (closeFlight ??= hooks
+        .close()
+        .catch((error) => {
+          diagnostics.fail(error);
+          throw error;
+        })
+        .finally(() => {
+          if (report.cleanup) {
+            for (const stream of diagnosticStreams) diagnosticReceipts.push(stream.close());
+            diagnosticStreams.length = 0;
+          }
+          // On uncertain retirement, keep draining so a surviving writer is never orphaned.
+        })),
     baseline: () => track(() => timing.run("baseline", "hook", hooks.baseline)),
     forwardLost: () => track(() => timing.run("forward-loss", "hook", hooks.forwardLost)),
     forwarded: () => track(() => timing.run("reconnect", "hook", hooks.forwarded)),

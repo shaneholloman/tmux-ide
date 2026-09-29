@@ -1,5 +1,7 @@
 /** Opt-in physical phase; prepared managed owners only, no owner creation or automatic retry. */
 import assert from "node:assert/strict";
+import { preserveSparkDiagnostic, readSparkPrivateLog } from "./lib/spark-private-diagnostics.ts";
+import { resolveDevelopmentInstance } from "../packages/daemon/src/lib/development-instance.ts";
 import { dirname, join, resolve } from "node:path";
 import { writeFileSync } from "node:fs";
 import { createRoot } from "solid-js";
@@ -120,6 +122,17 @@ it.skipIf(!process.env.SPARK_RECOVERY_CONFIG)(
         flag: "wx",
       });
     } finally {
+      await preserveSparkDiagnostic(
+        () =>
+          readSparkPrivateLog(
+            join(resolveDevelopmentInstance(config.local.instance).root, "logs/owner.log"),
+          ),
+        (value) =>
+          writeFileSync(join(parent, "local-owner-log.json"), JSON.stringify(value), {
+            flag: "wx",
+            mode: 0o600,
+          }),
+      );
       process.off("SIGINT", cancel);
       process.off("SIGTERM", cancel);
       if (retained) {

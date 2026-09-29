@@ -194,3 +194,24 @@ test("cleanup admits canonical private state and only launch records matching ma
     f.dispose();
   }
 });
+
+test("failed log capture or evidence write never skips supported retirement", async () => {
+  for (const failure of ["capture", "save"]) {
+    const f = fixture();
+    try {
+      if (failure === "capture")
+        f.io.logs = async () => {
+          throw Error("private log unavailable");
+        };
+      else writeFileSync(join(f.root, "cleanup-logs.json"), "preserve existing", { mode: 0o600 });
+      await cleanupSparkManagedInstance(f.d, f.io);
+      assert(f.events.includes("down") && f.events.includes("reset"));
+      assert.equal(
+        JSON.parse(readFileSync(join(f.root, "cleanup-done.json"), "utf8")).logsCaptured,
+        false,
+      );
+    } finally {
+      f.dispose();
+    }
+  }
+});

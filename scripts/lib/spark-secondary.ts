@@ -212,7 +212,7 @@ export async function sparkSecondaryAction(
         "Secondary process incarnation changed",
       );
       const observed = await io.observe({ kind: "path", path: socket });
-      assert(observed?.valid());
+      assert(observed && observed.valid());
       assert.deepEqual(observed.nativeServerIdentity, {
         pid: proof.pid,
         startTime: proof.startTime,

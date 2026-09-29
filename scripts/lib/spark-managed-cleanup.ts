@@ -1,5 +1,6 @@
 /** Qualification-only retirement; uncertainty retains the private source and evidence. */
 import assert from "node:assert/strict";
+import { preserveSparkDiagnostic, readSparkPrivateLog } from "./spark-private-diagnostics.ts";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { connect } from "node:net";
@@ -153,7 +154,26 @@ export async function cleanupSparkManagedInstance(d: Descriptor, testIO?: Cleanu
       });
       return { processes, port: status.daemon?.port ?? null };
     },
-    logs: () => developmentLogs(instance),
+    logs: async () => {
+      let structured: unknown, privateOwner: unknown;
+      await Promise.all([
+        preserveSparkDiagnostic(
+          () => developmentLogs(instance),
+          (value) => {
+            structured = value;
+          },
+          1000,
+        ),
+        preserveSparkDiagnostic(
+          () => readSparkPrivateLog(join(instance.root, "logs/owner.log")),
+          (value) => {
+            privateOwner = value;
+          },
+          1000,
+        ),
+      ]);
+      return { structured, privateOwner };
+    },
     manager: async (action) => {
       // Replacement uses daemon-only down; cleanup must retire the full private server.
       const argv = sparkManagerArgv(d, action).filter((arg) => arg !== "--daemon-only");
@@ -207,7 +227,7 @@ export async function cleanupSparkManagedInstance(d: Descriptor, testIO?: Cleanu
   await io.retireSecondary();
   const before = await io.snapshot();
   save("cleanup-before.json", before);
-  save("cleanup-logs.json", await io.logs());
+  const logs = await preserveSparkDiagnostic(io.logs, (value) => save("cleanup-logs.json", value));
   await io.manager("down");
   const status = await io.manager("status");
   stopped(status);
@@ -219,6 +239,11 @@ export async function cleanupSparkManagedInstance(d: Descriptor, testIO?: Cleanu
   save("cleanup-stopped.json", { version: 1, status, registry });
   await io.manager("reset");
   assert(io.resetVerified(), "Managed reset incomplete; retain private evidence");
-  save("cleanup-done.json", { version: 1, stopped: true, reset: true });
+  save("cleanup-done.json", {
+    version: 1,
+    stopped: true,
+    reset: true,
+    logsCaptured: logs.captured,
+  });
   return { cleaned: true, privateEvidenceRetained: true };
 }
