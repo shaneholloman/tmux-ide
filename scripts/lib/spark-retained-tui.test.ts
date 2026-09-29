@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
   sparkTuiInput,
+  sparkTuiAdmission,
   assessSparkRetainedTuiReport,
   createRetainedTuiWorkLifetime,
 } from "./spark-retained-tui.ts";
@@ -186,4 +187,22 @@ test("cleanup cancels observer work and refuses unsettled or new hooks", async (
   await assert.rejects(stuck.settle(10), /retirement unproven/u);
   rejectLate(Error("late rejection is consumed"));
   await stuck.settle(10);
+});
+
+test("startup admits Home selection or sole-session automatic open without Enter in terminal", () => {
+  assert.equal(
+    sparkTuiAdmission(
+      "Home F1  Terminals F2\nYour agents, across your machines\nattribution-collision",
+    ),
+    "home",
+  );
+  assert.equal(sparkTuiAdmission("Home F1  Terminals F2\nattribution-collision\n$"), "terminal");
+  for (const frame of [
+    "Loading attribution-collision",
+    "Terminals F2 attribution-collision PASSIVE PREVIEW",
+    "Terminals F2 another-session",
+    "Terminals F2 attribution-collision-other",
+    "Your agents, across your machines",
+  ])
+    assert.equal(sparkTuiAdmission(frame), null);
 });

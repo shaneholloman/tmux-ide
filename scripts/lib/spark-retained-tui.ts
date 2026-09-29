@@ -29,7 +29,18 @@ import {
 import { readTmux, socketIdentity } from "../../packages/daemon/src/lib/development-lifecycle.ts";
 import { revalidateUnixSocketIdentity } from "../../packages/daemon/src/lib/unix-socket-authority.ts";
 
-const SESSION = "attribution-collision";
+import {
+  createRetainedTuiDiagnostics,
+  RetainedTuiDeadline,
+} from "./spark-retained-tui-diagnostics.ts";
+
+/** A sole local session may open directly, before a persistent Home frame exists. */
+export function sparkTuiAdmission(frame: string): "home" | "terminal" | null {
+  if (!/(?:^|[^A-Za-z0-9_.-])attribution-collision(?:$|[^A-Za-z0-9_.-])/u.test(frame)) return null;
+  if (frame.includes("Your agents, across your machines")) return "home";
+  return /Terminals\s+F2/u.test(frame) && !frame.includes("PASSIVE PREVIEW") ? "terminal" : null;
+}
+
 const execute = promisify(execFile);
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 
@@ -235,6 +246,15 @@ export async function createSparkRetainedTuiObserver(options: {
       "real PTY input through product transport to parsed TUI output; no optical or latency claim",
   };
   const clients = new Map<"remote" | "local", Client>();
+  const diagnostics = createRetainedTuiDiagnostics(root, () =>
+    [...clients].map(([side, client]) => ({
+      side,
+      frame: client.frame(),
+      parsed: client.parsed,
+      bytes: client.bytes,
+      exited: client.exited,
+    })),
+  );
   const admissions = new Set<string>();
   const tracker = ownedProcesses({
     identify: options.identify,
@@ -256,7 +276,15 @@ export async function createSparkRetainedTuiObserver(options: {
   let closeFlight: Promise<void> | null = null;
   const lifetime = createRetainedTuiWorkLifetime(options.signal);
   const signal = lifetime.signal;
-  const track = lifetime.track;
+  const track = (work: () => Promise<void>) =>
+    lifetime.track(async () => {
+      try {
+        await work();
+      } catch (error) {
+        diagnostics.fail(error);
+        throw error;
+      }
+    });
   let oldForward: { pid: number; witness: string } | null = null;
   let remoteLease = config.remote.lease.expected;
   let reconnectedForward: { pid: number; witness: string } | null = null;
@@ -268,7 +296,7 @@ export async function createSparkRetainedTuiObserver(options: {
         signal.throwIfAborted();
         return;
       }
-      assert(Date.now() < end, "Retained TUI deadline");
+      if (Date.now() >= end) throw new RetainedTuiDeadline();
       await new Promise((done) => setTimeout(done, 25));
     }
   };
@@ -280,6 +308,7 @@ export async function createSparkRetainedTuiObserver(options: {
     await developmentSshHandshake(instance, config.local.expected);
   };
   async function open(side: "remote" | "local") {
+    diagnostics.checkpoint("admission", side);
     signal.throwIfAborted();
     await localHealth();
     const req = createRequire(join(instance.worktree, "packages/daemon/package.json"));
@@ -377,20 +406,18 @@ export async function createSparkRetainedTuiObserver(options: {
       writeDevelopmentRecord(receipt, { ...admission, pid: pty.pid, incarnation });
     });
     const client = clients.get(side)!;
+    diagnostics.checkpoint("home-frame", side);
     await wait(() => {
       assert(!client.exited && !client.overflow);
-      return (
-        client.frame().includes("Your agents, across your machines") &&
-        client.frame().includes(SESSION)
-      );
+      return sparkTuiAdmission(client.frame()) !== null;
     });
-    client.pty.write("\r");
-    await wait(
-      () =>
-        !client.frame().includes("Your agents, across your machines") &&
-        !client.frame().includes("PASSIVE PREVIEW") &&
-        client.frame().includes(SESSION),
-    );
+    diagnostics.checkpoint("terminal-frame", side);
+    // Re-read immediately before input: an automatic local open can race Home paint.
+    if (sparkTuiAdmission(client.frame()) === "home") client.pty.write("\r");
+    await wait(() => {
+      assert(!client.exited && !client.overflow);
+      return sparkTuiAdmission(client.frame()) === "terminal";
+    });
     await tracker.capture();
   }
   const sameClient = async (client: Client) => {
@@ -403,7 +430,9 @@ export async function createSparkRetainedTuiObserver(options: {
   };
   async function input(side: "remote" | "local", stage: string, output?: string) {
     const client = clients.get(side)!;
+    diagnostics.checkpoint("identity", side);
     await sameClient(client);
+    diagnostics.checkpoint("output-frame", side);
     if (output) await wait(() => client.frame().includes(output));
     const frame = client.frame();
     const row = output ? frame.split("\n").findIndex((line) => line.includes(output)) + 1 : 16;
@@ -411,6 +440,7 @@ export async function createSparkRetainedTuiObserver(options: {
     const probe = sparkTuiInput(randomUUID().replaceAll("-", ""));
     assert(!client.frame().includes(probe.marker));
     const parsedBefore = client.parsed;
+    diagnostics.checkpoint("input-frame", side);
     client.pty.write(probe.command);
     await wait(() => client.parsed > parsedBefore && client.frame().includes(probe.marker));
     await sameClient(client);
@@ -429,6 +459,7 @@ export async function createSparkRetainedTuiObserver(options: {
   async function remoteIo(stage: SparkTuiStage) {
     const expected = `SPARK_TUI_${stage.toUpperCase()}`;
     assert(!clients.get("remote")!.frame().includes(expected), "Output marker already rendered");
+    diagnostics.checkpoint("output-action", "remote");
     assert.deepEqual(await options.remoteOutput(stage), { emitted: expected });
     await input("remote", stage, expected);
     await input("local", stage);
@@ -436,6 +467,7 @@ export async function createSparkRetainedTuiObserver(options: {
     report.localSibling = true;
   }
   async function forward() {
+    diagnostics.checkpoint("forward-discovery", "remote");
     let found: { pid: number; witness: string } | null = null;
     await wait(async () => {
       await tracker.capture();
@@ -475,6 +507,8 @@ export async function createSparkRetainedTuiObserver(options: {
   }
   const hooks = {
     async baseline() {
+      diagnostics.phase("baseline");
+      diagnostics.checkpoint("baseline");
       assert(!closed && !report.baseline);
       await open("local");
       await open("remote");
@@ -483,6 +517,8 @@ export async function createSparkRetainedTuiObserver(options: {
       report.baseline = true;
     },
     async forwardLost() {
+      diagnostics.phase("forward-loss");
+      diagnostics.checkpoint("forward-loss");
       assert(report.baseline && !closed && !report.forwardLoss);
       writeFileSync(join(root, "hold.json"), JSON.stringify({ held: true }), {
         flag: "wx",
@@ -497,6 +533,8 @@ export async function createSparkRetainedTuiObserver(options: {
       report.forwardLoss = true;
     },
     async forwarded() {
+      diagnostics.phase("reconnect");
+      diagnostics.checkpoint("reconnect");
       assert(report.forwardLoss && !closed);
       assert.deepEqual(readPrivateDevelopmentRecord(join(root, "hold.json")), { held: true });
       rmSync(join(root, "hold.json"));
@@ -508,6 +546,8 @@ export async function createSparkRetainedTuiObserver(options: {
       report.reconnect = true;
     },
     async replaced(lease: DevelopmentSshLease) {
+      diagnostics.phase("replacement");
+      diagnostics.checkpoint("replacement");
       assert(report.reconnect && !closed);
       const candidate = validateSparkCanonicalConfig({
         ...config,
@@ -535,6 +575,8 @@ export async function createSparkRetainedTuiObserver(options: {
       report.replacement = true;
     },
     async close() {
+      diagnostics.phase("cleanup");
+      diagnostics.checkpoint("cleanup");
       if (closed) return;
       closed = true;
       lifetime.abort();
@@ -577,12 +619,17 @@ export async function createSparkRetainedTuiObserver(options: {
     },
     report: () => ({
       ...report,
+      failure: diagnostics.report(),
       retainedTuiQualified: assessSparkRetainedTuiReport(report).qualified,
     }),
   };
   return {
     ...hooks,
-    close: () => (closeFlight ??= hooks.close()),
+    close: () =>
+      (closeFlight ??= hooks.close().catch((error) => {
+        diagnostics.fail(error);
+        throw error;
+      })),
     baseline: () => track(hooks.baseline),
     forwardLost: () => track(hooks.forwardLost),
     forwarded: () => track(hooks.forwarded),
