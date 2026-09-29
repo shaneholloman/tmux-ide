@@ -355,6 +355,7 @@ export class SessionRuntimeTerminalReplicaOwner {
     reason: "pane-closed" | "session-restarted" | "runtime-disposed" = "runtime-disposed",
   ): Promise<void> {
     if (this.#disposed) return;
+    this.#noteLifecycle(`dispose-${reason}`);
     this.#disposed = true;
     this.#historyTimer?.cancel();
     this.#historyTimer = null;
@@ -482,10 +483,12 @@ export class SessionRuntimeTerminalReplicaOwner {
               }),
       );
     } else if (event.type === "fault") {
+      this.#noteLifecycle("upstream-fault");
       const error = new Error("Native terminal recovery failed");
       this.#interpreter.abort(error);
       this.#onFault?.(error);
     } else if (event.type === "closed") {
+      this.#noteLifecycle("upstream-closed");
       const closed = this.#interpreter.enqueue({ type: "close", reason: "pane-closed" });
       this.#supervise(closed);
       void closed.then(
@@ -607,11 +610,13 @@ export class SessionRuntimeTerminalReplicaOwner {
   #retryReseedOrFault(message: string): void {
     if (this.#disposed || this.#waitingForGeometryCapture) return;
     if (this.#reseedRetryCount >= 1) {
+      this.#noteLifecycle("reseed-exhausted");
       const error = new Error(message);
       this.#interpreter.abort(error);
       this.#onFault?.(error);
       return;
     }
+    this.#noteLifecycle("reseed-retry");
     this.#reseedRetryCount += 1;
     this.#waitingForGeometryCapture = true;
     void this.#start.then(() => {
@@ -621,9 +626,31 @@ export class SessionRuntimeTerminalReplicaOwner {
 
   #supervise(operation: Promise<void>): void {
     void operation.catch((error) => {
+      this.#noteLifecycle("interpreter-fault");
       this.#interpreter.abort(error);
       this.#onFault?.(error);
     });
+  }
+
+  #noteLifecycle(
+    reason:
+      | "dispose-pane-closed"
+      | "dispose-session-restarted"
+      | "dispose-runtime-disposed"
+      | "upstream-fault"
+      | "upstream-closed"
+      | "reseed-exhausted"
+      | "reseed-retry"
+      | "interpreter-fault",
+  ): void {
+    if (!this.#observability.enabled) return;
+    try {
+      const at = this.#observability.nowMicros();
+      // Closed vocabulary only: never include terminal bytes or exception messages.
+      this.#observability.recordSpan("reduce", `terminal-replica-${reason}`, at, at);
+    } catch {
+      // Optional qualification diagnostics must not affect lifecycle handling.
+    }
   }
 
   #consumeOutputTrace(): SessionRuntimeTraceContext | null {

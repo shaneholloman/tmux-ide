@@ -3,6 +3,7 @@ import type { CanonicalTerminalReplicaUpdate } from "@tmux-ide/contracts";
 import type { MirrorSubscribeRequest, MirrorSubscription } from "../mirror/mirror-service.ts";
 import { TerminalReplicaInterpreter } from "./terminal-replica-interpreter.ts";
 import { SessionRuntimeTerminalReplicaOwner } from "./terminal-replica-owner.ts";
+import { createSessionRuntimeObservability } from "./runtime-observability.ts";
 import type { SessionRuntimeTraceContext } from "./runtime-observability.ts";
 
 const generation = "00000000-0000-4000-8000-000000000001";
@@ -784,6 +785,7 @@ describe("SessionRuntimeTerminalReplicaOwner", () => {
   ] as const)("retries once then fails closed for %s", async (_label, candidateLayout, native) => {
     let reseeds = 0;
     const faults: unknown[] = [];
+    const observability = createSessionRuntimeObservability();
     const mirror = {
       subscribe: async (candidate: MirrorSubscribeRequest): Promise<MirrorSubscription> => {
         const emitInvalid = () => {
@@ -811,11 +813,18 @@ describe("SessionRuntimeTerminalReplicaOwner", () => {
         incarnation: `${generation}:0`,
         initialRevision: 0,
         onFault: (error) => faults.push(error),
+        observability,
       },
     );
     await expect(owner.subscribe(() => undefined)).rejects.toThrow(/terminal reseed/u);
     expect(reseeds).toBe(1);
     expect(faults).toHaveLength(1);
+    expect(observability.snapshot().spans.map((span) => span.operation)).toEqual(
+      expect.arrayContaining([
+        "terminal-replica-reseed-retry",
+        "terminal-replica-reseed-exhausted",
+      ]),
+    );
     expect(owner.qualificationSnapshot()).toMatchObject({ revision: null, stateHash: null });
     await owner.dispose();
   });
