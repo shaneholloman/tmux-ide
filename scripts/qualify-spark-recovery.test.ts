@@ -78,6 +78,11 @@ it.skipIf(!process.env.SPARK_RECOVERY_CONFIG)(
         },
       });
       if (process.env.SPARK_RETAINED_TUI === "1") {
+        const qualifiedTuiDescriptor = process.env.SPARK_QUALIFIED_TUI_DESCRIPTOR;
+        assert(
+          qualifiedTuiDescriptor,
+          "Physical retained TUI requires qualified artifact descriptor",
+        );
         const driver = config.remote.driver;
         const action = createSparkRemoteAction({
           root: driver.root,
@@ -87,6 +92,7 @@ it.skipIf(!process.env.SPARK_RECOVERY_CONFIG)(
         });
         retained = await createSparkRetainedTuiObserver({
           config,
+          qualifiedTuiDescriptor,
           parent,
           signal: lifetime.signal,
           identify: identity.identify,

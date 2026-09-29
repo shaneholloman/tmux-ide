@@ -1,5 +1,6 @@
 /** Optional physical-recovery observer: real retained compiled TUI PTYs, not Home models. */
 import assert from "node:assert/strict";
+import { admitSparkQualifiedTui } from "./spark-qualified-tui.ts";
 import { EventEmitter } from "node:events";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -244,6 +245,7 @@ type Client = {
 
 export async function createSparkRetainedTuiObserver(options: {
   config: unknown;
+  qualifiedTuiDescriptor?: string;
   parent: string;
   signal: AbortSignal;
   identify(pid: number): Promise<string | null>;
@@ -252,11 +254,6 @@ export async function createSparkRetainedTuiObserver(options: {
   assert(process.platform === "darwin" && process.getuid?.() !== 0);
   const config = validateSparkCanonicalConfig(options.config);
   const instance = resolveDevelopmentInstance(config.local.instance);
-  const root = realpathSync(mkdtempSync(join(realpathSync(options.parent), "retained-tui-")));
-  const route = join(root, "route.json");
-  writeFileSync(route, JSON.stringify(config), { flag: "wx", mode: 0o600 });
-  const bin = join(root, "bin");
-  mkdirSync(bin, { mode: 0o700 });
   const originalTmux = readTmux(instance);
   assert(originalTmux);
   const originalTmuxWitness = await options.identify(originalTmux.pid);
@@ -268,12 +265,28 @@ export async function createSparkRetainedTuiObserver(options: {
     TMUX_IDE_DEVELOPMENT_BUILD: config.local.expected.generation,
     TMUX_IDE_DEVELOPMENT_BUILD_HASH: config.local.expected.manifestHash,
   });
+  const qualifiedTui = options.qualifiedTuiDescriptor
+    ? await admitSparkQualifiedTui({
+        descriptor: options.qualifiedTuiDescriptor,
+        repository: instance.worktree,
+        build,
+        signal: options.signal,
+      })
+    : undefined;
+  const root = realpathSync(mkdtempSync(join(realpathSync(options.parent), "retained-tui-")));
+  const route = join(root, "route.json");
+  writeFileSync(route, JSON.stringify(config), { flag: "wx", mode: 0o600 });
+  const bin = join(root, "bin");
+  mkdirSync(bin, { mode: 0o700 });
   const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
   const wrapper = `#!/bin/sh\nexec ${quote(build.tools.node)} --import ${quote(fileURLToPath(import.meta.resolve("tsx")))} ${quote(fileURLToPath(new URL("./spark-retained-tui-route.ts", import.meta.url)))} ${quote(route)} "$@"\n`;
   writeFileSync(join(bin, "ssh"), wrapper, { flag: "wx", mode: 0o700 });
   const report = {
     version: 1,
     scope: "physical-retained-tui-input-and-parsed-render",
+    qualifiedTui: qualifiedTui
+      ? { descriptor: qualifiedTui.descriptor, provenance: qualifiedTui.provenance }
+      : null,
     root,
     baseline: false,
     forwardLoss: false,
@@ -391,8 +404,9 @@ export async function createSparkRetainedTuiObserver(options: {
       };
       writeDevelopmentRecord(receipt, admission);
       admissions.add(receipt);
+      qualifiedTui?.revalidate();
       const pty = ptyModule.spawn(
-        build.tui,
+        qualifiedTui?.binary ?? build.tui,
         ["app", ...(side === "remote" ? [`--ssh=${config.ssh.alias}`] : [])],
         {
           cwd,
