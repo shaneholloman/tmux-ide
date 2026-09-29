@@ -156,12 +156,35 @@ export async function qualifyCanonicalSshAttribution(options: {
         frames.push(DaemonEventServerFrameSchemaZ.parse(decoded));
       } catch (error) {
         if (!protocolError) {
-          const frame = decoded as { type?: unknown } | null;
+          const frame = decoded as {
+            type?: unknown;
+            data?: { project?: { panes?: unknown } };
+          } | null;
           facts.firstProtocolFailure = {
             stage,
             frameType: typeof frame?.type === "string" ? frame.type.slice(0, 80) : null,
             characters: bytes.toString().length,
             acceptedFrames: frames.length,
+            // Synthetic private fixture metadata only; no terminal captures or credentials.
+            paneShape: Array.isArray(frame?.data?.project?.panes)
+              ? frame.data.project.panes
+                  .slice(0, 4)
+                  .map((pane) =>
+                    Object.fromEntries(
+                      Object.entries(pane).map(([key, value]) => [
+                        key,
+                        typeof value === "string"
+                          ? {
+                              length: value.length,
+                              tabs: value.split("\t").length - 1,
+                              newlines: value.split("\n").length - 1,
+                              prefix: value.slice(0, 120),
+                            }
+                          : value,
+                      ]),
+                    ),
+                  )
+              : null,
           };
           protocolError = error;
         }
