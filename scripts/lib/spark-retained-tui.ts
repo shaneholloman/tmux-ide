@@ -35,6 +35,45 @@ import {
   RetainedTuiDeadline,
 } from "./spark-retained-tui-diagnostics.ts";
 
+type TimingPhase = "baseline" | "forward-loss" | "reconnect" | "replacement" | "cleanup";
+type TimingStep =
+  | "hook"
+  | "forward-lookup"
+  | "forward-exit"
+  | "remote-output"
+  | "remote-input"
+  | "local-input"
+  | "local-health";
+
+/** Diagnostic elapsed times only; never relax a deadline or export error text. */
+export function createSparkTuiTimings(now = () => performance.now()) {
+  const records: {
+    phase: TimingPhase;
+    step: TimingStep;
+    elapsedMs: number | null;
+    outcome: "running" | "passed" | "failed";
+  }[] = [];
+  return {
+    async run<T>(phase: TimingPhase, step: TimingStep, work: () => Promise<T>): Promise<T> {
+      assert(records.length < 64, "Retained TUI timing inventory exceeded");
+      const record: (typeof records)[number] = { phase, step, elapsedMs: null, outcome: "running" };
+      records.push(record);
+      const started = now();
+      try {
+        const result = await work();
+        record.outcome = "passed";
+        return result;
+      } catch (error) {
+        record.outcome = "failed";
+        throw error;
+      } finally {
+        record.elapsedMs = Math.max(0, Math.round(now() - started));
+      }
+    },
+    snapshot: () => records.map((record) => ({ ...record })),
+  };
+}
+
 /** A sole local session may open directly, before a persistent Home frame exists. */
 export function sparkTuiAdmission(frame: string): "home" | "terminal" | null {
   if (!/(?:^|[^A-Za-z0-9_.-])attribution-collision(?:$|[^A-Za-z0-9_.-])/u.test(frame)) return null;
@@ -305,6 +344,7 @@ export async function createSparkRetainedTuiObserver(options: {
     boundary:
       "real PTY input through product transport to parsed TUI output; no optical or latency claim",
   };
+  const timing = createSparkTuiTimings();
   const clients = new Map<"remote" | "local", Client>();
   const diagnostics = createRetainedTuiDiagnostics(root, () =>
     [...clients].map(([side, client]) => ({
@@ -527,13 +567,17 @@ export async function createSparkRetainedTuiObserver(options: {
     });
   }
   async function remoteIo(stage: SparkTuiStage) {
+    const phase: TimingPhase =
+      stage === "baseline" ? "baseline" : stage === "reconnected" ? "reconnect" : "replacement";
     const expected = `SPARK_TUI_${stage.toUpperCase()}`;
     assert(!clients.get("remote")!.frame().includes(expected), "Output marker already rendered");
     diagnostics.checkpoint("output-action", "remote");
-    assert.deepEqual(await options.remoteOutput(stage), { emitted: expected });
-    await input("remote", stage, expected);
-    await input("local", stage);
-    await localHealth();
+    assert.deepEqual(await timing.run(phase, "remote-output", () => options.remoteOutput(stage)), {
+      emitted: expected,
+    });
+    await timing.run(phase, "remote-input", () => input("remote", stage, expected));
+    await timing.run(phase, "local-input", () => input("local", stage));
+    await timing.run(phase, "local-health", localHealth);
     report.localSibling = true;
   }
   async function forward() {
@@ -583,7 +627,7 @@ export async function createSparkRetainedTuiObserver(options: {
       await open("local");
       await open("remote");
       await remoteIo("baseline");
-      await forward();
+      await timing.run("baseline", "forward-lookup", forward);
       report.baseline = true;
     },
     async forwardLost() {
@@ -594,12 +638,16 @@ export async function createSparkRetainedTuiObserver(options: {
         flag: "wx",
         mode: 0o600,
       });
-      oldForward = await forward();
+      oldForward = await timing.run("forward-loss", "forward-lookup", forward);
       assert.equal(await options.identify(oldForward.pid), oldForward.witness);
       process.kill(oldForward.pid, "SIGTERM");
-      await wait(async () => (await options.identify(oldForward!.pid)) === null, 5000);
-      await input("local", "remote-forward-offline");
-      await localHealth();
+      await timing.run("forward-loss", "forward-exit", () =>
+        wait(async () => (await options.identify(oldForward!.pid)) === null, 5000),
+      );
+      await timing.run("forward-loss", "local-input", () =>
+        input("local", "remote-forward-offline"),
+      );
+      await timing.run("forward-loss", "local-health", localHealth);
       report.forwardLoss = true;
     },
     async forwarded() {
@@ -608,7 +656,7 @@ export async function createSparkRetainedTuiObserver(options: {
       assert(report.forwardLoss && !closed);
       assert.deepEqual(readPrivateDevelopmentRecord(join(root, "hold.json")), { held: true });
       rmSync(join(root, "hold.json"));
-      const next = await forward();
+      const next = await timing.run("reconnect", "forward-lookup", forward);
       assert.notEqual(next.pid, oldForward!.pid);
       await remoteIo("reconnected");
       reconnectedForward = next;
@@ -633,9 +681,11 @@ export async function createSparkRetainedTuiObserver(options: {
         ...config,
         remote: { ...config.remote, lease: { ...config.remote.lease, expected: remoteLease } },
       });
-      await forward();
+      await timing.run("replacement", "forward-lookup", forward);
       assert(reconnectedForward);
-      await wait(async () => (await options.identify(reconnectedForward!.pid)) === null, 5000);
+      await timing.run("replacement", "forward-exit", () =>
+        wait(async () => (await options.identify(reconnectedForward!.pid)) === null, 5000),
+      );
       report.replacementProof = {
         oldDaemon,
         newDaemon: remoteLease.daemonId,
@@ -690,6 +740,7 @@ export async function createSparkRetainedTuiObserver(options: {
     report: () => ({
       ...report,
       failure: diagnostics.report(),
+      timings: timing.snapshot(),
       retainedTuiQualified: assessSparkRetainedTuiReport(report).qualified,
     }),
   };
@@ -700,9 +751,10 @@ export async function createSparkRetainedTuiObserver(options: {
         diagnostics.fail(error);
         throw error;
       })),
-    baseline: () => track(hooks.baseline),
-    forwardLost: () => track(hooks.forwardLost),
-    forwarded: () => track(hooks.forwarded),
-    replaced: (lease: DevelopmentSshLease) => track(() => hooks.replaced(lease)),
+    baseline: () => track(() => timing.run("baseline", "hook", hooks.baseline)),
+    forwardLost: () => track(() => timing.run("forward-loss", "hook", hooks.forwardLost)),
+    forwarded: () => track(() => timing.run("reconnect", "hook", hooks.forwarded)),
+    replaced: (lease: DevelopmentSshLease) =>
+      track(() => timing.run("replacement", "hook", () => hooks.replaced(lease))),
   };
 }

@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
+  createSparkTuiTimings,
   sparkTuiInput,
   selectSparkTuiMachine,
   sparkTuiAdmission,
@@ -318,4 +319,33 @@ test("recorded full-width Home transitions through real F2 before exact machine 
     assert.deepEqual(checkpoints, ["home-frame", "machine-selection", "terminal-frame"]);
     assert(sparkTuiMachineAdmitted(frame, "spark-private"));
   }
+});
+
+test("retained timing receipts bound inventory and preserve failures without private text", async () => {
+  let now = 0;
+  const timing = createSparkTuiTimings(() => now);
+  await timing.run("forward-loss", "forward-lookup", async () => {
+    now = 17;
+  });
+  await assert.rejects(
+    timing.run("forward-loss", "local-health", async () => {
+      now = 29;
+      throw new Error("private auth token");
+    }),
+  );
+  assert.deepEqual(timing.snapshot(), [
+    { phase: "forward-loss", step: "forward-lookup", elapsedMs: 17, outcome: "passed" },
+    { phase: "forward-loss", step: "local-health", elapsedMs: 12, outcome: "failed" },
+  ]);
+  assert(!JSON.stringify(timing.snapshot()).includes("private"));
+  for (let index = 2; index < 64; index++)
+    await timing.run("cleanup", "local-health", async () => {});
+  let entered = false;
+  await assert.rejects(
+    timing.run("cleanup", "local-health", async () => {
+      entered = true;
+    }),
+  );
+  assert.equal(entered, false);
+  assert.equal(timing.snapshot().length, 64);
 });

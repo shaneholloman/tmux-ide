@@ -36,6 +36,10 @@ import { createSparkRemoteAction, type SparkRemoteExec } from "./spark-remote-ac
 import { sparkQualificationSshArgs } from "./spark-qualification-ssh.mjs";
 import { unusedLoopbackPort } from "./owned-ssh-fixture.mjs";
 
+// Composite retained UI phases include discovery, confirmed child exit, real
+// input/render, and local health. Their allowance is not a latency qualification.
+const RETAINED_PHASE_DEADLINE_MS = 60_000;
+
 type AutomationPaneEndpoint = Extract<InteractionPaneEndpoint, { kind: "pane" }>;
 type Config = ReturnType<typeof validateSparkCanonicalConfig>;
 type Lease = Config["remote"]["lease"]["expected"];
@@ -465,7 +469,7 @@ export async function qualifySparkHomeRecovery(options: {
             entry.operationId === id &&
             entry.phase === "observed",
         );
-    await bound(options.retainedTui?.baseline() ?? Promise.resolve(), 60000);
+    await bound(options.retainedTui?.baseline() ?? Promise.resolve(), RETAINED_PHASE_DEADLINE_MS);
     stage = "baseline-read";
     const baseline = await read(current(), target);
     await wait(() => has(baseline));
@@ -483,7 +487,10 @@ export async function qualifySparkHomeRecovery(options: {
     stage = "forward-loss";
     hold();
     forwardLossCheckpoint = "retained-forward-loss";
-    await bound(options.retainedTui?.forwardLost() ?? Promise.resolve());
+    await bound(
+      options.retainedTui?.forwardLost() ?? Promise.resolve(),
+      RETAINED_PHASE_DEADLINE_MS,
+    );
     forwardLossCheckpoint = "primary-forward-identity";
     const currentPrimary = (): typeof primary => primary;
     const interrupted = currentPrimary();
@@ -547,13 +554,16 @@ export async function qualifySparkHomeRecovery(options: {
       proof.offlineReadReplayed =
       proof.historyPreserved =
         true;
-    await bound(options.retainedTui?.forwarded() ?? Promise.resolve(), 60000);
+    await bound(options.retainedTui?.forwarded() ?? Promise.resolve(), RETAINED_PHASE_DEADLINE_MS);
     stage = "replace-owner";
     hold();
     const replacement = validateSparkRecoveryReplacement(config, await action("replace-owner"));
     await options.persistReplacementLease(replacement);
     lease = replacement;
-    await bound(options.retainedTui?.replaced(replacement) ?? Promise.resolve(), 60000);
+    await bound(
+      options.retainedTui?.replaced(replacement) ?? Promise.resolve(),
+      RETAINED_PHASE_DEADLINE_MS,
+    );
     resume();
     stage = "replacement-home";
     await wait(
