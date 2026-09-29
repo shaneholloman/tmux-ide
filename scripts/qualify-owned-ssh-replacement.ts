@@ -1,5 +1,6 @@
 /** Opt-in native stage4. Four managed owners, two real SSH authorities, no Docker. */
 import assert from "node:assert/strict";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import { cleanupOwnedSshRegistry } from "./lib/owned-ssh-registry-cleanup.ts";
 import { qualifyCanonicalSshAttribution } from "./lib/owned-ssh-attribution.ts";
 import { execFile, spawn } from "node:child_process";
@@ -151,8 +152,15 @@ if (args[0] === "--client") {
       flag: "wx",
       mode: 0o600,
     });
+  const eventLoop = monitorEventLoopDelay({ resolution: 20 });
+  eventLoop.enable();
   const event = (stage: string, extra: Record<string, unknown> = {}) => {
-    events.push({ stage, elapsedMs: Date.now() - started, ...extra });
+    events.push({
+      stage,
+      elapsedMs: Date.now() - started,
+      eventLoopMaxMs: eventLoop.max / 1e6,
+      ...extra,
+    });
     process.stdout.write(JSON.stringify({ stage, elapsedMs: Date.now() - started }) + "\n");
   };
   const cancellation = new AbortController();
@@ -588,7 +596,9 @@ if (args[0] === "--client") {
           if (handshakeTimings.length < 128) handshakeTimings.push(timing);
           else omittedHandshakeTimings++;
           try {
-            const value = JSON.parse(await developmentSshHandshake(instances[role], lease));
+            const pendingHandshake = developmentSshHandshake(instances[role], lease);
+            timing.initialCallMs = Date.now() - began;
+            const value = JSON.parse(await pendingHandshake);
             timing.outcome = "completed";
             return value;
           } catch {
@@ -1117,6 +1127,8 @@ if (args[0] === "--client") {
     );
     receipts.ok =
       receipts.recoveryQualified === true && Object.values(receipts.cleanup).every(Boolean);
+    eventLoop.disable();
+    receipts.eventLoop = { maxMs: eventLoop.max / 1e6, p99Ms: eventLoop.percentile(99) / 1e6 };
     receipts.elapsedMs = Date.now() - started;
     save("qualification.json", receipts);
     for (const c of Object.values(clients)) c.vt.dispose();
