@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { createScratchFleet } from "../apps/desktop-renderer/e2e/fixtures/scratch-fleet.ts";
 import { startDaemon } from "../apps/desktop-renderer/e2e/fixtures/daemon.ts";
@@ -34,6 +35,25 @@ const source = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).
 const nativeHash = sha(native);
 const controlledTmux = realpathSync(execFileSync("which", ["tmux"], { encoding: "utf8" }).trim());
 assert.equal(controlledTmux, native, "PATH must resolve the exact pinned native artifact");
+const git = (...args: string[]) =>
+  execFileSync("git", args, { encoding: "utf8", timeout: 5000 }).trim();
+const requireDaemon = createRequire(resolve("packages/daemon/package.json"));
+const artifactPaths = [
+  native,
+  realpathSync(process.execPath),
+  resolve("bin/cli.js"),
+  resolve("pnpm-lock.yaml"),
+  resolve("node_modules/.modules.yaml"),
+  ...["node-pty", "ws", "zod", "hono"].map((name) => realpathSync(requireDaemon.resolve(name))),
+];
+const provenance = () => ({
+  commit: git("rev-parse", "HEAD"),
+  tree: git("rev-parse", "HEAD^{tree}"),
+  dirty: git("status", "--porcelain", "--untracked-files=all"),
+  artifacts: Object.fromEntries(artifactPaths.map((path) => [path, sha(path)])),
+});
+const before = provenance();
+assert.equal(before.dirty, "", "Commit source and deterministic CLI artifact before qualification");
 const records = 500;
 const shapes = Array.from({ length: 20 }, (_, i) => [80 + i * 2, 25 + (i % 7)] as const);
 const producer = join(output, "producer.cjs");
@@ -43,6 +63,7 @@ writeFileSync(
 );
 const manifest = {
   source,
+  provenance: before,
   native,
   nativeHash,
   records,
@@ -144,6 +165,7 @@ try {
       tmux("set-window-option", "-t", session, "window-size", "latest");
       process.env.TMUX_IDE_SESSION_RUNTIME_TRACE_LOG = tracePath;
       daemon = await startDaemon(fleet);
+      assert.deepEqual(provenance(), before, "Mandatory daemon rebuild changed frozen artifacts");
       const workspace = await daemon.promote(session);
       const response = await fetch(`${daemon.baseUrl}/api/v1/tmux-servers`, {
         headers: { Authorization: `Bearer ${daemon.record.authToken}` },
@@ -432,6 +454,14 @@ try {
 } catch (error) {
   qualificationFailure = error;
 } finally {
+  try {
+    assert.deepEqual(provenance(), before, "Qualification source or artifacts changed");
+  } catch (error) {
+    qualificationFailure = new AggregateError(
+      [...(qualificationFailure ? [qualificationFailure] : []), error],
+      "Qualification identity changed",
+    );
+  }
   try {
     await disposeIdentity?.();
   } catch (error) {
