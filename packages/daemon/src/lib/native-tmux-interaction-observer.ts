@@ -65,6 +65,8 @@ export interface NativeTmuxInteractionObserverOptions {
     readonly waitMs?: number;
     readonly retryMs?: number;
     readonly maxRetryMs?: number;
+    /** Qualification-only metadata coalescing; production defaults to immediate reads. */
+    readonly observationBatchMs?: 0 | 16 | 32;
   };
 }
 function freezeMetadata(value: unknown): void {
@@ -135,6 +137,7 @@ export class NativeTmuxInteractionObserver {
   readonly #waitMs: number;
   readonly #retryMs: number;
   readonly #maxRetryMs: number;
+  readonly #observationBatchMs: number;
   #status: NativeJournalObserverStatus = "idle";
   #capability: NativeJournalCapability | null = null;
   #cursor: NativeJournalCursor | null;
@@ -150,6 +153,9 @@ export class NativeTmuxInteractionObserver {
     this.#retryMs = bounded(options.timing?.retryMs, 1_000, 60_000);
     this.#maxRetryMs = bounded(options.timing?.maxRetryMs, 30_000, 300_000);
     if (this.#maxRetryMs < this.#retryMs) throw new TypeError("Invalid native retry bounds");
+    this.#observationBatchMs = options.timing?.observationBatchMs ?? 0;
+    if (![0, 16, 32].includes(this.#observationBatchMs))
+      throw new TypeError("Invalid native observation batching window");
     this.#io = options.io ?? {
       runTmux: createServerGenerationFencedTmuxAsyncRunner(
         options.tmuxAuthority,
@@ -385,6 +391,10 @@ export class NativeTmuxInteractionObserver {
         }
         if (!response.records.length) throw new Error("Empty native wait response");
         retryMs = this.#retryMs;
+        // Fixed non-sliding delay only while caught up. Backlog drains immediately
+        // in bounded batches, and a quiet tail always gets its next parked read.
+        if (this.#observationBatchMs && response.next === response.newest)
+          await this.#io.delay(this.#observationBatchMs, this.#lifetime.signal);
       } catch (error) {
         if (this.#lifetime.signal.aborted || this.#consumerFailed) return;
         if (error instanceof NativeJournalCleanupFailed) {

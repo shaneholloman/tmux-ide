@@ -32,54 +32,57 @@ afterEach(() => {
   vi.clearAllMocks();
   mocks.failRead = undefined;
 });
-it("a failed parked read cannot respawn after its owned peer fails to reap", async () => {
-  vi.useFakeTimers();
-  mocks.run.mockResolvedValue(
-    JSON.stringify({
-      schemaVersion: 2,
-      type: "capability",
-      serverEpoch: "11111111-1111-4111-8111-111111111111",
-      journalEpoch: "22222222-2222-4222-8222-222222222222",
-      enabled: true,
-      coverage: [
-        "command-outcome-v1",
-        "pty-enqueue-v1",
-        "capture-produced-v1",
-        "cooperative-operation-v1",
-        "pane-identity-v1",
-      ],
-      capacity: 4096,
-      maxBatch: 256,
-      maxWaiters: 4,
-      waitingReaders: 0,
-      degraded: 0,
-      readerTransport: "sessionless-control-v1",
-    }),
-  );
-  const states: string[] = [];
-  const observer = new NativeTmuxInteractionObserver({
-    tmuxAuthority: {
-      executablePath: "/test/tmux",
-      socketSelector: { kind: "path", path: "/test/socket" },
-    },
-    nativeServerIdentity: { pid: "1", startTime: "1" },
-    timing: { waitMs: 10, commandMs: 10, retryMs: 1, maxRetryMs: 1 },
-    onEvent: (event) => {
-      if (event.type === "state") states.push(event.status);
-    },
-  });
-  await observer.start();
-  await vi.advanceTimersByTimeAsync(100);
-  expect(states).toEqual(["probing", "ready"]);
-  expect(mocks.dispose).not.toHaveBeenCalled();
-  expect(vi.getTimerCount()).toBe(0);
-  expect(mocks.failRead).toBeTypeOf("function");
-  mocks.failRead!(new Error("peer disconnected"));
-  await vi.advanceTimersByTimeAsync(100);
-  expect(states).toContain("degraded");
-  expect(states).not.toContain("retrying");
-  expect(mocks.construct).toHaveBeenCalledTimes(1);
-  expect(mocks.run).toHaveBeenCalledTimes(1);
-  await expect(observer.dispose()).rejects.toThrow("unreaped peer");
-  expect(mocks.construct).toHaveBeenCalledTimes(1);
-});
+it.each([0, 16, 32] as const)(
+  "a failed parked read with %ims batching cannot respawn after its owned peer fails to reap",
+  async (observationBatchMs) => {
+    vi.useFakeTimers();
+    mocks.run.mockResolvedValue(
+      JSON.stringify({
+        schemaVersion: 2,
+        type: "capability",
+        serverEpoch: "11111111-1111-4111-8111-111111111111",
+        journalEpoch: "22222222-2222-4222-8222-222222222222",
+        enabled: true,
+        coverage: [
+          "command-outcome-v1",
+          "pty-enqueue-v1",
+          "capture-produced-v1",
+          "cooperative-operation-v1",
+          "pane-identity-v1",
+        ],
+        capacity: 4096,
+        maxBatch: 256,
+        maxWaiters: 4,
+        waitingReaders: 0,
+        degraded: 0,
+        readerTransport: "sessionless-control-v1",
+      }),
+    );
+    const states: string[] = [];
+    const observer = new NativeTmuxInteractionObserver({
+      tmuxAuthority: {
+        executablePath: "/test/tmux",
+        socketSelector: { kind: "path", path: "/test/socket" },
+      },
+      nativeServerIdentity: { pid: "1", startTime: "1" },
+      timing: { waitMs: 10, commandMs: 10, retryMs: 1, maxRetryMs: 1, observationBatchMs },
+      onEvent: (event) => {
+        if (event.type === "state") states.push(event.status);
+      },
+    });
+    await observer.start();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(states).toEqual(["probing", "ready"]);
+    expect(mocks.dispose).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(mocks.failRead).toBeTypeOf("function");
+    mocks.failRead!(new Error("peer disconnected"));
+    await vi.advanceTimersByTimeAsync(100);
+    expect(states).toContain("degraded");
+    expect(states).not.toContain("retrying");
+    expect(mocks.construct).toHaveBeenCalledTimes(1);
+    expect(mocks.run).toHaveBeenCalledTimes(1);
+    await expect(observer.dispose()).rejects.toThrow("unreaped peer");
+    expect(mocks.construct).toHaveBeenCalledTimes(1);
+  },
+);

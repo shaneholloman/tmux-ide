@@ -400,3 +400,179 @@ describe("native observer lifecycle", () => {
     await f.observer.dispose();
   });
 });
+
+describe("opt-in observation batching", () => {
+  it.each([16, 32] as const)(
+    "drains a quiet trailing record after one fixed %ims window",
+    async (window) => {
+      let reads = 0;
+      const f = fixture(
+        async (args, signal) => {
+          if (args.includes("-V")) return JSON.stringify(capability);
+          reads++;
+          if (reads === 1) return JSON.stringify(batch(["1"]));
+          if (reads === 2) return JSON.stringify(batch(["2"]));
+          return pending(signal);
+        },
+        { timing: { observationBatchMs: window } },
+      );
+      await f.observer.start();
+      await flush();
+      expect(reads).toBe(1);
+      expect(f.delays).toEqual([window]);
+      await flush();
+      expect(f.delays).toEqual([window]); // no sliding timer or parallel polling
+      f.releases[0]!();
+      await flush();
+      expect(reads).toBe(2);
+      expect(f.observer.cursor?.sequence).toBe("2");
+      expect(f.events.filter((e) => e.type === "batch")).toHaveLength(2);
+      f.releases[1]!();
+      await flush();
+      expect(reads).toBe(3); // parks even when no subsequent traffic exists
+      expect(f.delays).toEqual([window, window]);
+      await f.observer.dispose();
+    },
+  );
+  it("drains a burst larger than64 immediately before waiting at the caught-up cursor", async () => {
+    let reads = 0;
+    const f = fixture(
+      async (args, signal) => {
+        if (args.includes("-V")) return JSON.stringify(capability);
+        reads++;
+        if (reads === 1)
+          return JSON.stringify(
+            batch(
+              Array.from({ length: 64 }, (_, i) => String(i + 1)),
+              { newest: "65" },
+            ),
+          );
+        if (reads === 2) return JSON.stringify(batch(["65"]));
+        return pending(signal);
+      },
+      { timing: { observationBatchMs: 32 } },
+    );
+    await f.observer.start();
+    await flush();
+    expect(reads).toBe(2);
+    expect(f.delays).toEqual([32]);
+    expect(f.observer.cursor?.sequence).toBe("65");
+    expect(
+      f.events
+        .filter((e) => e.type === "batch")
+        .flatMap((e) => (e.type === "batch" ? e.batch.records : [])),
+    ).toHaveLength(65);
+    expect(
+      vi
+        .mocked(f.io.runTmux)
+        .mock.calls.filter(([args]) => args.includes("-r"))
+        .every(([args]) => args.at(-1) === "64"),
+    ).toBe(true);
+    await f.observer.dispose();
+  });
+  it("cancels the window immediately and never dispatches after disposal or a late timer", async () => {
+    const f = fixture(
+      async (args) => JSON.stringify(args.includes("-V") ? capability : batch(["1"])),
+      { timing: { observationBatchMs: 32 } },
+    );
+    await f.observer.start();
+    await flush();
+    expect(f.delays).toEqual([32]);
+    const calls = vi.mocked(f.io.runTmux).mock.calls.length;
+    await f.observer.dispose();
+    f.releases[0]!();
+    await flush();
+    expect(f.io.runTmux).toHaveBeenCalledTimes(calls);
+    expect(f.observer.status).toBe("disposed");
+  });
+  it.each(["reset", "gap", "degraded"])(
+    "preserves %s reporting after a batching window",
+    async (kind) => {
+      let reads = 0;
+      const f = fixture(
+        async (args, signal) => {
+          if (args.includes("-V")) return JSON.stringify(capability);
+          reads++;
+          if (reads === 1) return JSON.stringify(batch(["1"]));
+          if (reads === 2) {
+            if (kind === "reset")
+              return JSON.stringify({
+                schemaVersion: 2,
+                type: "reset",
+                serverEpoch,
+                journalEpoch: otherEpoch,
+              });
+            if (kind === "gap")
+              return JSON.stringify(
+                batch(["3"], { oldest: "3", gap: { from: "2", through: "2" } }),
+              );
+            return JSON.stringify(batch(["2"], { degraded: 1 }));
+          }
+          return pending(signal);
+        },
+        { timing: { observationBatchMs: 16 } },
+      );
+      await f.observer.start();
+      await flush();
+      f.releases[0]!();
+      await flush();
+      if (kind === "reset") {
+        expect(f.events.some((e) => e.type === "reset")).toBe(true);
+        expect(f.observer.cursor?.journalEpoch).toBe(otherEpoch);
+        expect(f.delays).toEqual([16, 1000]); // existing reset retry, no extra batching
+      } else if (kind === "gap") {
+        const gapIndex = f.events.findIndex((e) => e.type === "gap");
+        expect(gapIndex).toBeGreaterThan(0);
+        expect(f.events[gapIndex + 1]?.type).toBe("batch");
+        expect(f.observer.cursor?.sequence).toBe("3");
+      } else {
+        expect(f.observer.status).toBe("degraded");
+        expect(f.delays).toEqual([16]);
+      }
+      await f.observer.dispose();
+    },
+  );
+  it("rejects unbounded or unreviewed experimental windows", () => {
+    for (const value of [-1, 1, 8, 33, Infinity, NaN])
+      expect(() =>
+        fixture(async () => "", { timing: { observationBatchMs: value as 16 } }),
+      ).toThrow("batching window");
+  });
+});
+
+describe("observation batching defaults and failure", () => {
+  it.each([undefined, 0] as const)("keeps %s batching immediate", async (window) => {
+    let reads = 0;
+    const f = fixture(
+      async (args, signal) => {
+        if (args.includes("-V")) return JSON.stringify(capability);
+        return ++reads === 1 ? JSON.stringify(batch(["1"])) : pending(signal);
+      },
+      { timing: { observationBatchMs: window } },
+    );
+    await f.observer.start();
+    await flush();
+    expect(reads).toBe(2);
+    expect(f.delays).toEqual([]);
+    await f.observer.dispose();
+  });
+  it.each([16, 32] as const)("schedules no %ims window after consumer failure", async (window) => {
+    const f = fixture(
+      async (args) => JSON.stringify(args.includes("-V") ? capability : batch(["1"])),
+      {
+        timing: { observationBatchMs: window },
+        onEvent(event) {
+          if (event.type === "batch") throw new Error("consumer failed");
+        },
+      },
+    );
+    await f.observer.start();
+    await flush();
+    expect(f.observer.status).toBe("consumer-failed");
+    expect(f.delays).toEqual([]);
+    expect(vi.mocked(f.io.runTmux).mock.calls.filter(([args]) => args.includes("-r"))).toHaveLength(
+      1,
+    );
+    await f.observer.dispose();
+  });
+});

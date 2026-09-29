@@ -1,10 +1,14 @@
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { NativeTmuxInteractionObserver } from "./native-tmux-interaction-observer.ts";
 import { NativeJournalControlConnection } from "./native-journal-control-connection.ts";
 
-const mocked = vi.hoisted(() => ({ spawn: vi.fn() }));
+const mocked = vi.hoisted(() => ({ spawn: vi.fn(), run: vi.fn() }));
 vi.mock("node:child_process", () => ({ spawn: mocked.spawn }));
+vi.mock("./tmux-server-generation-runner.ts", () => ({
+  createServerGenerationFencedTmuxAsyncRunner: () => mocked.run,
+}));
 const epoch = "00000000-0000-4000-8000-000000000001";
 const cursor = { serverEpoch: epoch, journalEpoch: epoch, sequence: "0" };
 const capability = {
@@ -79,11 +83,86 @@ describe("native parked reader phase deadlines", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     mocked.spawn.mockReset();
+    mocked.run.mockResolvedValue(JSON.stringify(capability));
   });
   afterEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();
   });
+
+  it.each([16, 32] as const)(
+    "a %ims window preserves parked lifetime and the original partial-payload deadline",
+    async (observationBatchMs) => {
+      const f = fixture(5000);
+      const reader = new NativeTmuxInteractionObserver({
+        tmuxAuthority: {
+          executablePath: "/mock/native",
+          socketSelector: { kind: "path", path: "/mock/socket" },
+        },
+        nativeServerIdentity: { pid: "1", startTime: "1" },
+        timing: { commandMs: 5000, retryMs: 60_000, maxRetryMs: 60_000, observationBatchMs },
+        onEvent: () => {},
+      });
+      try {
+        await reader.start();
+        await flush();
+        f.begin();
+        const batch = {
+          schemaVersion: 2,
+          type: "batch",
+          serverEpoch: epoch,
+          journalEpoch: epoch,
+          oldest: "1",
+          newest: "1",
+          next: "1",
+          degraded: 0,
+          gap: null,
+          records: [
+            {
+              sequence: "1",
+              commandId: "0",
+              issuerId: "0",
+              monotonicUs: "1",
+              count: "0",
+              targetId: 0,
+              targetBirthId: "1",
+              kind: 1,
+              outcome: 1,
+              flags: 1,
+              requestId: "0",
+              parentCommandId: "0",
+              transport: 0,
+              derivation: 0,
+              correlation: null,
+            },
+          ],
+        };
+        f.send(`${JSON.stringify(batch)}\n%end 2 2 1\n`);
+        await flush();
+        expect(reader.cursor?.sequence).toBe("1");
+        const writes = f.writes.length;
+        await vi.advanceTimersByTimeAsync(observationBatchMs - 1);
+        expect(f.writes).toHaveLength(writes);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(f.writes).toHaveLength(writes + 1);
+        f.begin();
+        await vi.advanceTimersByTimeAsync(125_000);
+        expect(reader.status).toBe("ready");
+        expect(f.closed()).toBe(false);
+        expect(vi.getTimerCount()).toBe(0);
+        f.send("{");
+        await vi.advanceTimersByTimeAsync(4999);
+        expect(f.closed()).toBe(false);
+        f.send('"schemaVersion":');
+        await vi.advanceTimersByTimeAsync(1);
+        expect(f.closed()).toBe(true);
+        expect(mocked.spawn).toHaveBeenCalledTimes(1);
+      } finally {
+        await reader.dispose();
+      }
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
 
   it.each(["one-chunk", "separate-begin"])(
     "does not allocate a payload watchdog for a complete %s reply",
