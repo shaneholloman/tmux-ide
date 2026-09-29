@@ -1,9 +1,20 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtempSync, realpathSync, rmSync, readFileSync, statSync, existsSync } from "node:fs";
+import {
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  readFileSync,
+  statSync,
+  existsSync,
+  mkdirSync,
+  writeFileSync,
+  symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cleanupSparkManagedInstance } from "./spark-managed-cleanup.ts";
+import { cleanupSparkManagedInstance, verifySparkCleanupEntries } from "./spark-managed-cleanup.ts";
+import { resolveDevelopmentInstance } from "../../packages/daemon/src/lib/development-instance.ts";
 
 function fixture() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "spark-cleanup-")));
@@ -141,6 +152,44 @@ test("incomplete reset retains evidence and does not report completion", async (
     await assert.rejects(cleanupSparkManagedInstance(f.d, f.io), /reset incomplete/);
     assert(existsSync(join(f.root, "cleanup-stopped.json")));
     assert(!existsSync(join(f.root, "cleanup-done.json")));
+  } finally {
+    f.dispose();
+  }
+});
+
+test("cleanup admits canonical private state and only launch records matching managed owners", () => {
+  const f = fixture();
+  try {
+    const instance = resolveDevelopmentInstance(f.d.instance);
+    mkdirSync(instance.stateHome, { recursive: true, mode: 0o700 });
+    const attempt = "10000000-0000-4000-8000-000000000001";
+    const owner = {
+      version: 1,
+      attempt,
+      pid: 123,
+      incarnation: "linux:123:/node",
+      generation: "build-" + attempt,
+      manifestHash: "a".repeat(64),
+    };
+    writeFileSync(join(instance.root, "owner.json"), JSON.stringify(owner), { mode: 0o600 });
+    const path = join(instance.root, `launch-${attempt}.json`);
+    const writeLaunch = (value: unknown) =>
+      writeFileSync(path, JSON.stringify(value), { mode: 0o600 });
+    writeLaunch({ version: 1, attempt, pid: 123 });
+    verifySparkCleanupEntries(instance);
+    writeLaunch({ version: 1, attempt, pid: 456 });
+    assert.throws(() => verifySparkCleanupEntries(instance), /no matching managed process owner/);
+    writeLaunch({ version: 2, attempt, pid: 123 });
+    assert.throws(() => verifySparkCleanupEntries(instance));
+    writeLaunch({ version: 1, attempt, pid: 123, extra: true });
+    assert.throws(() => verifySparkCleanupEntries(instance));
+    writeLaunch({ version: 1, attempt, pid: 123 });
+    writeFileSync(join(instance.root, "unexpected"), "retain");
+    assert.throws(() => verifySparkCleanupEntries(instance), /Unknown managed instance/);
+    rmSync(join(instance.root, "unexpected"));
+    rmSync(instance.stateHome, { recursive: true });
+    symlinkSync(f.root, instance.stateHome);
+    assert.throws(() => verifySparkCleanupEntries(instance), /Unsafe development directory/);
   } finally {
     f.dispose();
   }

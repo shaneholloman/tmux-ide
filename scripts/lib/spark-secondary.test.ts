@@ -3,7 +3,7 @@ import { test, mock } from "node:test";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, rmSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
+import { mkdirSync, rmSync, readFileSync, writeFileSync, chmodSync, existsSync } from "node:fs";
 import { sparkSecondaryAction } from "./spark-secondary.ts";
 
 function fixture() {
@@ -218,6 +218,41 @@ test("post-check generation replacement refuses stamp, seed and retirement", asy
       assert(!f.killed());
       const state = JSON.parse(readFileSync(`${f.descriptor.root}/secondary.json`, "utf8"));
       assert.equal(state.phase, action === "secondary-retire" ? "retiring" : "live");
+    } finally {
+      f.cleanup();
+    }
+  }
+});
+
+test("retirement removes only a revalidated stale socket after proven process exit", async () => {
+  for (const replaced of [false, true]) {
+    const f = fixture();
+    try {
+      await sparkSecondaryAction(f.descriptor, "secondary-start", f.io);
+      const socket = `${f.descriptor.root}/secondary.sock`;
+      // Socket inode/type admission is supplied by this fixture's revalidator.
+      writeFileSync(socket, "socket-fixture");
+      const original = f.io.run;
+      f.io.run = async (args) => {
+        const result = await original(args);
+        if (f.killed() && replaced) f.replaceSocket();
+        return result;
+      };
+      if (replaced) {
+        await assert.rejects(
+          sparkSecondaryAction(f.descriptor, "secondary-retire", f.io),
+          /socket replaced/,
+        );
+        assert(existsSync(socket));
+        assert.equal(
+          JSON.parse(readFileSync(`${f.descriptor.root}/secondary.json`, "utf8")).phase,
+          "retiring",
+        );
+      } else {
+        await sparkSecondaryAction(f.descriptor, "secondary-retire", f.io);
+        assert(!existsSync(socket));
+      }
+      assert(f.killed());
     } finally {
       f.cleanup();
     }

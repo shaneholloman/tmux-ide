@@ -244,6 +244,14 @@ export async function sparkSecondaryAction(
         assert(Date.now() < deadline, "Secondary exit unproven; state retained");
         await io.sleep();
       }
+      // Linux tmux may leave its bound pathname after exit. Reclaim only the
+      // original recorded socket, never a new socket or another file at that path.
+      if (!absent(socket)) {
+        io.revalidate(socketIdentity(proof));
+        assert.equal(io.witness(Number(proof.pid)), null, "Secondary exit changed before unlink");
+        io.revalidate(socketIdentity(proof));
+        unlinkSync(socket);
+      }
       assert(absent(socket), "Secondary socket persists; state retained");
       write("retired", proof);
       return { retired: true };

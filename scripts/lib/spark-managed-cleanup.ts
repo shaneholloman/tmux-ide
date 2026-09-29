@@ -5,7 +5,11 @@ import { promisify } from "node:util";
 import { connect } from "node:net";
 import { lstatSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { resolveDevelopmentInstance } from "../../packages/daemon/src/lib/development-instance.ts";
+import {
+  resolveDevelopmentInstance,
+  validateDevelopmentDirectory,
+  type DevelopmentInstance,
+} from "../../packages/daemon/src/lib/development-instance.ts";
 import {
   readTmux,
   statusDevelopmentInstance,
@@ -53,6 +57,57 @@ function stopped(value: unknown) {
     "Managed stop is not proven; retain private evidence",
   );
 }
+
+/** Admit only manager-owned root entries, including its canonical state directory
+ * and consumed launch records that match a schema-validated process owner. */
+export function verifySparkCleanupEntries(instance: DevelopmentInstance) {
+  const known = new Set([
+    "activation.json",
+    "apps",
+    "artifacts",
+    "build-receipt.json",
+    "build.json",
+    "instance.json",
+    "locks",
+    "logs",
+    "owner.json",
+    "reset.json",
+    "startup-process.json",
+    "startup-receipt.json",
+    "startup.json",
+    "tmux-startup.json",
+    "tmux.json",
+  ]);
+  const owners = [
+    readDevelopmentOwner(instance),
+    readDevelopmentOwner(instance, "startup-process.json"),
+  ];
+  const names = readdirSync(instance.root);
+  assert(names.length <= 256, "Managed instance entry budget exceeded");
+  for (const name of names) {
+    if (known.has(name)) continue;
+    if (name === "state") {
+      assert.equal(instance.stateHome, join(instance.root, "state"));
+      validateDevelopmentDirectory(instance.stateHome, instance.store);
+      continue;
+    }
+    assert(
+      /^launch-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.json$/u.test(name),
+      "Unknown managed instance entries; retain evidence",
+    );
+    const record = readPrivateDevelopmentRecord<{ version: number; attempt: string; pid: number }>(
+      join(instance.root, name),
+    );
+    assert(record, "Consumed launch is missing");
+    assert.deepEqual(Object.keys(record).sort(), ["attempt", "pid", "version"]);
+    assert.equal(record.version, 1);
+    assert.equal(name, `launch-${record.attempt}.json`);
+    assert(
+      owners.some((owner) => owner?.attempt === record.attempt && owner.pid === record.pid),
+      "Consumed launch has no matching managed process owner",
+    );
+  }
+}
 function provePortClosed(port: number): Promise<void> {
   return new Promise((resolve, reject) => {
     const socket = connect({ host: "127.0.0.1", port });
@@ -80,6 +135,7 @@ export async function cleanupSparkManagedInstance(d: Descriptor, testIO?: Cleanu
     snapshot: async () => {
       const status = await statusDevelopmentInstance(instance);
       assert(["ready", "stopped"].includes(status.state), "Managed ownership is uncertain");
+      verifySparkCleanupEntries(instance);
       const records = [
         readDevelopmentOwner(instance),
         readDevelopmentOwner(instance, "startup-process.json"),
@@ -118,27 +174,7 @@ export async function cleanupSparkManagedInstance(d: Descriptor, testIO?: Cleanu
     socketAbsent: () => absent(join(instance.runtimeDir, "tmux.sock")),
     portClosed: provePortClosed,
     registry: async () => {
-      const known = new Set([
-        "activation.json",
-        "apps",
-        "artifacts",
-        "build-receipt.json",
-        "build.json",
-        "instance.json",
-        "locks",
-        "logs",
-        "owner.json",
-        "reset.json",
-        "startup-process.json",
-        "startup-receipt.json",
-        "startup.json",
-        "tmux-startup.json",
-        "tmux.json",
-      ]);
-      assert(
-        readdirSync(instance.root).every((name) => known.has(name)),
-        "Unknown managed instance entries; retain evidence",
-      );
+      verifySparkCleanupEntries(instance);
       if (absent(join(instance.runtimeDir, "server-owners"))) return null;
       const receipt = readPrivateDevelopmentRecord<{
         version: number;
