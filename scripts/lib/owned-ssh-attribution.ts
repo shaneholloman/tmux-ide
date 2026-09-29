@@ -1,10 +1,6 @@
 /** Optional canonical-daemon phase for the existing owned SSH replacement qualification. */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import WebSocket from "ws";
 import {
   AutomationPanesResponseSchemaZ,
@@ -25,7 +21,10 @@ import {
   openSshDaemonTransport,
   probeSshDaemonIdentity,
 } from "../../packages/daemon/src/lib/ssh-daemon-transport.ts";
-import { createTmuxServerProbe } from "../../packages/daemon/src/lib/tmux-server-registration.ts";
+import {
+  createLocalCanonicalSecondary,
+  type CanonicalSshSecondary,
+} from "./owned-ssh-secondary.ts";
 
 export async function qualifyCanonicalSshAttribution(options: {
   local: CanonicalDaemonInfo;
@@ -39,21 +38,11 @@ export async function qualifyCanonicalSshAttribution(options: {
   identify(pid: number): Promise<string | null>;
   stampRemoteDefault(state: string): Promise<void>;
   facts: Record<string, unknown>;
+  secondary?: CanonicalSshSecondary;
 }) {
   const facts = options.facts;
   facts.kind = "canonical-daemon-real-ssh-fleet-and-global-clock";
-  const execute = promisify(execFile);
-  const root = mkdtempSync(join(options.privateParent, "n-"));
-  const socket = join(root, "s");
-  const run = async (args: string[]) =>
-    (
-      await execute(options.executable, ["-S", socket, "-f", "/dev/null", ...args], {
-        encoding: "utf8",
-        timeout: 5000,
-        maxBuffer: 64 * 1024,
-        env: { ...process.env, TMUX: "" },
-      })
-    ).stdout.trim();
+  const secondary = options.secondary ?? createLocalCanonicalSecondary(options);
   const wait = async (predicate: () => boolean, label: string, ms = 15000) => {
     const end = Date.now() + ms;
     while (!predicate()) {
@@ -82,11 +71,6 @@ export async function qualifyCanonicalSshAttribution(options: {
   let events: WebSocket | undefined;
   let stream: ReturnType<typeof subscribeTmuxServerInteractions> | undefined;
   let registration: { serverId: string; generation: string } | undefined;
-  let tmuxAttempted = false;
-  let observation:
-    | NonNullable<Awaited<ReturnType<ReturnType<typeof createTmuxServerProbe>>>>
-    | undefined;
-  let witness: string | null = null;
   let remoteBase = "";
   let primary: unknown;
   const cleanupErrors: string[] = [];
@@ -208,43 +192,7 @@ export async function qualifyCanonicalSshAttribution(options: {
       ...frames.flatMap((frame) => ("sequence" in frame ? [frame.sequence] : [])),
     );
 
-    tmuxAttempted = true;
-    await run(["new-session", "-d", "-s", options.session, "cat"]);
-    observation =
-      (await createTmuxServerProbe(options.executable)({ kind: "path", path: socket })) ??
-      undefined;
-    assert(observation?.nativeServerIdentity);
-    const witnessDeadline = Date.now() + 1500;
-    while (!witness && Date.now() < witnessDeadline) {
-      try {
-        witness = await options.identify(Number(observation.nativeServerIdentity.pid));
-      } catch {
-        /* No mutation is authorized by an unadmitted witness. */
-      }
-      if (!witness) await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-    assert(witness && observation.valid());
-    const confirmed = await createTmuxServerProbe(options.executable)({
-      kind: "path",
-      path: socket,
-    });
-    assert.equal(confirmed?.fingerprint, observation.fingerprint);
-    await run([
-      "set-option",
-      "-p",
-      "-t",
-      options.session + ":0.0",
-      "@tmux_ide_pane_id",
-      defaultEndpoint.semanticPaneId,
-    ]);
-    await run([
-      "set-option",
-      "-p",
-      "-t",
-      options.session + ":0.0",
-      "@agent_state",
-      `idle:${Date.now()}`,
-    ]);
+    const { socket } = await secondary.start(defaultEndpoint.semanticPaneId);
     registration = await json("/api/v1/tmux-servers", {
       label: "Owned attribution secondary",
       selector: { kind: "path", path: socket },
@@ -257,8 +205,7 @@ export async function qualifyCanonicalSshAttribution(options: {
     )?.endpoint;
     assert(target);
     assert.equal(target.semanticPaneId, defaultEndpoint.semanticPaneId);
-    await run(["send-keys", "-t", options.session + ":0.0", "-l", "owned-secondary-marker"]);
-    await run(["send-keys", "-t", options.session + ":0.0", "Enter"]);
+    await secondary.seed();
     const received: InteractionJournalEntry[] = [],
       operationIds: string[] = [];
     stream = subscribeTmuxServerInteractions({
@@ -425,34 +372,9 @@ export async function qualifyCanonicalSshAttribution(options: {
         transport.dispose();
         await transport.closed;
       });
-    if (tmuxAttempted && !observation)
-      cleanupErrors.push("Private tmux creation outcome has no admitted witness");
-    if (observation)
-      await cleanup("private-tmux", async () => {
-        const identity = observation!.nativeServerIdentity!;
-        assert(
-          witness &&
-            (await options.identify(Number(identity.pid))) === witness &&
-            observation!.valid(),
-        );
-        const current = await createTmuxServerProbe(options.executable)({
-          kind: "path",
-          path: socket,
-        });
-        assert.equal(current?.fingerprint, observation!.fingerprint);
-        const guard = `#{&&:#{==:#{pid},${identity.pid}},#{==:#{start_time},${identity.startTime}}}`;
-        assert.equal(
-          await run(["if-shell", "-F", guard, "kill-server", "display-message -p refused"]),
-          "",
-        );
-        const end = Date.now() + 3000;
-        while ((await options.identify(Number(identity.pid))) !== null) {
-          if (Date.now() > end) throw Error("Private tmux exit unproven");
-          await new Promise((resolve) => setTimeout(resolve, 25));
-        }
-      });
-    if (!cleanupErrors.length) rmSync(root, { recursive: true });
-    else facts.retainedPrivateRoot = root;
+    await cleanup("private-tmux", () => secondary.retire());
+    if (!cleanupErrors.length) await cleanup("private-files", () => secondary.removeFiles());
+    if (cleanupErrors.length) facts.retainedPrivateRoot = secondary.retainedRoot;
     facts.cleanupErrors = cleanupErrors;
   }
   if (primary || cleanupErrors.length)
