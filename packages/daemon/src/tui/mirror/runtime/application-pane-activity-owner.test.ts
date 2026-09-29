@@ -181,12 +181,29 @@ it("fault injection: an old same-owner callback cannot resurrect a replaced SSH 
     f.setSources([{ ...original, baseUrl: "http://127.0.0.1:43210" }]);
     await Promise.resolve();
     expect(f.calls[0]!.close).toHaveBeenCalledOnce();
-    expect(f.activity.activity()).toEqual([]);
+    expect(f.activity.activity().map((entry) => entry.sequence)).toEqual([1]);
+    expect(f.calls[1]!.options.resume).toEqual({ server: original.server, cursor: 1 });
     f.calls[1]!.emit([2]);
+    const currentStatus = {
+      schemaVersion: 1 as const,
+      environmentId: original.environmentId,
+      serverScope: original.server,
+      method: "stock-hooks" as const,
+      capabilityVersion: 1,
+      commands: ["send-keys" as const],
+      effects: [],
+      coverage: "partial" as const,
+      cursor: null,
+      lastGap: null,
+      droppedCount: "0",
+    };
+    f.calls[1]!.options.onStatus!(currentStatus);
+    f.calls[0]!.options.onStatus!({ ...currentStatus, droppedCount: "99" });
+    expect(f.activity.observationStatus(endpoint(original))).toEqual(currentStatus);
     // Explicit bounded transport fault: deliver a saved callback after its owner was stopped.
     // This is separate from the real OpenSSH integration case.
     f.calls[0]!.emit([99]);
-    expect(f.activity.activity().map((entry) => entry.sequence)).toEqual([2]);
+    expect(f.activity.activity().map((entry) => entry.sequence)).toEqual([2, 1]);
   } finally {
     f.dispose();
   }
@@ -386,4 +403,82 @@ it("selects current authenticated machine scopes and ignores foreign or unavaila
       machine === "unauthenticated" ? null : daemon,
     ),
   ).toHaveLength(1);
+});
+
+it("retains same-owner cursor through suspended discovery and a changed forward port", async () => {
+  vi.useFakeTimers();
+  const original = source();
+  const f = rig([original]);
+  await Promise.resolve();
+  try {
+    f.calls[0]!.emit([1]);
+    const before = f.activity.activity()[0];
+    f.setSources([{ ...original, available: false, baseUrl: "", ownerToken: "" }]);
+    await Promise.resolve();
+    expect(f.calls[0]!.close).toHaveBeenCalledOnce();
+    expect(f.calls).toHaveLength(1);
+    expect(f.activity.activity()).toEqual([before]);
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(f.calls).toHaveLength(1);
+    expect(f.activity().size).toBe(0);
+    f.setSources([{ ...original, baseUrl: "http://127.0.0.1:45678" }]);
+    await Promise.resolve();
+    expect(f.calls[1]!.options.resume).toEqual({ server: original.server, cursor: 1 });
+    f.calls[1]!.emit([1, 2]);
+    expect(f.activity.activity().filter((entry) => entry.sequence === 1)).toEqual([before]);
+    expect(f.activity.activity()).toHaveLength(2);
+    f.calls[0]!.emit([99]);
+    expect(f.activity.activity().some((entry) => entry.sequence === 99)).toBe(false);
+  } finally {
+    f.dispose();
+  }
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+it("suspended scopes are credential-free, do not replace an active alias, and never cross generations", async () => {
+  const { applicationPaneActivitySources } = await import("./application-pane-activity-owner.ts");
+  const original = source();
+  const offline = {
+    id: "offline",
+    state: "disconnected",
+    environmentId: original.environmentId,
+    agents: [{ interactionEndpoint: endpoint(original) }],
+  };
+  const paused = applicationPaneActivitySources([offline], null, [], () => null);
+  expect(paused).toEqual([{ ...original, available: false, baseUrl: "", ownerToken: "" }]);
+  expect(
+    applicationPaneActivitySources([{ ...offline, state: "connecting" }], null, [], () => null),
+  ).toEqual(paused);
+  const online = { ...offline, id: "online", state: "ready" };
+  for (const groups of [
+    [offline, online],
+    [online, offline],
+  ]) {
+    const selected = applicationPaneActivitySources(groups, null, [], (id) =>
+      id === "online" ? { bindHostname: "127.0.0.1", port: 4567, authToken: "active" } : null,
+    );
+    expect(selected).toHaveLength(1);
+    expect(selected[0]!.ownerToken).toBe("active");
+    expect(selected[0]!.available).not.toBe(false);
+  }
+  const f = rig([original]);
+  await Promise.resolve();
+  try {
+    f.calls[0]!.emit([1]);
+    f.setSources([...paused]);
+    await Promise.resolve();
+    f.setSources([
+      {
+        ...original,
+        server: { ...original.server, generation: "00000000-0000-4000-8000-000000000002" },
+      },
+    ]);
+    await Promise.resolve();
+    expect(f.calls[1]!.options.resume).toBeUndefined();
+    expect(f.activity.activity()).toEqual([]);
+    f.calls[0]!.emit([99]);
+    expect(f.activity.activity()).toEqual([]);
+  } finally {
+    f.dispose();
+  }
 });

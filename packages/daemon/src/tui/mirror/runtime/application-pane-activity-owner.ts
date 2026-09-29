@@ -24,6 +24,8 @@ import {
   type PaneInteractionProjection,
 } from "@tmux-ide/core";
 export interface ApplicationInteractionSource {
+  /** Retained scope while its machine reconnects; carries no usable credentials. */
+  readonly available?: boolean;
   readonly environmentId: string;
   readonly server: TmuxServerScope;
   readonly baseUrl: string;
@@ -44,7 +46,7 @@ type ActivityDaemonAuthority = {
   readonly authToken?: string | null;
 };
 
-/** Select authenticated owner streams only from current, environment-matched endpoint inventory. */
+/** Select authenticated routes and retain credential-free suspended scopes from matching inventory. */
 export function applicationPaneActivitySources(
   groups: readonly ActivityMachineGroup[],
   selectedMachineId: string | null,
@@ -53,9 +55,10 @@ export function applicationPaneActivitySources(
 ): readonly ApplicationInteractionSource[] {
   const sources = new Map<string, ApplicationInteractionSource>();
   for (const group of groups) {
-    if (group.state !== "ready" || !group.environmentId) continue;
-    const daemon = readAuthority(group.id);
-    if (!daemon?.authToken) continue;
+    const suspended = group.state === "connecting" || group.state === "disconnected";
+    if ((!suspended && group.state !== "ready") || !group.environmentId) continue;
+    const daemon = suspended ? null : readAuthority(group.id);
+    if (!suspended && !daemon?.authToken) continue;
     const endpoints = (group.agents ?? []).flatMap((agent) =>
       agent.interactionEndpoint ? [agent.interactionEndpoint] : [],
     );
@@ -72,11 +75,17 @@ export function applicationPaneActivitySources(
         endpoint.serverScope.serverId,
         endpoint.serverScope.generation,
       ]);
+      // A disconnected alias must not hide an authenticated route to this scope.
+      if (suspended && sources.has(key)) continue;
       sources.set(key, {
         environmentId: endpoint.environmentId,
         server: endpoint.serverScope,
-        baseUrl: canonicalDaemonUrl("http", daemon.bindHostname, daemon.port),
-        ownerToken: daemon.authToken,
+        ...(suspended
+          ? { available: false, baseUrl: "", ownerToken: "" }
+          : {
+              baseUrl: canonicalDaemonUrl("http", daemon!.bindHostname, daemon!.port),
+              ownerToken: daemon!.authToken!,
+            }),
       });
     }
   }
@@ -202,7 +211,7 @@ export function createApplicationPaneActivityOwner(
     entry.retry = null;
   };
   const connect = (key: string, entry: Entry) => {
-    if (disposed || entries.get(key) !== entry) return;
+    if (disposed || entries.get(key) !== entry || entry.source.available === false) return;
     const subscription = subscribe({
       ...entry.source,
       resume: entry.cursor,
@@ -265,12 +274,29 @@ export function createApplicationPaneActivityOwner(
       if (
         next &&
         next.baseUrl === entry.source.baseUrl &&
-        next.ownerToken === entry.source.ownerToken
+        next.ownerToken === entry.source.ownerToken &&
+        next.available === entry.source.available
       )
         continue;
       entries.delete(key);
+      const cursor = entry.subscription?.getCursor() ?? entry.cursor;
       stop(entry);
-      forget(key);
+      if (!next) {
+        forget(key);
+        continue;
+      }
+      // Transport URLs and tokens are not journal identity. Preserve only this
+      // exact environment/server/generation, with a fresh entry fencing late callbacks.
+      forgetStatus(key);
+      const replacement: Entry = {
+        source: next,
+        subscription: null,
+        retry: null,
+        cursor,
+        attempts: 0,
+      };
+      entries.set(key, replacement);
+      connect(key, replacement);
     }
     for (const [key, source] of wanted)
       if (!entries.has(key)) {
