@@ -58,7 +58,8 @@ export async function verifySparkSource(
           encoding: "utf8",
           timeout: 10000,
           killSignal: "SIGKILL",
-          maxBuffer: 65536,
+          // The full tracked-path inventory exceeds 64 KiB in this monorepo.
+          maxBuffer: args[0] === "ls-files" ? 4 * 1024 * 1024 : 65536,
         },
       )
     ).stdout.trim();
