@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { createEffect, createMemo, Show, type Accessor } from "solid-js";
 import { createApplicationGuidedTourOwner } from "./application-guided-tour-owner.ts";
 import { GuidedTourCoach } from "./guided-tour-coach.tsx";
-import type { GuidedTourPractice } from "./guided-tour.ts";
+import type { GuidedTourPractice, GuidedTourState } from "./guided-tour.ts";
 import { createFleetSession } from "./fleet-lifecycle-client.ts";
 import { applicationMachineAuthorityManager } from "./application-machine-authority.ts";
 import type { createApplicationMachineNavigation } from "./application-machine-navigation.ts";
@@ -13,6 +13,7 @@ import type { OpenTuiGenerationHostSnapshot } from "./open-tui-generation-host.t
 import type { OpenTuiWorkspaceLayoutSnapshot } from "../open-tui-workspace-runtime-port.ts";
 
 export function createApplicationGuidedTourIntegration(options: {
+  initialState?: GuidedTourState;
   machines: ReturnType<typeof createApplicationMachineNavigation>;
   lifecycle: { signal: AbortSignal };
   generation: Accessor<OpenTuiGenerationHostSnapshot | null>;
@@ -62,6 +63,7 @@ export function createApplicationGuidedTourIntegration(options: {
     };
   };
   const tour = createApplicationGuidedTourOwner({
+    read: options.initialState ? () => options.initialState! : undefined,
     async createPractice() {
       const handle = applicationMachineAuthorityManager.getMachine("local");
       if (!handle || handle.endpoint().state !== "ready")

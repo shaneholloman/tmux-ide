@@ -38,6 +38,13 @@ export type GuidedTourEvent =
 export function initialGuidedTourState(): GuidedTourState {
   return { version: 1, step: "welcome", active: false, practice: null };
 }
+export function guidedTourLabel(state: GuidedTourState): string {
+  return state.step === "complete"
+    ? "Replay walkthrough"
+    : state.step === "welcome"
+      ? "Learn tmux-ide"
+      : "Resume walkthrough";
+}
 export function sameGuidedTourPractice(
   a: GuidedTourPractice | null,
   b: GuidedTourPractice,

@@ -1,3 +1,4 @@
+import { prepareApplicationGuidedTour } from "./application-guided-tour-preparation.ts";
 import type { TmuxServerScope } from "@tmux-ide/contracts";
 import { createApplicationSidebarShortcuts } from "./application-sidebar-shortcuts.ts";
 import { terminalWindowActionCallbacks } from "./application-terminal-workspace-policy.ts";
@@ -93,6 +94,7 @@ import { createKeyboardRouteOwner, KeyboardRouteProvider } from "../ui/keyboard-
 export type { StartApplicationRootOptions } from "./application-root-configuration.ts";
 export async function startApplicationRoot(options: StartApplicationRootOptions = {}) {
   options.initialPreparation?.diagnosticHandoff?.attach(tuiPerfMark);
+  const guidedTourPreparation = await prepareApplicationGuidedTour();
   let renderer!: Awaited<ReturnType<typeof createRootRenderer>>;
   let lifecycle!: TuiApplicationLifecycle;
   const { ready, resolveReady, rejectReady } = createApplicationRootReadiness();
@@ -393,6 +395,7 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
         });
         const { homeAgents, paneRename, paletteCommands, paletteCommandList, openAgent, tour } =
           createApplicationHomeExperience({
+            guidedTourPreparation,
             machines,
             sidebarVisible,
             toggleSidebar: () => setSidebarVisible((visible) => !visible),

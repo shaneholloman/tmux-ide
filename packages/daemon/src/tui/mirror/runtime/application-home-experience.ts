@@ -1,7 +1,10 @@
 import { createEffect, type Accessor } from "solid-js";
 import { createApplicationHomeFleetOwner } from "./application-home-fleet.ts";
 import { createApplicationHomeNavigationOwner } from "./application-home-agents-owner.ts";
-import { createApplicationGuidedTourIntegration } from "./application-guided-tour-integration.tsx";
+import type { createApplicationGuidedTourIntegration } from "./application-guided-tour-integration.tsx";
+
+import { createLazyApplicationGuidedTour } from "./application-guided-tour-lazy.tsx";
+import type { GuidedTourPreparation } from "./application-guided-tour-preparation.ts";
 
 type NavigationOptions = Parameters<typeof createApplicationHomeNavigationOwner>[0];
 type TourOptions = Parameters<typeof createApplicationGuidedTourIntegration>[0];
@@ -29,7 +32,7 @@ export function createApplicationHomeExperience(
       | "layoutSnapshot"
       | "appearance"
       | "dimensions"
-    > & { paletteModalOpen: Accessor<boolean> },
+    > & { paletteModalOpen: Accessor<boolean>; guidedTourPreparation: GuidedTourPreparation },
 ) {
   const { machines, appearance } = options;
   createHomeSidebarFocusGuard(
@@ -61,18 +64,22 @@ export function createApplicationHomeExperience(
     openFleet: machines.openPalette,
     openSessions: () => machines.showSwitcher(false),
   });
-  const tour = createApplicationGuidedTourIntegration({
-    ...options,
-    sessionName: () => options.sessionOwner()?.sessionName() ?? null,
-    paletteOpen,
-    paletteCommands: navigation.paletteCommands,
-    blocked: () =>
-      options.paletteModalOpen() ||
-      !!navigation.paneRename.draft() ||
-      paletteOpen() ||
-      appearance.pickerOpen() ||
-      machines.switching() ||
-      machines.adding(),
-  });
+  const tour = createLazyApplicationGuidedTour(
+    {
+      ...options,
+      sessionName: () => options.sessionOwner()?.sessionName() ?? null,
+      paletteOpen,
+      paletteCommands: navigation.paletteCommands,
+      blocked: () =>
+        options.paletteModalOpen() ||
+        !!navigation.paneRename.draft() ||
+        paletteOpen() ||
+        appearance.pickerOpen() ||
+        machines.switching() ||
+        machines.adding(),
+    },
+    options.guidedTourPreparation,
+    options.setNote,
+  );
   return { ...navigation, tour };
 }

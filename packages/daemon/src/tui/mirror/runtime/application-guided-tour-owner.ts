@@ -1,6 +1,6 @@
 import { createSignal, onCleanup } from "solid-js";
 import {
-  initialGuidedTourState,
+  guidedTourLabel,
   reduceGuidedTour,
   sameGuidedTourPractice,
   type GuidedTourEvent,
@@ -105,12 +105,7 @@ export function createApplicationGuidedTourOwner(options: {
     state,
     busy,
     error,
-    label: () =>
-      state().step === "complete"
-        ? "Replay walkthrough"
-        : state().step === initialGuidedTourState().step
-          ? "Learn tmux-ide"
-          : "Resume walkthrough",
+    label: () => guidedTourLabel(state()),
     open() {
       previous = null;
       send({ type: state().step === "complete" ? "replay" : "resume" });
