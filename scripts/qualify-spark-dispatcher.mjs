@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** Local managed-instance proof only. Never contacts SSH or Spark. */
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID, createHash } from "node:crypto";
@@ -13,6 +13,7 @@ import { createPackedCancellation } from "./lib/packed-cancellation.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const output = resolve(process.argv[2]);
+const bun = realpathSync(process.argv[3]);
 mkdirSync(output, { mode: 0o700 });
 const tuple = {
   worktree: root,
@@ -42,6 +43,8 @@ const provenance = () => ({
   dirty: git("status", "--porcelain", "--untracked-files=all"),
   node: process.execPath,
   nodeHash: sha(process.execPath),
+  bun,
+  bunHash: sha(bun),
   lockHash: sha(join(root, "pnpm-lock.yaml")),
 });
 const before = provenance();
@@ -53,6 +56,7 @@ async function manager(action) {
       join(root, "scripts/development-instance.mjs"),
       action,
       ...(action === "reset" ? ["--yes"] : []),
+      ...(action === "rebuild" ? ["--bun", bun] : []),
       "--worktree",
       root,
       "--name",
@@ -131,7 +135,7 @@ try {
       failures.push(error);
     }
   }
-  if (rebuildAttempted) {
+  if (rebuildAttempted && existsSync(instance.root)) {
     try {
       await manager("reset");
       facts.cleanup = true;
