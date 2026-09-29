@@ -258,3 +258,40 @@ test("retirement removes only a revalidated stale socket after proven process ex
     }
   }
 });
+
+test("retirement persists bounded safe command diagnostics without treating lost replies as exit proof", async () => {
+  const f = fixture();
+  try {
+    await sparkSecondaryAction(f.descriptor, "secondary-start", f.io);
+    const socket = `${f.descriptor.root}/secondary.sock`;
+    writeFileSync(socket, "socket-fixture");
+    const original = f.io.run;
+    f.io.run = async (args) => {
+      const result = await original(args);
+      if (args[4] === "'kill-server'")
+        throw Object.assign(new Error("PRIVATE COMMAND OUTPUT"), {
+          code: 1,
+          stdout: "PRIVATE TOKEN",
+          stderr: "PRIVATE STDERR",
+        });
+      return result;
+    };
+    await assert.rejects(sparkSecondaryAction(f.descriptor, "secondary-retire", f.io));
+    const bytes = readFileSync(`${f.descriptor.root}/secondary.json`, "utf8");
+    const retained = JSON.parse(bytes);
+    assert.equal(retained.phase, "retiring");
+    assert.deepEqual(retained.retirementDiagnostic, {
+      stage: "command-execution",
+      code: "command-exit",
+    });
+    assert(!bytes.includes("PRIVATE"));
+    assert(existsSync(socket));
+    // A separately invoked retry can prove disappearance and exact socket authority;
+    // the failed command itself is never accepted as retirement evidence.
+    await sparkSecondaryAction(f.descriptor, "secondary-retire", f.io);
+    assert.equal(f.calls.filter((args) => args[4] === "'kill-server'").length, 1);
+    assert(!existsSync(socket));
+  } finally {
+    f.cleanup();
+  }
+});

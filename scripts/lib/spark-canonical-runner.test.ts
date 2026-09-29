@@ -7,6 +7,7 @@ import {
   validateSparkCanonicalConfig,
   readSparkCanonicalConfig,
   safeSparkAttributionFailureStage,
+  safeSparkCleanupFailures,
 } from "../qualify-spark-canonical.ts";
 function config() {
   const nonce = "a".repeat(32),
@@ -124,4 +125,19 @@ test("failure diagnostics admit only the fixed attribution stage vocabulary", ()
     undefined,
   ])
     assert.equal(safeSparkAttributionFailureStage(value), null);
+});
+
+test("cleanup diagnostics preserve component labels and discard private messages", () => {
+  assert.deepEqual(
+    safeSparkCleanupFailures([
+      "private-tmux: PRIVATE command",
+      "transport: PRIVATE endpoint",
+      "private-tmux: duplicate",
+      "unknown: PRIVATE",
+      null,
+      "PRIVATE",
+    ]),
+    ["private-tmux", "transport"],
+  );
+  assert.deepEqual(safeSparkCleanupFailures("PRIVATE"), []);
 });

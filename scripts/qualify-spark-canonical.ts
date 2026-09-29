@@ -123,6 +123,29 @@ export function safeSparkAttributionFailureStage(value: unknown) {
   const parsed = attributionStages.safeParse(value);
   return parsed.success ? parsed.data : null;
 }
+const cleanupComponents = z.enum([
+  "scoped-stream",
+  "legacy-stream",
+  "agents",
+  "catalog",
+  "registration",
+  "manager",
+  "transport",
+  "private-tmux",
+  "private-files",
+]);
+export function safeSparkCleanupFailures(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return [
+    ...new Set(
+      value.slice(0, 32).flatMap((entry) => {
+        if (typeof entry !== "string") return [];
+        const component = cleanupComponents.safeParse(entry.split(":", 1)[0]);
+        return component.success ? [component.data] : [];
+      }),
+    ),
+  ];
+}
 type RunnerStage =
   | "local-handshake"
   | "local-health"
@@ -349,6 +372,8 @@ export async function qualifySparkCanonical(input: unknown, externalSignal?: Abo
     scope: "canonical-discovery-scoped-attribution-global-clock",
     ok: passed && localStillUsable && disposed,
     attribution: passed,
+    assertionsPassed: facts.ok === true,
+    cleanupFailures: safeSparkCleanupFailures(facts.cleanupErrors),
     failureStage,
     attributionFailureStage,
     localStillUsable,

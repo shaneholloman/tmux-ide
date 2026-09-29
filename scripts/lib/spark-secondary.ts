@@ -42,12 +42,36 @@ const Proof = z
     witness: z.string().min(1).max(8192),
   })
   .strict();
+const RetirementDiagnostic = z
+  .object({
+    stage: z.enum([
+      "admission",
+      "mark-retiring",
+      "command-ownership",
+      "command-execution",
+      "command-response",
+      "exit-proof",
+      "socket-proof",
+      "socket-unlink",
+      "mark-retired",
+    ]),
+    code: z.enum([
+      "command-killed",
+      "command-signal",
+      "command-exit",
+      "assertion",
+      "io",
+      "unknown",
+    ]),
+  })
+  .strict();
 const State = z
   .object({
     version: z.literal(1),
     nonce: z.string(),
     phase: z.enum(["attempted", "live", "retiring", "retired"]),
     proof: Proof.optional(),
+    retirementDiagnostic: RetirementDiagnostic.optional(),
   })
   .strict();
 type ProofValue = z.infer<typeof Proof>;
@@ -156,12 +180,17 @@ export async function sparkSecondaryAction(
         closeSync(fd);
       }
     };
-    const write = (phase: z.infer<typeof State>["phase"], proof?: ProofValue) => {
+    const write = (
+      phase: z.infer<typeof State>["phase"],
+      proof?: ProofValue,
+      retirementDiagnostic?: z.infer<typeof RetirementDiagnostic>,
+    ) => {
       const next = State.parse({
         version: 1,
         nonce: descriptor.nonce,
         phase,
         ...(proof ? { proof } : {}),
+        ...(retirementDiagnostic ? { retirementDiagnostic } : {}),
       });
       const temporary = `${path}.tmp`;
       writeFileSync(temporary, JSON.stringify(next), { mode: 0o600, flag: "wx" });
@@ -234,27 +263,66 @@ export async function sparkSecondaryAction(
     assert(state.proof, "Secondary creation outcome has no admitted witness");
     const proof = state.proof;
     if (action === "secondary-retire") {
-      if (state.phase !== "retired" && state.phase !== "retiring") {
-        await verify(proof);
-        write("retiring", proof);
-        assert.equal(await mutate(proof, ["kill-server"]), "");
+      let retirementStage: z.infer<typeof RetirementDiagnostic>["stage"] = "admission";
+      try {
+        if (state.phase !== "retired" && state.phase !== "retiring") {
+          await verify(proof);
+          retirementStage = "mark-retiring";
+          write("retiring", proof);
+          retirementStage = "command-ownership";
+          await verify(proof);
+          const command = fenceNativeTmuxCommand(["-N", "kill-server"], {
+            pid: proof.pid,
+            startTime: proof.startTime,
+          });
+          retirementStage = "command-execution";
+          const output = await io.run(command.argv);
+          retirementStage = "command-response";
+          assert.equal(command.verify(output), "");
+        }
+        retirementStage = "exit-proof";
+        const deadline = Date.now() + 3000;
+        while (io.witness(Number(proof.pid)) !== null) {
+          assert(Date.now() < deadline, "Secondary exit unproven; state retained");
+          await io.sleep();
+        }
+        // Linux tmux may leave its bound pathname after exit. Reclaim only the
+        // original recorded socket, never a new socket or another file at that path.
+        retirementStage = "socket-proof";
+        if (!absent(socket)) {
+          io.revalidate(socketIdentity(proof));
+          assert.equal(io.witness(Number(proof.pid)), null, "Secondary exit changed before unlink");
+          io.revalidate(socketIdentity(proof));
+          retirementStage = "socket-unlink";
+          unlinkSync(socket);
+        }
+        assert(absent(socket), "Secondary socket persists; state retained");
+        retirementStage = "mark-retired";
+        write("retired", proof);
+        return { retired: true };
+      } catch (error) {
+        // Keep only closed codes, never exec messages, argv, stdout or stderr.
+        const detail = error as { killed?: unknown; signal?: unknown; code?: unknown } | null;
+        const code: z.infer<typeof RetirementDiagnostic>["code"] =
+          detail?.killed === true
+            ? "command-killed"
+            : typeof detail?.signal === "string"
+              ? "command-signal"
+              : typeof detail?.code === "number"
+                ? "command-exit"
+                : detail?.code === "ERR_ASSERTION"
+                  ? "assertion"
+                  : typeof detail?.code === "string"
+                    ? "io"
+                    : "unknown";
+        try {
+          const retained = read();
+          write(retained.phase, retained.proof, { stage: retirementStage, code });
+        } catch {
+          /* A state-write failure must not replace the original failure or erase proof. */
+        }
+        throw error;
       }
-      const deadline = Date.now() + 3000;
-      while (io.witness(Number(proof.pid)) !== null) {
-        assert(Date.now() < deadline, "Secondary exit unproven; state retained");
-        await io.sleep();
-      }
-      // Linux tmux may leave its bound pathname after exit. Reclaim only the
-      // original recorded socket, never a new socket or another file at that path.
-      if (!absent(socket)) {
-        io.revalidate(socketIdentity(proof));
-        assert.equal(io.witness(Number(proof.pid)), null, "Secondary exit changed before unlink");
-        io.revalidate(socketIdentity(proof));
-        unlinkSync(socket);
-      }
-      assert(absent(socket), "Secondary socket persists; state retained");
-      write("retired", proof);
-      return { retired: true };
     }
     assert.equal(state.phase, "live", "Secondary is not live");
     await verify(proof);

@@ -19,6 +19,8 @@ import { readSparkDriverDescriptor, sparkDriverAction } from "./lib/spark-driver
 
 try {
   assert.equal(process.platform, "linux");
+  // Child-created fixture registries must stay private regardless of the SSH login umask.
+  process.umask(0o077);
   const input = sparkDriverAction(process.argv.slice(2));
   const execution = {
     bootId: readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(),
