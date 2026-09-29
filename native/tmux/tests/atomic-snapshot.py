@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Atomic recovery prototype, only private servers and actual control clients."""
 import json, os, pathlib, re, select, shlex, shutil, subprocess, sys, tempfile, time, uuid
+from native_test_evidence import export_sanitizer_evidence
 binary=str(pathlib.Path(sys.argv[1]).resolve())
 root=tempfile.mkdtemp(prefix='tmux-ide-atomic-',dir='/tmp');socket=root+'/sock';clients=[]
 env=dict(os.environ,TMUX='',ASAN_OPTIONS='detect_leaks=0:halt_on_error=1:log_path='+root+'/asan',UBSAN_OPTIONS='halt_on_error=1:log_path='+root+'/ubsan')
@@ -195,7 +196,10 @@ try:
  assert not list(pathlib.Path(root).glob('asan.*')) and not list(pathlib.Path(root).glob('ubsan.*'))
  print('atomic snapshot: strict origin/guards/flags/bounds, issuer-only resume, exact grid/modes, hook lineage/framing, cap edge/backlog, continuous output, parser boundary passed')
 finally:
- for c in clients:c.close()
- try:call('kill-server')
- except Exception:pass
- shutil.rmtree(root)
+ try:
+  for c in clients:c.close()
+  try:call('kill-server')
+  except Exception:pass
+ finally:
+  export_sanitizer_evidence(root)
+  shutil.rmtree(root)

@@ -78,7 +78,7 @@ jobs:
           node --input-type=module -e 'import {readTmuxNativePatches} from "./scripts/lib/tmux-native-patches.mjs"; import {readFileSync} from "node:fs"; readTmuxNativePatches(JSON.parse(readFileSync("native/tmux/provenance.json")), "native/tmux");'
       - name: ASan and UBSan journal adversarial suites
         run: |
-          node scripts/test-tmux-interaction-native.mjs --source "$RUNNER_TEMP/native-upstream" 2>&1 | tee "$PROOF/sanitizer.log"
+          node scripts/test-tmux-interaction-native.mjs --source "$RUNNER_TEMP/native-upstream" --evidence-dir "$PROOF/native-sanitizer" 2>&1 | tee "$PROOF/sanitizer.log"
           touch "$PROOF/sanitizer-passed"
       - name: Build production native dependency closure and smoke probe
         run: node scripts/build-bundled-tmux.mjs --source "$RUNNER_TEMP/native-upstream" --output "$PROOF/bundle" --jobs 2 2>&1 | tee "$PROOF/production.log"

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Protected exact-session guard parity with the captured ALS name/id/seconds tuple."""
 import json, os, pathlib, shlex, subprocess, sys, tempfile, uuid, shutil
+from native_test_evidence import export_sanitizer_evidence
 binary=str(pathlib.Path(sys.argv[1]).resolve())
 root=tempfile.mkdtemp(prefix='tmux-ide-session-guard-',dir='/tmp');socket=root+'/s'
 env=dict(os.environ,ASAN_OPTIONS='detect_leaks=0:halt_on_error=1:log_path='+root+'/asan',UBSAN_OPTIONS='halt_on_error=1:log_path='+root+'/ubsan')
@@ -77,6 +78,9 @@ try:
  assert not list(pathlib.Path(root).glob('asan.*')) and not list(pathlib.Path(root).glob('ubsan.*'))
  print('native session guard: exact tuple, bounded name/commands, cross-session pane, rename/recreate yields, hook parity, WAIT/disconnect/death cleanup passed')
 finally:
- try:run('kill-server')
- except Exception:pass
- shutil.rmtree(root)
+ try:
+  try:run('kill-server')
+  except Exception:pass
+ finally:
+  export_sanitizer_evidence(root)
+  shutil.rmtree(root)

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Command evidence and immutable lineage, always on a disposable server."""
 import json, os, pathlib, shutil, subprocess, sys, tempfile, time
+from native_test_evidence import export_sanitizer_evidence
 binary=str(pathlib.Path(sys.argv[1]).resolve())
 root=tempfile.mkdtemp(prefix='tmux-ide-journal-origin-',dir='/tmp')
 socket=root+'/tmux.sock'
@@ -105,10 +106,13 @@ try:
  assert not list(pathlib.Path(root).glob('asan*')) and not list(pathlib.Path(root).glob('ubsan*'))
  print('native command evidence: direct, alias, error, variants, source, hook, background, control, no content passed')
 finally:
- for p in children:
-  if p.poll() is None: p.terminate()
-  p.communicate(timeout=3)
- subprocess.run([binary,'-S',socket,'kill-server'],env=env,capture_output=True)
- logs=list(pathlib.Path(root).glob('asan*'))+list(pathlib.Path(root).glob('ubsan*'))
- if logs: print('Sanitizer logs retained:',root,file=sys.stderr)
- else: shutil.rmtree(root)
+ try:
+  for p in children:
+   if p.poll() is None: p.terminate()
+   p.communicate(timeout=3)
+  subprocess.run([binary,'-S',socket,'kill-server'],env=env,capture_output=True)
+ finally:
+  export_sanitizer_evidence(root)
+  logs=list(pathlib.Path(root).glob('asan*'))+list(pathlib.Path(root).glob('ubsan*'))
+  if logs: print('Sanitizer logs retained:',root,file=sys.stderr)
+  else: shutil.rmtree(root)

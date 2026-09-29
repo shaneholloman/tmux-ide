@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Direct-child physical pane guard survives hook yields; descendants stay ordinary."""
 import json, os, pathlib, shlex, subprocess, sys, tempfile, time, uuid, shutil
+from native_test_evidence import export_sanitizer_evidence
 binary=str(pathlib.Path(sys.argv[1]).resolve())
 root=tempfile.mkdtemp(prefix='tmux-ide-pane-guard-',dir='/tmp');socket=root+'/s'
 env=dict(os.environ,ASAN_OPTIONS='detect_leaks=0:halt_on_error=1:log_path='+root+'/asan',UBSAN_OPTIONS='halt_on_error=1:log_path='+root+'/ubsan')
@@ -81,6 +82,9 @@ try:
  assert not list(pathlib.Path(root).glob('asan.*')) and not list(pathlib.Path(root).glob('ubsan.*'))
  print('native pane guard: stale birth, paired flags, wrong target, linked alias, yielded move/replacement, partial paste, hook descendants, sync fanout passed')
 finally:
- try:run('kill-server')
- except Exception:pass
- shutil.rmtree(root)
+ try:
+  try:run('kill-server')
+  except Exception:pass
+ finally:
+  export_sanitizer_evidence(root)
+  shutil.rmtree(root)

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Measure real enqueue/capture effects; never infer delivery from command success."""
 import json, os, pathlib, shutil, subprocess, sys, tempfile, time
+from native_test_evidence import export_sanitizer_evidence
 binary=str(pathlib.Path(sys.argv[1]).resolve())
 root=tempfile.mkdtemp(prefix='tmux-ide-journal-effects-',dir='/tmp'); socket=root+'/sock'
 env=dict(os.environ,ASAN_OPTIONS='detect_leaks=0:halt_on_error=1:log_path='+root+'/asan',UBSAN_OPTIONS='halt_on_error=1:log_path='+root+'/ubsan')
@@ -66,7 +67,10 @@ try:
  assert not list(pathlib.Path(root).glob('asan*')) and not list(pathlib.Path(root).glob('ubsan*'))
  print('native effects: exact UTF8/keys/paste bytes, no-effect/error cases, capture production, sync fanout/bound passed')
 finally:
- subprocess.run([binary,'-S',socket,'kill-server'],env=env,capture_output=True)
- logs=list(pathlib.Path(root).glob('asan*'))+list(pathlib.Path(root).glob('ubsan*'))
- if logs: print('Sanitizer logs retained:',root,file=sys.stderr)
- else: shutil.rmtree(root)
+ try:
+  subprocess.run([binary,'-S',socket,'kill-server'],env=env,capture_output=True)
+ finally:
+  export_sanitizer_evidence(root)
+  logs=list(pathlib.Path(root).glob('asan*'))+list(pathlib.Path(root).glob('ubsan*'))
+  if logs: print('Sanitizer logs retained:',root,file=sys.stderr)
+  else: shutil.rmtree(root)

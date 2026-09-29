@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Strict wrapper acknowledgement proves only direct children on actual issuer."""
 import json, os, pathlib, shutil, subprocess, sys, tempfile, time, uuid
+from native_test_evidence import export_sanitizer_evidence
 binary=str(pathlib.Path(sys.argv[1]).resolve())
 root=tempfile.mkdtemp(prefix='tmux-ide-journal-operation-',dir='/tmp');socket=root+'/sock';control=None
 env=dict(os.environ,ASAN_OPTIONS='detect_leaks=0:halt_on_error=1:log_path='+root+'/asan',UBSAN_OPTIONS='halt_on_error=1:log_path='+root+'/ubsan')
@@ -80,8 +81,11 @@ try:
  assert not list(pathlib.Path(root).glob('asan*')) and not list(pathlib.Path(root).glob('ubsan*'))
  print('native operation identity: reservedaliases,ordinaryaliases,strictstring,noaliasbody,bracesrejected,actualissuer,directparent,hookparent passed (exhaustion tested only in qualification build)')
 finally:
- if control and control.poll() is None:control.terminate();control.communicate(timeout=3)
- subprocess.run([binary,'-S',socket,'kill-server'],env=env,capture_output=True)
- logs=list(pathlib.Path(root).glob('asan*'))+list(pathlib.Path(root).glob('ubsan*'))
- if logs:print('Sanitizer logs retained:',root,file=sys.stderr)
- else:shutil.rmtree(root)
+ try:
+  if control and control.poll() is None:control.terminate();control.communicate(timeout=3)
+  subprocess.run([binary,'-S',socket,'kill-server'],env=env,capture_output=True)
+ finally:
+  export_sanitizer_evidence(root)
+  logs=list(pathlib.Path(root).glob('asan*'))+list(pathlib.Path(root).glob('ubsan*'))
+  if logs:print('Sanitizer logs retained:',root,file=sys.stderr)
+  else:shutil.rmtree(root)
