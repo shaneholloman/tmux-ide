@@ -30,7 +30,7 @@ const capability = {
 const flush = async () => {
   for (let index = 0; index < 12; index++) await Promise.resolve();
 };
-function fixture() {
+function fixture(replyMs = 100) {
   const child = new EventEmitter();
   const stdout = new PassThrough(),
     stderr = new PassThrough(),
@@ -62,7 +62,7 @@ function fixture() {
   const connection = new NativeJournalControlConnection(
     { executablePath: "/mock/native", socketSelector: { kind: "path", path: "/mock/socket" } },
     epoch,
-    100,
+    replyMs,
   );
   const begin = () => stdout.write("%begin 2 2 1\n");
   return {
@@ -80,7 +80,120 @@ describe("native parked reader phase deadlines", () => {
     vi.useFakeTimers();
     mocked.spawn.mockReset();
   });
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it.each(["one-chunk", "separate-begin"])(
+    "does not allocate a payload watchdog for a complete %s reply",
+    async (mode) => {
+      const f = fixture(5000);
+      try {
+        await f.connection.start(new AbortController().signal);
+        const timer = vi.spyOn(globalThis, "setTimeout");
+        const result = f.connection.read(cursor, new AbortController().signal);
+        await flush();
+        expect(timer).toHaveBeenCalledTimes(1); // Begin watchdog remains mandatory.
+        if (mode === "separate-begin") f.begin();
+        f.send(`${mode === "one-chunk" ? "%begin 2 2 1\n" : ""}{}\n%end 2 2 1\n`);
+        expect(await result).toBe("{}");
+        expect(timer).toHaveBeenCalledTimes(1);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        await f.connection.dispose();
+      }
+    },
+  );
+
+  it("keeps one watchdog across partial chunks and clears it on completion", async () => {
+    const f = fixture(5000);
+    try {
+      await f.connection.start(new AbortController().signal);
+      const timer = vi.spyOn(globalThis, "setTimeout");
+      const result = f.connection.read(cursor, new AbortController().signal);
+      await flush();
+      f.begin();
+      f.send("{");
+      expect(timer).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1000);
+      f.send("}");
+      expect(timer).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1000);
+      f.send("\n%end 2 2 1\n");
+      expect(await result).toBe("{}");
+      expect(timer).toHaveBeenCalledTimes(2);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await f.connection.dispose();
+    }
+  });
+
+  it("cancellation retires an incomplete reply and clears its watchdog", async () => {
+    const f = fixture(5000);
+    try {
+      await f.connection.start(new AbortController().signal);
+      const cancellation = new AbortController();
+      const result = f.connection.read(cursor, cancellation.signal).catch((error) => error);
+      await flush();
+      f.begin();
+      f.send("{");
+      expect(vi.getTimerCount()).toBe(1);
+      cancellation.abort();
+      expect(await result).toMatchObject({ message: "Native journal request cancelled" });
+      expect(f.closed()).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await f.connection.dispose();
+    }
+  });
+
+  it("deducts synchronous parsing time from an incomplete reply's original deadline", async () => {
+    const f = fixture(5000);
+    try {
+      await f.connection.start(new AbortController().signal);
+      const result = f.connection
+        .read(cursor, new AbortController().signal)
+        .catch((error) => error);
+      await flush();
+      f.begin();
+      const timer = vi.spyOn(globalThis, "setTimeout");
+      vi.spyOn(performance, "now").mockReturnValueOnce(1000).mockReturnValueOnce(1025);
+      f.send("{}\n"); // Complete body, missing end, no remaining buffered bytes.
+      expect(timer).toHaveBeenCalledTimes(1);
+      expect(timer.mock.calls[0]![1]).toBe(4975);
+      await vi.advanceTimersByTimeAsync(4974);
+      expect(f.closed()).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await result).toMatchObject({ message: "Native journal reply phase deadline" });
+      expect(f.closed()).toBe(true);
+    } finally {
+      await f.connection.dispose();
+    }
+  });
+
+  it("keeps the five-second payload watchdog non-sliding after a long parked wait", async () => {
+    const f = fixture(5000);
+    try {
+      await f.connection.start(new AbortController().signal);
+      const result = f.connection
+        .read(cursor, new AbortController().signal)
+        .catch((error) => error);
+      await flush();
+      f.begin();
+      await vi.advanceTimersByTimeAsync(120000);
+      f.send("{");
+      await vi.advanceTimersByTimeAsync(4000);
+      f.send(" ");
+      await vi.advanceTimersByTimeAsync(999);
+      expect(f.closed()).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await result).toMatchObject({ message: "Native journal reply phase deadline" });
+      expect(f.closed()).toBe(true);
+    } finally {
+      await f.connection.dispose();
+    }
+  });
 
   it.each(["missing-begin", "partial-begin", "partial-payload", "missing-end"])(
     "bounds %s after a completed handshake",

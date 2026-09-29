@@ -13,6 +13,7 @@ const MAX_REPLY_BYTES = 65_536;
 type Pending = {
   flags: number;
   phase: "begin" | "waiting" | "payload";
+  payloadDeadline?: number;
   maxLines: number;
   resolve: (lines: string[]) => void;
   reject: (error: Error) => void;
@@ -160,11 +161,11 @@ export class NativeJournalControlConnection {
     this.#phaseTimer = null;
   }
 
-  #armPhaseDeadline(): void {
+  #armPhaseDeadline(milliseconds = this.#replyMs): void {
     this.#clearPhaseDeadline();
     this.#phaseTimer = setTimeout(
       () => this.#fail("Native journal reply phase deadline"),
-      this.#replyMs,
+      milliseconds,
     );
     this.#phaseTimer.unref?.();
   }
@@ -190,12 +191,17 @@ export class NativeJournalControlConnection {
         // payload bytes arrive, even an incomplete line, completion is bounded.
         if (this.#pending?.phase === "waiting" && this.#buffer.length) {
           this.#pending.phase = "payload";
-          this.#armPhaseDeadline();
+          this.#pending.payloadDeadline = performance.now() + this.#replyMs;
         }
         const end = this.#buffer.indexOf("\n");
         if (end < 0) {
           if (this.#buffer.length > MAX_REPLY_BYTES)
             throw new Error("Oversized native control line");
+          // A full reply parsed in this callback never waits asynchronously.
+          // Arm only an incomplete payload/end, keeping its original first-byte
+          // deadline so parsing time and later chunks cannot extend the lease.
+          if (this.#pending?.phase === "payload" && this.#phaseTimer === null)
+            this.#armPhaseDeadline(Math.max(0, this.#pending.payloadDeadline! - performance.now()));
           return;
         }
         if (end > MAX_REPLY_BYTES) throw new Error("Oversized native control line");
