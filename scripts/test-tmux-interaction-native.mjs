@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /** Native journal qualification uses only an owned scratch source tree/socket. */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
+import { windowPaneDataHarness } from "./lib/native-window-pane-data.mjs";
 import {
   copyFileSync,
   existsSync,
@@ -64,11 +65,57 @@ try {
     input: archive,
     stdio: ["pipe", "inherit", "inherit"],
   });
+  const upstreamWindow = readFileSync(join(scratch, "window.c"), "utf8");
   for (const patch of patches)
     run("git", ["apply", "-"], scratch, {
       input: patch.bytes,
       stdio: ["pipe", "inherit", "inherit"],
     });
+  const compileWindow = (name, sourceText) => {
+    const input = join(scratch, `${name}.c`);
+    writeFileSync(input, windowPaneDataHarness(sourceText));
+    run(
+      "cc",
+      [
+        "-std=c11",
+        "-g",
+        "-O0",
+        "-fsanitize=address,undefined",
+        "-fno-omit-frame-pointer",
+        input,
+        "-o",
+        join(scratch, name),
+      ],
+      scratch,
+    );
+    return join(scratch, name);
+  };
+  const regressionEnv = {
+    ...env,
+    ASAN_OPTIONS: "detect_leaks=0:halt_on_error=1",
+    UBSAN_OPTIONS: "halt_on_error=1:print_stacktrace=1",
+  };
+  if (process.platform === "darwin") {
+    const original = compileWindow("window-pane-data-upstream", upstreamWindow);
+    const result = spawnSync(original, [], {
+      cwd: scratch,
+      env: regressionEnv,
+      encoding: "utf8",
+      timeout: 10000,
+      maxBuffer: 1024 * 1024,
+    });
+    if (
+      result.error ||
+      result.status === 0 ||
+      !/runtime error: applying zero offset to null pointer/.test(result.stderr ?? "")
+    )
+      throw new Error("Darwin upstream NULL+0 UBSan control did not reproduce", {
+        cause: result.error,
+      });
+    process.stdout.write(`Expected upstream UBSan control failure:\n${result.stderr}`);
+  }
+  const fixed = compileWindow("window-pane-data", readFileSync(join(scratch, "window.c"), "utf8"));
+  run(fixed, [], scratch, { env: regressionEnv, timeout: 10000 });
   run(
     "cc",
     [
@@ -162,7 +209,13 @@ try {
   if (evidence) {
     try {
       const files = [];
-      for (const name of ["journal-ring", "snapshot-buffer", "tmux"]) {
+      for (const name of [
+        "window-pane-data-upstream",
+        "window-pane-data",
+        "journal-ring",
+        "snapshot-buffer",
+        "tmux",
+      ]) {
         const path = join(scratch, name);
         if (!existsSync(path)) continue;
         const info = lstatSync(path);

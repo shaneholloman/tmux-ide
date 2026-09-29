@@ -2531,7 +2531,7 @@ index c9f8a32..5b03e85 100644
  struct window_pane_offset *control_pane_offset(struct client *,
  	   struct window_pane *, int *);
 diff --git a/window.c b/window.c
-index 87d6df4..749b7eb 100644
+index 87d6df4..55a9e59 100644
 --- a/window.c
 +++ b/window.c
 @@ -1051,6 +1051,7 @@ window_pane_create(struct window *w, u_int sx, u_int sy, u_int hlimit)
@@ -2542,3 +2542,13 @@ index 87d6df4..749b7eb 100644
  	RB_INSERT(window_pane_tree, &all_window_panes, wp);
  
  	wp->fd = -1;
+@@ -1844,6 +1845,9 @@ window_pane_get_new_data(struct window_pane *wp,
+ 	size_t	used = wpo->used - wp->base_offset;
+ 
+ 	*size = EVBUFFER_LENGTH(wp->event->input) - used;
++	/* An empty evbuffer may have no backing allocation. */
++	if (used == 0)
++		return (EVBUFFER_DATA(wp->event->input));
+ 	return (EVBUFFER_DATA(wp->event->input) + used);
+ }
+ 
