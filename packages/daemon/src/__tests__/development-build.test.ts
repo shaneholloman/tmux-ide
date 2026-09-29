@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import {
   mkdirSync,
@@ -14,12 +16,16 @@ import { afterEach, expect, it, vi } from "vitest";
 import { resolveDevelopmentInstance } from "../lib/development-instance.ts";
 import {
   developmentFileHash,
+  developmentNativeObservationOption,
+  developmentNativeObservationMode,
   developmentTreeHash,
   readDevelopmentBuild,
   verifyDevelopmentBuild,
   developmentBuildLaunch,
   type DevelopmentBuildManifest,
 } from "../lib/development-build.ts";
+import { developmentOwnerEnvironment } from "../lib/development-lifecycle.ts";
+import type { DevelopmentIdentityRecord } from "../lib/development-state.ts";
 import { developmentNamespaceEnvironment } from "../lib/runtime-namespace.ts";
 import {
   findCompiledTui,
@@ -232,5 +238,101 @@ it("keeps CI and release compiler selection on the same central Bun pin", () => 
     const workflow = readFileSync(new URL(`.github/workflows/${name}.yml`, repository), "utf8");
     const count = workflow.match(/uses: oven-sh\/setup-bun@v2/gu)?.length;
     expect(workflow.match(/bun-version-file: "\.bun-version"/gu)?.length).toBe(count);
+  }
+});
+
+it("native observation is explicit, closed, and preserves the selected generation choice", () => {
+  expect(developmentNativeObservationMode(undefined)).toBe("disabled");
+  expect(developmentNativeObservationMode(undefined, {})).toBe("disabled");
+  expect(developmentNativeObservationMode("enabled")).toBe("enabled");
+  expect(developmentNativeObservationMode(undefined, { nativeObservation: "enabled" })).toBe(
+    "enabled",
+  );
+  expect(developmentNativeObservationMode("disabled", { nativeObservation: "enabled" })).toBe(
+    "disabled",
+  );
+  expect(developmentNativeObservationMode(undefined, { nativeObservation: "disabled" })).toBe(
+    "disabled",
+  );
+  for (const bad of ["1", "true", "", false, null, {}])
+    expect(() => developmentNativeObservationOption(bad)).toThrow("enabled|disabled");
+  for (const command of [
+    "up",
+    "down",
+    "status",
+    "restart",
+    "app",
+    "shell",
+    "reset",
+    "ssh-info",
+    "list",
+    "logs",
+    "diagnostics",
+  ])
+    expect(() => developmentNativeObservationOption("enabled", command)).toThrow(
+      "requires rebuild",
+    );
+  expect(() => developmentNativeObservationOption("enabled", "rebuild", true)).toThrow("container");
+});
+it("manifest hash pins observation mode and malformed manifest modes are refused", () => {
+  const f = fixture();
+  expect(readDevelopmentBuild(f.instance, {}).nativeObservation).toBeUndefined();
+  writeFileSync(
+    join(f.artifact, "manifest.json"),
+    JSON.stringify({ ...f.manifest, nativeObservation: "enabled" }),
+  );
+  expect(() => readDevelopmentBuild(f.instance, {})).toThrow();
+  expect(() =>
+    verifyDevelopmentBuild(f.instance, { ...f.manifest, nativeObservation: "ambient" }),
+  ).toThrow("enabled|disabled");
+});
+it("actual owner environment ignores ambient opt-in and derives only the selected manifest mode", () => {
+  const f = fixture();
+  const identity = { capability: randomUUID() } as DevelopmentIdentityRecord;
+  vi.stubEnv("TMUX_IDE_NATIVE_OBSERVATION", "1");
+  vi.stubEnv("TMUX_IDE_UNREVIEWED_OPTION", "unsafe");
+  const legacy = developmentOwnerEnvironment(f.instance, identity, f.manifest);
+  expect(legacy.TMUX_IDE_NATIVE_OBSERVATION).toBe("0");
+  expect(legacy).not.toHaveProperty("TMUX_IDE_UNREVIEWED_OPTION");
+  vi.stubEnv("TMUX_IDE_NATIVE_OBSERVATION", "0");
+  const enabled = developmentOwnerEnvironment(f.instance, identity, {
+    ...f.manifest,
+    nativeObservation: "enabled",
+  });
+  const disabled = developmentOwnerEnvironment(f.instance, identity, {
+    ...f.manifest,
+    nativeObservation: "disabled",
+  });
+  expect(enabled.TMUX_IDE_NATIVE_OBSERVATION).toBe("1");
+  expect(disabled.TMUX_IDE_NATIVE_OBSERVATION).toBe("0");
+  expect({ ...enabled, TMUX_IDE_NATIVE_OBSERVATION: "0" }).toEqual(legacy);
+  expect(disabled).toEqual(legacy);
+});
+
+it("manager CLI rejects invalid observation switches before resolving or creating an instance", () => {
+  const root = fileURLToPath(new URL("../../../../", import.meta.url));
+  for (const args of [
+    ["up", "--native-observation", "enabled"],
+    ["rebuild", "--native-observation", "true"],
+    ["rebuild", "--container", "--native-observation", "disabled"],
+  ]) {
+    try {
+      execFileSync(
+        process.execPath,
+        [
+          "--import",
+          join(root, "node_modules/tsx/dist/loader.mjs"),
+          join(root, "scripts/development-instance.ts"),
+          ...args,
+        ],
+        { encoding: "utf8", stdio: "pipe", timeout: 10000 },
+      );
+      throw new Error("Unexpected CLI admission");
+    } catch (error) {
+      expect((error as { status: number }).status).toBe(1);
+      expect(String((error as { stderr: string }).stderr)).toContain(
+        "native-observation requires rebuild",
+      );
+    }
   }
 });

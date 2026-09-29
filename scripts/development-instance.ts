@@ -25,6 +25,7 @@ import {
 } from "../packages/daemon/src/lib/development-build-manager.ts";
 import {
   readDevelopmentBuild,
+  developmentNativeObservationOption,
   developmentBuildLaunch,
   type DevelopmentBuildManifest,
 } from "../packages/daemon/src/lib/development-build.ts";
@@ -73,12 +74,18 @@ const { positionals, values } = parseArgs({
     "apply-build": { type: "boolean" },
     previous: { type: "boolean" },
     bun: { type: "string" },
+    "native-observation": { type: "string" },
     name: { type: "string" },
     store: { type: "string" },
     worktree: { type: "string" },
   },
 });
 const command = positionals[0];
+const nativeObservation = developmentNativeObservationOption(
+  values["native-observation"],
+  command,
+  values.container,
+);
 if (
   positionals.length !== 1 ||
   ![
@@ -283,7 +290,7 @@ try {
       );
     let built: DevelopmentBuildManifest;
     try {
-      built = await buildDevelopmentInstance(instance, { bun });
+      built = await buildDevelopmentInstance(instance, { bun, nativeObservation });
     } catch (error) {
       if (error instanceof DevelopmentOperationError) throw error;
       throw new DevelopmentOperationError(

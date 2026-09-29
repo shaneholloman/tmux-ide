@@ -16,6 +16,7 @@ import { type DevelopmentInstance, validateDevelopmentDirectory } from "./develo
 import {
   readDevelopmentBuild,
   developmentBuildLaunch,
+  developmentNativeObservationMode,
   type DevelopmentBuildManifest,
 } from "./development-build.ts";
 import { withDevelopmentLock } from "./development-lock.ts";
@@ -93,6 +94,8 @@ export function developmentOwnerEnvironment(
   return {
     ...developmentChildEnvironment(namespace, cleanManagerEnvironment()),
     ...developmentBuildLaunch(build).environment,
+    TMUX_IDE_NATIVE_OBSERVATION:
+      developmentNativeObservationMode(undefined, build) === "enabled" ? "1" : "0",
     TMUX_IDE_CWD: instance.worktree,
     TMUX_IDE_DEVELOPMENT_BUILD_DIRTY: build.source.dirty ? "1" : "0",
   };
