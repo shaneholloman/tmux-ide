@@ -19,7 +19,7 @@ export function _setExecutor(fn: TmuxExecutor): () => void {
 
 function tmux(...args: string[]): string {
   try {
-    return _executor("tmux", runtimeTmuxArgs(args), {
+    return _executor("tmux", ["-u", ...runtimeTmuxArgs(args)], {
       stdio: ["pipe", "pipe", "pipe"],
     }).trim();
   } catch (error) {

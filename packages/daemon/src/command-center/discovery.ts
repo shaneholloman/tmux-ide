@@ -34,7 +34,7 @@ export interface ProjectDetail {
 type TmuxRunner = (args: string[]) => string;
 
 let _tmuxRunner: TmuxRunner = (args) =>
-  execFileSync("tmux", runtimeTmuxArgs(args), {
+  execFileSync("tmux", ["-u", ...runtimeTmuxArgs(args)], {
     encoding: "utf-8",
     maxBuffer: 1024 * 1024,
     stdio: ["ignore", "pipe", "ignore"],
