@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Atomic recovery prototype, only private servers and actual control clients."""
-import json, os, pathlib, re, select, shlex, shutil, subprocess, sys, tempfile, time, uuid
+import hashlib, json, os, pathlib, re, select, shlex, shutil, subprocess, sys, tempfile, time, uuid
 from native_test_evidence import export_sanitizer_evidence
+from native_test_cleanup import retire_pipe_child, run_owned_cleanup
 binary=str(pathlib.Path(sys.argv[1]).resolve())
 root=tempfile.mkdtemp(prefix='tmux-ide-atomic-',dir='/tmp');socket=root+'/sock';clients=[]
 env=dict(os.environ,TMUX='',ASAN_OPTIONS='detect_leaks=0:halt_on_error=1:log_path='+root+'/asan',UBSAN_OPTIONS='halt_on_error=1:log_path='+root+'/ubsan')
@@ -15,7 +16,7 @@ class Control:
   self.execute('display-message -p attached')
  def line(self,deadline):
   while b'\n' not in self.buffer:
-   assert time.monotonic()<deadline,('timeout',self.buffer)
+   assert time.monotonic()<deadline,('timeout',len(self.buffer),self.buffer[-512:])
    if select.select([self.p.stdout],[],[],.02)[0]:
     data=os.read(self.p.stdout.fileno(),65536)
     assert data,('closed',self.p.poll())
@@ -23,18 +24,28 @@ class Control:
   data,self.buffer=self.buffer.split(b'\n',1);return data.decode(errors="surrogateescape")
  def execute(self,command):
   token='done-'+uuid.uuid4().hex
-  self.p.stdin.write((command+'\ndisplay-message -p '+token+'\n').encode());self.p.stdin.flush()
+  payload=(command+'\ndisplay-message -p '+token+'\n').encode()
+  sent=time.monotonic();written=self.p.stdin.write(payload);self.p.stdin.flush()
+  assert written==len(payload),('short control write',written,len(payload))
+  write_seconds=time.monotonic()-sent
   lines=[];seen=False;deadline=time.monotonic()+5
   while True:
    try:line=self.line(deadline)
-   except Exception as error:raise AssertionError((command,lines)) from error
+   except Exception as error:
+    # Bounded failure facts, rather than dumping a 70k command into CI logs.
+    diagnostic={'commandBytes':len(payload),'commandSha256':hashlib.sha256(payload).hexdigest(),
+     'writtenBytes':written,'writeSeconds':write_seconds,'clientExit':self.p.poll(),
+     'receivedLines':len(lines),'receivedBytes':sum(len(s.encode(errors='surrogateescape'))+1 for s in lines),
+     'bufferBytes':len(self.buffer),'bufferTail':self.buffer[-512:].decode(errors='replace'),
+     'lastLines':[s[-512:] for s in lines[-4:]]}
+    raise AssertionError(diagnostic) from error
    lines.append(line)
    if line==token:seen=True
    if seen and (line.startswith('%end ') or line.startswith('%error ')):return lines
  def pause(self):
   return self.execute("refresh-client -A \""+pane+":pause\"")
  def close(self):
-  if self.p.poll() is None:self.p.kill();self.p.communicate(timeout=3)
+  retire_pipe_child(self.p)
 def wrap(body,birth_override=None):
  return shlex.join(['tmux-ide-run','-I','-E',epoch,'-t',pane,'-B',birth_override or birth,'-O',str(uuid.uuid4()),body])
 def capture(c,extra='',ok=True,history='-'):
@@ -196,10 +207,9 @@ try:
  assert not list(pathlib.Path(root).glob('asan.*')) and not list(pathlib.Path(root).glob('ubsan.*'))
  print('atomic snapshot: strict origin/guards/flags/bounds, issuer-only resume, exact grid/modes, hook lineage/framing, cap edge/backlog, continuous output, parser boundary passed')
 finally:
- try:
-  for c in clients:c.close()
-  try:call('kill-server')
-  except Exception:pass
- finally:
-  export_sanitizer_evidence(root)
-  shutil.rmtree(root)
+ primary=sys.exc_info()[1]
+ actions=[('control-'+str(index),c.close) for index,c in enumerate(clients)]
+ if os.path.exists(socket):actions.append(('server',lambda:call('kill-server')))
+ actions.append(('sanitizer-evidence',lambda:export_sanitizer_evidence(root,strict=True)))
+ if run_owned_cleanup(actions,primary):
+  run_owned_cleanup([('scratch-removal',lambda:shutil.rmtree(root))],primary)

@@ -50,6 +50,7 @@ const env = Object.fromEntries(
 );
 // Only an explicitly admitted destination reaches the child fixtures.
 delete env.TMUX_IDE_NATIVE_TEST_EVIDENCE_DIR;
+env.PYTHONDONTWRITEBYTECODE = "1";
 if (evidence) env.TMUX_IDE_NATIVE_TEST_EVIDENCE_DIR = evidence;
 const run = (command, args, cwd, extra = {}) =>
   execFileSync(command, args, { cwd, env, stdio: "inherit", ...extra });
@@ -61,6 +62,8 @@ if (actual !== provenance.commit) throw new Error("Pinned tmux source mismatch")
 const patches = readTmuxNativePatches(provenance, join(root, "native/tmux"));
 const scratch = mkdtempSync(join(tmpdir(), "tmux-ide-journal-build-"));
 try {
+  for (const test of ["native_test_cleanup_test.py", "native-test-evidence.test.py"])
+    run("python3", [join(root, "native/tmux/tests", test)], root, { timeout: 10000 });
   const archive = execFileSync("git", ["-C", source, "archive", provenance.commit], {
     env,
     maxBuffer: 32 * 1024 * 1024,

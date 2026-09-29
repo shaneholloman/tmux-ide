@@ -17,7 +17,7 @@ def _private_directory(path):
     return fd
 
 
-def export_sanitizer_evidence(root):
+def export_sanitizer_evidence(root, strict=False):
     """Preserve a failing test's exception if diagnostic export itself fails."""
     destination = os.environ.get("TMUX_IDE_NATIVE_TEST_EVIDENCE_DIR")
     if not destination:
@@ -26,7 +26,7 @@ def export_sanitizer_evidence(root):
     try:
         _export(root, destination)
     except Exception:
-        if not failing:
+        if strict or not failing:
             raise
         print("Sanitizer diagnostic export failed; original failure preserved", file=sys.stderr)
 
