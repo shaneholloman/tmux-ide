@@ -37,6 +37,11 @@ test("negative control separates absent detection from runtime failure", () => {
       "x.c:12:1: runtime error: applying zero offset to null pointer\nSUMMARY: UndefinedBehaviorSanitizer",
   };
   assert.equal(classifyWindowPaneDataControl(detected), "detected");
+  // Darwin sanitizer runtimes may abort instead of returning exit status 1.
+  assert.equal(
+    classifyWindowPaneDataControl({ ...detected, status: null, signal: "SIGABRT" }),
+    "detected",
+  );
   const silent = {
     status: 0,
     signal: null,
@@ -47,6 +52,8 @@ test("negative control separates absent detection from runtime failure", () => {
   for (const broken of [
     { ...silent, error: Error("timeout") },
     { ...silent, signal: "SIGKILL" },
+    { ...silent, status: null, signal: "SIGABRT" },
+    { ...detected, status: null, signal: "SIGKILL" },
     { ...silent, stdout: "" },
     { ...silent, stderr: "warning" },
     { ...detected, status: 2 },
@@ -55,6 +62,19 @@ test("negative control separates absent detection from runtime failure", () => {
     { ...detected, stderr: detected.stderr + "\nERROR: AddressSanitizer" },
   ])
     assert.equal(classifyWindowPaneDataControl(broken), "unexpected-failure");
+  for (const termination of [
+    { status: 1, signal: null },
+    { status: null, signal: "SIGABRT" },
+  ]) {
+    for (const stderr of [
+      detected.stderr + "\nAddressSanitizer:DEADLYSIGNAL",
+      detected.stderr.replace("null pointer\n", "null pointer with unexpected suffix\n"),
+    ])
+      assert.equal(
+        classifyWindowPaneDataControl({ ...detected, ...termination, stderr }),
+        "unexpected-failure",
+      );
+  }
 });
 test("original Darwin x64 detector remains mandatory while ARM observation is explicit", () => {
   requireWindowPaneDataControl("detected", "darwin", "x64");

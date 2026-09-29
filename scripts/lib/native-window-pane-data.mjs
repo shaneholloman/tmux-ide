@@ -47,22 +47,19 @@ int main(void) {
 
 /** Only the original empty-pointer diagnostic is an expected negative control. */
 export function classifyWindowPaneDataControl(result) {
-  if (
-    result.error ||
-    result.signal ||
-    typeof result.stdout !== "string" ||
-    typeof result.stderr !== "string"
-  )
+  if (result.error || typeof result.stdout !== "string" || typeof result.stderr !== "string")
     return "unexpected-failure";
   if (
-    result.status === 1 &&
+    ((result.status === 1 && !result.signal) ||
+      (result.status === null && result.signal === "SIGABRT")) &&
     (result.stderr.match(/runtime error:/g) ?? []).length === 1 &&
-    /runtime error: applying zero offset to null pointer/.test(result.stderr) &&
-    !/ERROR: AddressSanitizer/.test(result.stderr)
+    /^.*: runtime error: applying zero offset to null pointer\r?$/m.test(result.stderr) &&
+    !/AddressSanitizer/.test(result.stderr)
   )
     return "detected";
   if (
     result.status === 0 &&
+    !result.signal &&
     result.stderr === "" &&
     result.stdout.trim() ===
       "actual window_pane_get_new_data: NULL-empty, zero, partial and end offsets passed"
