@@ -85,6 +85,22 @@ pnpm --silent dev:instance rebuild --name demo --json
 pnpm --silent dev:instance restart --name demo --apply-build --json
 ```
 
+To test experimental native interaction observation in a development instance,
+select it explicitly when rebuilding:
+
+```sh
+pnpm --silent dev:instance rebuild --name demo --native-observation enabled --json
+pnpm --silent dev:instance restart --name demo --apply-build --json
+```
+
+The selection is recorded in the hashed build manifest. New instances and legacy
+manifests default to disabled; later rebuilds preserve the selected mode when the
+option is omitted. Use `--native-observation disabled` on a rebuild to turn it off
+in the next applied build. Ambient `TMUX_IDE_NATIVE_OBSERVATION` values are ignored
+by the instance manager. This option is only accepted for non-container rebuilds.
+Observation still requires a capable tmux server; selecting the option does not
+replace tmux, migrate sessions, or establish that native observation is ready.
+
 Later rebuilds can reuse the verified Bun path from the selected manifest.
 Rebuild publishes artifacts without restarting anything. `restart --apply-build`
 replaces the daemon with the selected build while preserving compatible tmux

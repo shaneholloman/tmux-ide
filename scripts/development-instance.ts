@@ -104,7 +104,7 @@ if (
   ].includes(command ?? "")
 )
   throw new Error(
-    "Usage: pnpm dev:instance up|app|shell|status|list|restart|down|reset|diagnostics|logs|rebuild [--json] [--id id | --name name --worktree path] [--store absolute-path]",
+    "Usage: pnpm dev:instance up|app|shell|status|list|restart|down|reset|diagnostics|logs|rebuild [--json] [--id id | --name name --worktree path] [--store absolute-path] [rebuild: --native-observation enabled|disabled]",
   );
 if (
   values.id &&
