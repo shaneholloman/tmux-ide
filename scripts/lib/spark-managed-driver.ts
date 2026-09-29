@@ -26,7 +26,39 @@ export interface SparkManagedDescriptor extends SparkDriverRuntimeDescriptor {
   instance: { worktree: string; name: string; store: string };
 }
 export const SPARK_FIXTURE_SESSION = "attribution-collision";
-type ManagedAction = "prepare" | "stamp-blocked" | "stamp-done" | "replace-owner";
+const TUI_OUTPUT = {
+  "tui-output-baseline": "SPARK_TUI_BASELINE",
+  "tui-output-reconnected": "SPARK_TUI_RECONNECTED",
+  "tui-output-replaced": "SPARK_TUI_REPLACED",
+} as const;
+type TuiOutputAction = keyof typeof TUI_OUTPUT;
+type ManagedAction = "prepare" | "stamp-blocked" | "stamp-done" | "replace-owner" | TuiOutputAction;
+
+/** Fixed shell output, encoded so command echo cannot satisfy the painted-output assertion. */
+export async function sparkTuiOutput(
+  action: TuiOutputAction,
+  run: (args: string[]) => Promise<string>,
+) {
+  assert(Object.hasOwn(TUI_OUTPUT, action));
+  const target = `${SPARK_FIXTURE_SESSION}:0.0`;
+  const pane = await run([
+    "display-message",
+    "-p",
+    "-t",
+    target,
+    "#{pane_id}:#{@tmux_ide_pane_id}",
+  ]);
+  assert(/^%[0-9]+:pane\.shared$/u.test(pane));
+  const paneId = pane.split(":")[0]!;
+  const token = TUI_OUTPUT[action];
+  const encoded = Array.from(
+    token + "\n",
+    (char) => "\\" + char.charCodeAt(0).toString(8).padStart(3, "0"),
+  ).join("");
+  await run(["send-keys", "-t", paneId, "-l", `printf '${encoded}'`]);
+  await run(["send-keys", "-t", paneId, "Enter"]);
+  return { emitted: token };
+}
 
 export function sparkManagerArgv(
   d: SparkManagedDescriptor,
@@ -50,7 +82,15 @@ export function sparkManagerArgv(
 
 /** Caller holds the driver lock and has validated the complete descriptor and runtime. */
 export async function sparkManagedAction(d: SparkManagedDescriptor, action: ManagedAction) {
-  assert(["prepare", "stamp-blocked", "stamp-done", "replace-owner"].includes(action));
+  assert(
+    [
+      "prepare",
+      "stamp-blocked",
+      "stamp-done",
+      "replace-owner",
+      ...Object.keys(TUI_OUTPUT),
+    ].includes(action),
+  );
   const instance = resolveDevelopmentInstance(d.instance);
   const execute = promisify(execFile);
   const env = {
@@ -201,6 +241,7 @@ export async function sparkManagedAction(d: SparkManagedDescriptor, action: Mana
     return { replaced: true, lease, tmuxPreserved: true, staleLeaseRejected: true };
   }
   const tmux = await tmuxAuthority();
+  if (Object.hasOwn(TUI_OUTPUT, action)) return sparkTuiOutput(action as TuiOutputAction, tmux.run);
   const state = action === "stamp-blocked" ? "blocked" : "done";
   await tmux.run([
     "set-option",

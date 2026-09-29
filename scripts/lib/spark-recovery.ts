@@ -105,8 +105,17 @@ export function validateSparkRecoveryReplacement(config: Config, value: unknown)
 }
 
 /** Must execute with the client Solid runtime, as configured by the opt-in fixture. */
+export interface SparkRetainedTuiObserver {
+  baseline(): Promise<void>;
+  forwardLost(): Promise<void>;
+  forwarded(): Promise<void>;
+  replaced(lease: Lease): Promise<void>;
+  close(): Promise<void>;
+}
+
 export async function qualifySparkHomeRecovery(options: {
   config: unknown;
+  retainedTui?: SparkRetainedTuiObserver;
   signal: AbortSignal;
   identify(pid: number): Promise<string | null>;
   persistReplacementLease(lease: Lease): void | Promise<void>;
@@ -446,6 +455,7 @@ export async function qualifySparkHomeRecovery(options: {
             entry.operationId === id &&
             entry.phase === "observed",
         );
+    await bound(options.retainedTui?.baseline() ?? Promise.resolve(), 60000);
     stage = "baseline-read";
     const baseline = await read(current(), target);
     await wait(() => has(baseline));
@@ -462,6 +472,7 @@ export async function qualifySparkHomeRecovery(options: {
     const witness = await connect({ alias: config.ssh.alias }, true);
     stage = "forward-loss";
     hold();
+    await bound(options.retainedTui?.forwardLost() ?? Promise.resolve());
     const currentPrimary = (): typeof primary => primary;
     const interrupted = currentPrimary();
     assert(interrupted?.child.pid);
@@ -520,11 +531,13 @@ export async function qualifySparkHomeRecovery(options: {
       proof.offlineReadReplayed =
       proof.historyPreserved =
         true;
+    await bound(options.retainedTui?.forwarded() ?? Promise.resolve(), 60000);
     stage = "replace-owner";
     hold();
     const replacement = validateSparkRecoveryReplacement(config, await action("replace-owner"));
     await options.persistReplacementLease(replacement);
     lease = replacement;
+    await bound(options.retainedTui?.replaced(replacement) ?? Promise.resolve(), 60000);
     resume();
     stage = "replacement-home";
     await wait(
@@ -581,6 +594,12 @@ export async function qualifySparkHomeRecovery(options: {
   } finally {
     closing = true;
     let cleanupFailed = false;
+    try {
+      await bound(options.retainedTui?.close() ?? Promise.resolve(), 10000);
+    } catch (error) {
+      cleanupFailed = true;
+      fail(error, "cleanup");
+    }
     const safe = (operation: () => void) => {
       try {
         operation();

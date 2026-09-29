@@ -38,6 +38,9 @@ export const SPARK_DRIVER_ACTIONS = Object.freeze([
   "stamp-blocked",
   "stamp-done",
   "replace-owner",
+  "tui-output-baseline",
+  "tui-output-reconnected",
+  "tui-output-replaced",
   "cleanup",
 ]);
 
