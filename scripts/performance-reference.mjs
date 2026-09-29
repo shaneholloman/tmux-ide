@@ -18,6 +18,7 @@ import {
   summarize,
   theilSenSlope,
   validateReferenceReport,
+  validateReferenceStageEvent,
 } from "./lib/performance-reference-report.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -495,7 +496,7 @@ function measureInputToPaint(inputPath) {
   const groups = new Map();
   for (const event of events) {
     if (event.type !== "performance.stage") continue;
-    validateStageEvent(event);
+    if (!validateReferenceStageEvent(event)) continue;
     const group = groups.get(event.traceId) ?? [];
     group.push(event);
     groups.set(event.traceId, group);
@@ -636,20 +637,6 @@ function readJsonLines(path) {
         throw new Error(`Invalid JSONL at ${path}:${index + 1}`);
       }
     });
-}
-
-function validateStageEvent(event) {
-  for (const field of ["traceId", "stage", "processId", "clockId", "clockKind"])
-    if (typeof event[field] !== "string" || event[field].length === 0)
-      throw new TypeError(`Trace event ${field} must be a non-empty string`);
-  if (!PERFORMANCE_STAGES.includes(event.stage)) throw new TypeError("Unknown trace stage");
-  if (
-    !Number.isSafeInteger(event.startedAtMicros) ||
-    !Number.isSafeInteger(event.endedAtMicros) ||
-    event.startedAtMicros < 0 ||
-    event.endedAtMicros < event.startedAtMicros
-  )
-    throw new TypeError("Trace event endpoints must be ordered safe monotonic microseconds");
 }
 
 function parseOptions(args) {
