@@ -11,6 +11,7 @@ import { createOpenTuiPaneStreamSocket } from "../packages/daemon/src/tui/mirror
 import { defaultNodePtyAdapter } from "../packages/daemon/src/terminal/NodePtyAdapter.ts";
 import { decodeNativeGridCapture } from "../packages/daemon/src/terminal/mirror/native-grid-capture.ts";
 import { projectNativeGridRow } from "../packages/daemon/src/terminal/mirror/native-grid-projection.ts";
+import { inspectCoherenceTrace } from "./lib/coherence-trace.mjs";
 import { createMacProcessIdentity } from "./lib/owned-ssh-fixture.mjs";
 import { subscribeTmuxServerInteractions } from "../packages/daemon-client/src/tmux-server-interaction-events.ts";
 import { TmuxServersResourceSchemaZ } from "../packages/contracts/src/tmux-server-scope.ts";
@@ -38,7 +39,7 @@ const shapes = Array.from({ length: 20 }, (_, i) => [80 + i * 2, 25 + (i % 7)] a
 const producer = join(output, "producer.cjs");
 writeFileSync(
   producer,
-  `process.stdin.setRawMode(true);let started=false;process.stdout.write('READY\\r\\n');process.stdin.on('data',()=>{if(started)return;started=true;process.stdout.write('\\x1b[?1049hALT\\x1b[?1049l');let i=0;const t=setInterval(()=>{process.stdout.write('REC_'+String(i++).padStart(4,'0')+'\\r\\n');if(i===500){clearInterval(t);process.stdout.write('\\x1b[38;5;196mCOLOR\\x1b[0m 界é\\r\\nDONE_C4');}},2);});`,
+  `process.stdin.setRawMode(true);let started=false;process.stdout.write('READY\\r\\n');process.stdin.on('data',()=>{if(started)return;started=true;process.stdout.write('\\x1b[?1049hALT\\x1b[?1049l');let i=0;const t=setInterval(()=>{process.stdout.write('REC_'+String(i++).padStart(4,'0')+'\\r\\n');if(i===500){clearInterval(t);process.stdout.write('\\x1b[38;5;196mCOLOR\\x1b[0m 界é\\r\\n\\x1b[?2004h\\x1b[?1h\\x1b=DONE_C4');}},2);});`,
 );
 const manifest = {
   source,
@@ -105,6 +106,16 @@ try {
     let observation: ReturnType<typeof subscribeTmuxServerInteractions> | undefined;
     let observationClosed = false;
     let receiptCount = 0;
+    const tracePath = join(output, `clients-${count}-runtime.jsonl`);
+    writeFileSync(tracePath, "", { flag: "wx", mode: 0o600 });
+    const traceCheckpoints: Record<string, ReturnType<typeof inspectCoherenceTrace>> = {};
+    let finalHash: string | null = null;
+    const traceSnapshot = (complete = false) =>
+      inspectCoherenceTrace(readFileSync(tracePath, "utf8"), {
+        clients: count,
+        finalHash,
+        complete,
+      });
     let facts: unknown = null;
     const tmux = (...args: string[]) =>
       execFileSync(native, ["-S", fleet!.socketPath, ...args], {
@@ -131,6 +142,7 @@ try {
       tmux("set-option", "-g", "history-limit", "10000");
       tmux("set-option", "-t", session, "status", "off");
       tmux("set-window-option", "-t", session, "window-size", "latest");
+      process.env.TMUX_IDE_SESSION_RUNTIME_TRACE_LOG = tracePath;
       daemon = await startDaemon(fleet);
       const workspace = await daemon.promote(session);
       const response = await fetch(`${daemon.baseUrl}/api/v1/tmux-servers`, {
@@ -244,6 +256,7 @@ try {
         !text(decoders.at(-1)!.state!.canonicalSnapshot!.grid).includes("DONE_C4"),
         "Workload failed to exercise a client stalled before final output",
       );
+      traceCheckpoints.stalled = traceSnapshot();
       decoders.at(-1)!.release();
       await waitFor(
         "all clients converge",
@@ -255,6 +268,37 @@ try {
       const raw = tmux("capture-pane", "-p", "-R", "-S", "-", "-t", runtimePane);
       const oracle = decodeNativeGridCapture(raw);
       assert(oracle && oracle.version === 2, "Invalid native oracle");
+      const modeFormats = {
+        alternateScreen: "alternate_on",
+        applicationCursor: "keypad_cursor_flag",
+        applicationKeypad: "keypad_flag",
+        bracketedPaste: "bracket_paste_flag",
+        insert: "insert_flag",
+        origin: "origin_flag",
+        wraparound: "wrap_flag",
+        mouseTracking: "mouse_any_flag",
+        synchronizedOutput: "synchronized_output_flag",
+      };
+      const modeValues = tmux(
+        "display-message",
+        "-p",
+        "-t",
+        runtimePane,
+        [...Object.values(modeFormats), "cursor_flag"].map((key) => `#{${key}}`).join("|"),
+      )
+        .trim()
+        .split("|");
+      assert.equal(modeValues.length, Object.keys(modeFormats).length + 1);
+      assert(
+        modeValues.every((value) => value === "0" || value === "1"),
+        "Native mode oracle unavailable",
+      );
+      const oracleModes = Object.fromEntries(
+        Object.keys(modeFormats).map((key, index) => [key, modeValues[index] === "1"]),
+      );
+      assert.equal(oracleModes.bracketedPaste, true, "Producer mode probe did not execute");
+      assert.equal(oracleModes.applicationCursor, true);
+      assert.equal(oracleModes.applicationKeypad, true);
       const [cols, rows] = shapes.at(-1)!;
       assert.equal(oracle.cols, cols);
       assert.equal(oracle.rows, rows);
@@ -272,16 +316,29 @@ try {
           Array.from({ length: records }, (_, i) => `REC_${String(i).padStart(4, "0")}`),
         );
         assert.deepEqual([snapshot.cursor.x, snapshot.cursor.y], oracle.cursor);
-        assert.equal(snapshot.modes.alternateScreen, false);
+        assert.deepEqual(snapshot.modes, oracleModes);
+        assert.equal(snapshot.cursor.hidden, modeValues.at(-1) === "0");
       }
+      finalHash = decoders[0]!.state!.appliedHash;
+      await waitFor(
+        "all final acknowledgements recorded by daemon",
+        () => {
+          const metrics = traceSnapshot();
+          return metrics.finalSettledClients === count && metrics.settledWithoutFlights;
+        },
+        errors,
+      );
+      traceCheckpoints.converged = traceSnapshot();
       facts = {
         count,
         initialObservation,
         finalObservation: observation.getObservationStatus(),
         receiptCount,
+        traceCheckpoints,
         slowCommitsBeforeRelease: slowCommits,
         hashes: decoders.map((d) => d.state!.appliedHash),
         commits: decoders.map((d) => d.commits),
+        oracleModes,
         nativeDigest: createHash("sha256").update(raw).digest("hex"),
         cols,
         rows,
@@ -321,6 +378,7 @@ try {
         try {
           await daemon.stop();
           cleanup.daemon = "confirmed";
+          if (finalHash) traceCheckpoints.flushed = traceSnapshot(true);
         } catch (e) {
           errors.push(e as Error);
         }
