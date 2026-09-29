@@ -138,6 +138,7 @@ try {
         complete,
       });
     let facts: unknown = null;
+    let failureProbe: unknown = null;
     const tmux = (...args: string[]) =>
       execFileSync(native, ["-S", fleet!.socketPath, ...args], {
         encoding: "utf8",
@@ -368,6 +369,28 @@ try {
       };
     } catch (error) {
       errors.push(error as Error);
+      if (daemon)
+        writeFileSync(join(output, `clients-${count}-daemon.log`), daemon.output().slice(-65536), {
+          mode: 0o600,
+        });
+      if (fleet) {
+        try {
+          failureProbe = {
+            panes: tmux(
+              "list-panes",
+              "-a",
+              "-F",
+              "#{pane_id}|#{pane_dead}|#{pane_dead_status}|#{pane_pid}|#{pane_current_command}|#{pane_width}|#{pane_height}",
+            ),
+            output: tmux("capture-pane", "-p", "-S", "-20", "-t", fleet.initialPanes[0]!.paneId),
+            observation: observation?.getObservationStatus(),
+          };
+        } catch (probeError) {
+          failureProbe = {
+            unavailable: probeError instanceof Error ? probeError.message : String(probeError),
+          };
+        }
+      }
     } finally {
       for (const client of clients) {
         try {
@@ -442,6 +465,7 @@ try {
       const report = {
         count,
         facts,
+        failureProbe,
         cleanup,
         failures: errors.map((e) => ({ name: e.name, message: e.message })),
       };
