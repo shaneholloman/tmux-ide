@@ -821,7 +821,7 @@ describe("GET /api/project/:name/application-shell", () => {
     );
     restorers.push(
       _setExecutor((_command, args) =>
-        args[0] === "list-panes"
+        args[0] === "-u" && args[1] === "list-panes"
           ? "%7\t0\tImplementer\tcodex\t120\t40\t1\tteammate\tCodex\tagent"
           : "",
       ),
