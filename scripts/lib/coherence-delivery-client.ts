@@ -35,6 +35,9 @@ export class CoherenceDeliveryClient {
     if (this.state) throw new Error("Unexpected second negotiation");
     this.state = createTerminalDeliveryClientState(result.negotiated, this.workspace, this.pane);
   }
+  get acknowledgementHeld(): boolean {
+    return this.#heldAck !== null;
+  }
   hold(): void {
     this.#hold = true;
   }

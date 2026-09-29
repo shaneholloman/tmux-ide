@@ -63,7 +63,9 @@ test("held acknowledgement follows a fully decoded snapshot and releases exactly
   assert.equal(client.commits, 1);
   assert.deepEqual(client.state?.canonicalSnapshot, snapshot);
   assert.equal(acks.length, 0);
+  assert.equal(client.acknowledgementHeld, true);
   client.release();
+  assert.equal(client.acknowledgementHeld, false);
   client.release();
   assert.equal(acks.length, 1);
 });
