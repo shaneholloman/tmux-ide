@@ -33,7 +33,7 @@ it.skipIf(!binary).each(["", "A\\n\\n", "\\033[31mwide界\\033[0m\\n", "12345678
         "-d",
         "-s",
         "snapshot",
-        `printf '${content}'; sleep 60`,
+        `printf '${content}'; exec sleep 60`,
       );
       const capability = NativeJournalCapabilitySchemaZ.parse(
         JSON.parse(run("tmux-ide-events", "-e")),
