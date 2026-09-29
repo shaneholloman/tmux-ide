@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { validateSparkCanonicalConfig } from "../qualify-spark-canonical.ts";
-import { validateSparkRecoveryReplacement } from "./spark-recovery.ts";
+import { validateSparkRecoveryReplacement, sparkRecoveryFailureCode } from "./spark-recovery.ts";
 function config() {
   const nonce = "a".repeat(32),
     root = `/tmp/tia-ssh-${nonce}`,
@@ -82,4 +82,29 @@ test("replacement receipt admits only a new owner of the exact same managed tupl
     })),
   ])
     assert.throws(() => validateSparkRecoveryReplacement(c, altered));
+});
+
+test("recovery failure codes never publish private error details", () => {
+  assert.equal(
+    sparkRecoveryFailureCode(
+      new assert.AssertionError({ message: "PRIVATE", actual: "token", expected: "secret" }),
+    ),
+    "assertion",
+  );
+  assert.equal(sparkRecoveryFailureCode(new Error("Recovery stage deadline")), "deadline");
+  assert.equal(sparkRecoveryFailureCode(new Error("Recovery cleanup deadline")), "deadline");
+  assert.equal(sparkRecoveryFailureCode(new DOMException("PRIVATE", "TimeoutError")), "deadline");
+  assert.equal(sparkRecoveryFailureCode(new DOMException("PRIVATE", "AbortError")), "cancelled");
+  assert.equal(sparkRecoveryFailureCode(new TypeError("fetch failed")), "transport");
+  assert.equal(sparkRecoveryFailureCode(new SyntaxError("PRIVATE JSON")), "invalid-receipt");
+  assert.equal(
+    sparkRecoveryFailureCode(
+      Object.assign(new Error("PRIVATE"), { stdout: "PRIVATE", stderr: "PRIVATE" }),
+    ),
+    "unknown",
+  );
+  assert.equal(sparkRecoveryFailureCode("PRIVATE"), "unknown");
+  const cancelled = new AbortController();
+  cancelled.abort(new Error("PRIVATE"));
+  assert.equal(sparkRecoveryFailureCode(new Error("anything"), cancelled.signal), "cancelled");
 });

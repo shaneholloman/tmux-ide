@@ -29,6 +29,7 @@ import {
   openSshDaemonTransport,
   probeSshDaemonIdentity,
   RemoteDaemonHandshakeSchema,
+  SshConnectionError,
 } from "../../packages/daemon/src/lib/ssh-daemon-transport.ts";
 import { validateSparkCanonicalConfig } from "../qualify-spark-canonical.ts";
 import { createSparkRemoteAction, type SparkRemoteExec } from "./spark-remote-action.ts";
@@ -51,6 +52,36 @@ type Stage =
   | "stale-endpoint"
   | "local-health"
   | "cleanup";
+type FailureCode =
+  | "assertion"
+  | "deadline"
+  | "cancelled"
+  | "transport"
+  | "invalid-receipt"
+  | "unknown";
+/** Classify only fixed error kinds; private messages and attached output never leave memory. */
+export function sparkRecoveryFailureCode(error: unknown, signal?: AbortSignal): FailureCode {
+  if (signal?.aborted) return signal.reason?.name === "TimeoutError" ? "deadline" : "cancelled";
+  if (!(error instanceof Error)) return "unknown";
+  if (
+    error.name === "TimeoutError" ||
+    error.message === "Recovery stage deadline" ||
+    error.message === "Recovery cleanup deadline"
+  )
+    return "deadline";
+  if (error.name === "AbortError") return "cancelled";
+  if (error instanceof assert.AssertionError) return "assertion";
+  if (error instanceof z.ZodError || error instanceof SyntaxError) return "invalid-receipt";
+  if (
+    error instanceof SshConnectionError ||
+    error.message === "fetch failed" ||
+    error.message === "Private action refused" ||
+    error.message ===
+      "Private Spark action outcome is unconfirmed; retain task records and do not rerun automatically"
+  )
+    return "transport";
+  return "unknown";
+}
 export function validateSparkRecoveryReplacement(config: Config, value: unknown): Lease {
   const parsed = z
     .object({
@@ -85,6 +116,7 @@ export async function qualifySparkHomeRecovery(options: {
   let lease = config.remote.lease.expected;
   let stage: Stage = "local-admission";
   let failureStage: Stage | null = null;
+  let failureCode: FailureCode | null = null;
   const proof = {
     reconnect: false,
     automaticHomeCursor: false,
@@ -96,6 +128,11 @@ export async function qualifySparkHomeRecovery(options: {
     cleanup: false,
   };
   const signal = AbortSignal.any([options.signal, AbortSignal.timeout(240000)]);
+  const fail = (error: unknown, failedStage: Stage) => {
+    if (failureStage !== null) return;
+    failureStage = failedStage;
+    failureCode = sparkRecoveryFailureCode(error, signal);
+  };
   const wait = async (predicate: () => boolean, timeout = 20000) => {
     const deadline = Date.now() + timeout;
     while (!predicate()) {
@@ -539,16 +576,17 @@ export async function qualifySparkHomeRecovery(options: {
     stage = "local-health";
     await localHealth();
     proof.localStillUsable = true;
-  } catch {
-    failureStage = stage;
+  } catch (error) {
+    fail(error, stage);
   } finally {
     closing = true;
     let cleanupFailed = false;
     const safe = (operation: () => void) => {
       try {
         operation();
-      } catch {
+      } catch (error) {
         cleanupFailed = true;
+        fail(error, "cleanup");
       }
     };
     stops.forEach((stop) => safe(stop));
@@ -576,9 +614,8 @@ export async function qualifySparkHomeRecovery(options: {
         ]),
       );
       proof.cleanup = !cleanupFailed;
-      if (cleanupFailed) failureStage ??= "cleanup";
-    } catch {
-      failureStage ??= "cleanup";
+    } catch (error) {
+      fail(error, "cleanup");
     } finally {
       clearTimeout(escalation);
     }
@@ -586,9 +623,9 @@ export async function qualifySparkHomeRecovery(options: {
       try {
         await localHealth();
         proof.localStillUsable = true;
-      } catch {
+      } catch (error) {
         proof.localStillUsable = false;
-        failureStage ??= "local-health";
+        fail(error, "local-health");
       }
     }
   }
@@ -598,6 +635,7 @@ export async function qualifySparkHomeRecovery(options: {
     ok: Object.values(proof).every(Boolean),
     ...proof,
     failureStage,
+    failureCode,
     retainedTuiQualified: false,
     nativeIdleQualified: false,
     managedCleanupRequired: true,
