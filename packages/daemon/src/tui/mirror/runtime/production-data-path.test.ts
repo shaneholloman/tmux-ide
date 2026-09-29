@@ -275,7 +275,9 @@ describe("production OpenTUI v2 data path", () => {
     // Two reference-dialog props connect the existing command owner to presentation.
     // Home search and client-local sidebar visibility are wired here; navigation uses the existing picker. Reference search uses the modal paste route.
     // Home activity receives its daemon identity to avoid cross-machine attribution.
-    expect(applicationRootSource.trim().split(/\r?\n/u).length).toBeLessThanOrEqual(690);
+    // Three composition lines prepare the lazy tour before renderer creation;
+    // loading and persistence remain in the dedicated guided-tour owners.
+    expect(applicationRootSource.trim().split(/\r?\n/u).length).toBeLessThanOrEqual(693);
     // Component leaves are reviewable presentation modules, not authority/data-path
     // owners. Their import boundary is enforced by production-design-system-contract;
     // retain the original budget for the runtime and authority graph itself.
@@ -391,8 +393,8 @@ describe("production OpenTUI v2 data path", () => {
     expect(productionGraph.sourceByFile.get(serverConnectionPath)).not.toMatch(
       /\b(?:createWorkspaceClient|createTerminalFastLane|setInterval|requestRender)\s*\(/u,
     );
-    // Fleet Home and the walkthrough add eight explicit feature modules, including
-    // the existing state-home path helper newly reached by tour persistence. They
+    // Fleet Home and the walkthrough include explicit lazy-loading modules and
+    // the existing state-home path helper reached by tour persistence. They
     // compose resident observers/actions and must not create another terminal lane.
     const learningModules = [
       "packages/daemon/src/lib/state-home.ts",
@@ -400,6 +402,9 @@ describe("production OpenTUI v2 data path", () => {
         "application-home-fleet.ts",
         "application-home-experience.ts",
         "application-guided-tour-integration.tsx",
+        "application-guided-tour-lazy.tsx",
+        "application-guided-tour-loader.ts",
+        "application-guided-tour-preparation.ts",
         "application-guided-tour-owner.ts",
         "guided-tour-storage.ts",
         "guided-tour.ts",
