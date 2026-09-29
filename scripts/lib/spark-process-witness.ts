@@ -44,6 +44,7 @@ export function sparkProcessWitness(
   assert.deepEqual(io.execution(), expected, "Remote execution identity changed");
   let identity: string | null;
   try {
+    const before = io.identity(pid);
     const status = io.status(pid);
     const uid = /^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$/mu.exec(status);
     assert(
@@ -51,6 +52,7 @@ export function sparkProcessWitness(
       "Process UID changed",
     );
     identity = io.identity(pid);
+    assert.equal(identity, before, "Process incarnation changed during UID verification");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     // Confirm disappearance rather than treating a transient exe/status race as death.

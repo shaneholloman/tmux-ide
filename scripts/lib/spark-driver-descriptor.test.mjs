@@ -1,14 +1,24 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { randomBytes } from "node:crypto";
+import {
+  mkdirSync,
+  writeFileSync,
+  chmodSync,
+  unlinkSync,
+  linkSync,
+  symlinkSync,
+  rmSync,
+} from "node:fs";
 import {
   validateSparkDriverDescriptor as validate,
   sparkDriverAction,
   SPARK_DRIVER_ACTIONS,
+  readSparkDriverDescriptor,
 } from "./spark-driver-descriptor.mjs";
 
-function descriptor() {
-  const nonce = "a".repeat(32),
-    root = `/tmp/tia-ssh-${nonce}`,
+function descriptor(nonce = "a".repeat(32)) {
+  const root = `/tmp/tia-ssh-${nonce}`,
     source = `${root}/source`;
   return {
     version: 1,
@@ -71,3 +81,49 @@ test("driver accepts only closed actions, never user tmux arguments", () => {
   ])
     assert.throws(() => sparkDriverAction(argv));
 });
+
+test(
+  "Linux private reader rejects changed ownership boundaries and authority files",
+  { skip: process.platform !== "linux" || process.getuid() === 0 },
+  () => {
+    const value = descriptor(randomBytes(16).toString("hex"));
+    value.execution.uid = process.getuid();
+    const root = value.root,
+      file = `${root}/driver.json`;
+    mkdirSync(root, { mode: 0o700 });
+    try {
+      mkdirSync(value.source.path, { mode: 0o700 });
+      const reset = () => writeFileSync(file, JSON.stringify(value), { mode: 0o600 });
+      reset();
+      assert.deepEqual(readSparkDriverDescriptor(file, value.execution), value);
+      assert.throws(() =>
+        readSparkDriverDescriptor(file, { ...value.execution, uid: value.execution.uid + 1 }),
+      );
+      chmodSync(file, 0o644);
+      assert.throws(() => readSparkDriverDescriptor(file, value.execution));
+      chmodSync(file, 0o600);
+      linkSync(file, `${root}/hardlink`);
+      assert.throws(() => readSparkDriverDescriptor(file, value.execution));
+      unlinkSync(`${root}/hardlink`);
+      writeFileSync(file, "x".repeat(16385));
+      assert.throws(() => readSparkDriverDescriptor(file, value.execution));
+      reset();
+      unlinkSync(file);
+      symlinkSync(`${root}/other`, file);
+      assert.throws(() => readSparkDriverDescriptor(file, value.execution));
+      unlinkSync(file);
+      reset();
+      chmodSync(root, 0o755);
+      assert.throws(() => readSparkDriverDescriptor(file, value.execution));
+      chmodSync(root, 0o700);
+      rmSync(value.source.path, { recursive: true });
+      writeFileSync(value.source.path, "not a directory");
+      assert.throws(() => readSparkDriverDescriptor(file, value.execution));
+      unlinkSync(value.source.path);
+      symlinkSync(root, value.source.path);
+      assert.throws(() => readSparkDriverDescriptor(file, value.execution));
+    } finally {
+      rmSync(root, { recursive: true });
+    }
+  },
+);

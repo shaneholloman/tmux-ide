@@ -56,3 +56,23 @@ test("boot change during a read invalidates both live and exited witnesses", () 
     );
   }
 });
+
+test("UID is sampled inside one stable process incarnation", () => {
+  let reads = 0;
+  assert.throws(
+    () =>
+      sparkProcessWitness(12, expected, {
+        ...io,
+        identity: () => (reads++ === 0 ? "linux:42:/private/tmux" : "linux:43:/private/tmux"),
+      }),
+    /incarnation changed/,
+  );
+  assert.throws(
+    () =>
+      sparkProcessWitness(12, expected, {
+        ...io,
+        status: () => "Uid: 2000 2000 2000 2000",
+      }),
+    /UID changed/,
+  );
+});

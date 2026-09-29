@@ -75,7 +75,12 @@ export function readSparkDriverDescriptor(path, execution) {
   let value;
   try {
     const before = fstatSync(fd);
-    assert(before.isFile() && before.uid === execution.uid && (before.mode & 0o777) === 0o600);
+    assert(
+      before.isFile() &&
+        before.nlink === 1 &&
+        before.uid === execution.uid &&
+        (before.mode & 0o777) === 0o600,
+    );
     assert(before.size > 0 && before.size <= 16384);
     const bytes = Buffer.alloc(before.size + 1);
     const size = readSync(fd, bytes, 0, bytes.length, 0);
@@ -93,6 +98,7 @@ export function readSparkDriverDescriptor(path, execution) {
   const root = lstatSync(value.root);
   assert(root.isDirectory() && root.uid === execution.uid && (root.mode & 0o777) === 0o700);
   assert.equal(realpathSync(value.source.path), value.source.path);
+  assert(lstatSync(value.source.path).isDirectory(), "Qualification source is not a directory");
   return value;
 }
 
