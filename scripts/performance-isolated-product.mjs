@@ -69,6 +69,7 @@ const cleanup = { rig: "not-started", daemon: "not-started", fleet: "not-started
 let deterministicRebuildVerified = false;
 let rigArtifactsVerified = false;
 let startupDiagnosticProvenance = null;
+let startupDiagnosticArtifactsVerified = false;
 try {
   provenance = snapshot();
   writeFileSync(join(output, "source.json"), JSON.stringify(provenance, null, 2), { mode: 0o600 });
@@ -113,6 +114,11 @@ try {
       ],
       referenceEnv,
     );
+    if (startupDiagnostic) {
+      if (JSON.stringify(snapshot()) !== JSON.stringify(provenance))
+        throw new Error("Startup diagnostic changed frozen source or artifacts");
+      startupDiagnosticArtifactsVerified = true;
+    }
     await daemon.stop();
     daemon = null;
     cleanup.daemon = "confirmed";
@@ -121,23 +127,25 @@ try {
     cleanup.fleet = "confirmed";
   }
 
-  // Separate multi-client coherence lane: actual rig Web+TUI are intentional.
-  rigAttempted = true;
-  cleanup.rig = "pending";
-  await run("rig-start", ["scripts/product-test-rig.mjs", "start", "--json"], rigEnv);
-  clean();
-  if (
-    sha(join(root, "bin/cli.js")) !== provenance.cliSha256 ||
-    sha(join(root, "packages/daemon/dist/tui/tmux-ide-tui")) !== provenance.tuiSha256
-  )
-    throw new Error("ProductTestRig changed frozen artifacts");
-  rigArtifactsVerified = true;
-  if (!preflightOnly)
-    await run("portable", ["scripts/performance-portable-evidence.mjs"], {
-      ...rigEnv,
-      TMUX_IDE_PRODUCT_RIG_STATE: join(output, "rig/state.json"),
-      TMUX_IDE_PORTABLE_EVIDENCE_REPORT: join(output, "portable.json"),
-    });
+  if (!startupDiagnostic) {
+    // Separate multi-client coherence lane: actual rig Web+TUI are intentional.
+    rigAttempted = true;
+    cleanup.rig = "pending";
+    await run("rig-start", ["scripts/product-test-rig.mjs", "start", "--json"], rigEnv);
+    clean();
+    if (
+      sha(join(root, "bin/cli.js")) !== provenance.cliSha256 ||
+      sha(join(root, "packages/daemon/dist/tui/tmux-ide-tui")) !== provenance.tuiSha256
+    )
+      throw new Error("ProductTestRig changed frozen artifacts");
+    rigArtifactsVerified = true;
+    if (!preflightOnly)
+      await run("portable", ["scripts/performance-portable-evidence.mjs"], {
+        ...rigEnv,
+        TMUX_IDE_PRODUCT_RIG_STATE: join(output, "rig/state.json"),
+        TMUX_IDE_PORTABLE_EVIDENCE_REPORT: join(output, "portable.json"),
+      });
+  }
 } catch (error) {
   failures.push(error);
 } finally {
@@ -188,6 +196,7 @@ try {
                 mode: "startup-diagnostic",
                 timingQualification: false,
                 startupDiagnosticProvenance,
+                startupDiagnosticArtifactsVerified,
               }
             : {}),
           source: provenance,
