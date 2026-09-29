@@ -63,7 +63,14 @@ async function manager(action) {
     ],
     { cwd: root, env, timeout: action === "rebuild" ? 240000 : 60000, maxBuffer: 1024 * 1024 },
   );
-  if (result.status !== 0) throw new Error(`Private managed ${action} failed`);
+  if (result.status !== 0) {
+    writeFileSync(
+      join(output, `${action}-failure.log`),
+      `${result.stdout ?? ""}\n${result.stderr ?? ""}`,
+      { mode: 0o600 },
+    );
+    throw new Error(`Private managed ${action} failed; private diagnostic retained`);
+  }
   return JSON.parse(result.stdout);
 }
 async function dispatch(descriptor, success, label) {

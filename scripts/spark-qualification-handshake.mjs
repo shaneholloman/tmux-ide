@@ -2,8 +2,13 @@
 /** Remote qualification-only read: no process startup, no arbitrary command input. */
 import { openSync, fstatSync, readSync, closeSync, constants } from "node:fs";
 import { validateSparkQualificationDescriptor } from "./lib/spark-qualification-descriptor.mjs";
-import { resolveDevelopmentInstance } from "../packages/daemon/src/lib/development-instance.ts";
-import { developmentSshHandshake } from "../packages/daemon/src/lib/development-ssh.ts";
+import { register } from "tsx/esm/api";
+// Qualification source imports include TypeScript parameter properties; plain
+// Node type stripping cannot load them. Register the pinned workspace loader.
+register();
+const { resolveDevelopmentInstance } =
+  await import("../packages/daemon/src/lib/development-instance.ts");
+const { developmentSshHandshake } = await import("../packages/daemon/src/lib/development-ssh.ts");
 if (process.argv.length !== 3) throw new Error("One private lease descriptor is required");
 const fd = openSync(process.argv[2], constants.O_RDONLY | constants.O_NOFOLLOW);
 let descriptor;
