@@ -1,11 +1,9 @@
 #!/usr/bin/env node
 /** Remote qualification-only read: no process startup, no arbitrary command input. */
 import { openSync, fstatSync, readSync, closeSync, constants } from "node:fs";
+import { validateSparkQualificationDescriptor } from "./lib/spark-qualification-descriptor.mjs";
 import { resolveDevelopmentInstance } from "../packages/daemon/src/lib/development-instance.ts";
-import {
-  developmentSshAuthority,
-  developmentSshHandshake,
-} from "../packages/daemon/src/lib/development-ssh.ts";
+import { developmentSshHandshake } from "../packages/daemon/src/lib/development-ssh.ts";
 if (process.argv.length !== 3) throw new Error("One private lease descriptor is required");
 const fd = openSync(process.argv[2], constants.O_RDONLY | constants.O_NOFOLLOW);
 let descriptor;
@@ -25,16 +23,8 @@ try {
 } finally {
   closeSync(fd);
 }
-if (
-  !descriptor ||
-  descriptor.version !== 1 ||
-  Object.keys(descriptor).sort().join(",") !== "expected,instance,version"
-)
-  throw new Error("Private lease descriptor shape refused");
+validateSparkQualificationDescriptor(descriptor);
 const instance = resolveDevelopmentInstance(descriptor.instance);
-const authority = await developmentSshAuthority(instance);
-if (JSON.stringify(authority.lease) !== JSON.stringify(descriptor.expected))
-  throw new Error("Private managed owner lease changed");
 // The shared helper independently revalidates the expected lease and invokes
 // the verified build's CLI using its isolated owner environment.
 process.stdout.write(await developmentSshHandshake(instance, descriptor.expected));
