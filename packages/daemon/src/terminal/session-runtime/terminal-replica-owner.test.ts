@@ -510,6 +510,59 @@ describe("SessionRuntimeTerminalReplicaOwner", () => {
     await owner.dispose();
   });
 
+  it("survives twenty superseded capture leases and publishes only the final geometry", async () => {
+    const updates: CanonicalTerminalReplicaUpdate[] = [];
+    const faults: unknown[] = [];
+    let reseeds = 0;
+    let currentRows = 4;
+    const mirror = {
+      subscribe: async (candidate: MirrorSubscribeRequest): Promise<MirrorSubscription> => {
+        const capture = () => {
+          candidate.onEvent({ type: "reset", cols: 8, rows: currentRows - 1 });
+          candidate.onEvent({ type: "seed", data: new TextEncoder().encode("final") });
+          candidate.onEvent({ type: "cursor", x: 5, y: 0 });
+          // Supersede after the capture was queued, before its commit can run.
+          if (reseeds < 20) {
+            currentRows++;
+            candidate.onLayout?.(layout(8, currentRows, "top"));
+          }
+        };
+        queueMicrotask(() => {
+          candidate.onLayout?.(layout(8, currentRows, "top"));
+          capture();
+        });
+        return {
+          ...subscription(candidate),
+          reseed: () => {
+            reseeds++;
+            capture();
+          },
+        };
+      },
+    };
+    const owner = new SessionRuntimeTerminalReplicaOwner(
+      generation,
+      "workspace",
+      "pane-a",
+      mirror as never,
+      {
+        incarnation: `${generation}:0`,
+        initialRevision: 0,
+        onFault: (error) => faults.push(error),
+      },
+    );
+    try {
+      await owner.subscribe((update) => updates.push(update));
+      expect(reseeds).toBe(20);
+      expect(faults).toEqual([]);
+      expect(updates).toHaveLength(1);
+      expect(updates[0]).toMatchObject({ type: "terminal.seed", cols: 8, rows: 23 });
+      expect(updates.some((update) => update.type === "terminal.tombstone")).toBe(false);
+    } finally {
+      await owner.dispose();
+    }
+  });
+
   it("ignores unrelated windows before and after its target lease without clearing or retrying", async () => {
     let reseeds = 0;
     const updates: CanonicalTerminalReplicaUpdate[] = [];
