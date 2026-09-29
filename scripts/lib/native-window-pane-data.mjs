@@ -44,3 +44,38 @@ int main(void) {
 }
 `;
 }
+
+/** Only the original empty-pointer diagnostic is an expected negative control. */
+export function classifyWindowPaneDataControl(result) {
+  if (
+    result.error ||
+    result.signal ||
+    typeof result.stdout !== "string" ||
+    typeof result.stderr !== "string"
+  )
+    return "unexpected-failure";
+  if (
+    result.status === 1 &&
+    (result.stderr.match(/runtime error:/g) ?? []).length === 1 &&
+    /runtime error: applying zero offset to null pointer/.test(result.stderr) &&
+    !/ERROR: AddressSanitizer/.test(result.stderr)
+  )
+    return "detected";
+  if (
+    result.status === 0 &&
+    result.stderr === "" &&
+    result.stdout.trim() ===
+      "actual window_pane_get_new_data: NULL-empty, zero, partial and end offsets passed"
+  )
+    return "not-detected";
+  return "unexpected-failure";
+}
+
+export function requireWindowPaneDataControl(outcome, platform, arch) {
+  if (outcome === "unexpected-failure")
+    throw new Error("Unexpected upstream control runtime failure");
+  if (platform === "darwin" && arch === "x64" && outcome !== "detected")
+    throw new Error("Original Darwin x64 upstream NULL+0 UBSan control did not reproduce");
+  if (outcome !== "detected" && outcome !== "not-detected")
+    throw new Error("Unknown upstream control outcome");
+}

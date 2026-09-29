@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 /** Native journal qualification uses only an owned scratch source tree/socket. */
 import { execFileSync, spawnSync } from "node:child_process";
-import { windowPaneDataHarness } from "./lib/native-window-pane-data.mjs";
+import {
+  classifyWindowPaneDataControl,
+  requireWindowPaneDataControl,
+  windowPaneDataHarness,
+} from "./lib/native-window-pane-data.mjs";
 import {
   copyFileSync,
   existsSync,
@@ -104,15 +108,25 @@ try {
       timeout: 10000,
       maxBuffer: 1024 * 1024,
     });
-    if (
-      result.error ||
-      result.status === 0 ||
-      !/runtime error: applying zero offset to null pointer/.test(result.stderr ?? "")
-    )
-      throw new Error("Darwin upstream NULL+0 UBSan control did not reproduce", {
-        cause: result.error,
+    const control = {
+      platform: process.platform,
+      arch: process.arch,
+      outcome: classifyWindowPaneDataControl(result),
+      status: result.status,
+      signal: result.signal,
+      error: result.error ? String(result.error) : null,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      executableSha256: createHash("sha256").update(readFileSync(original)).digest("hex"),
+    };
+    // Preserve diagnostic facts before classifying a compiler's detector behavior.
+    process.stdout.write(`Upstream NULL+0 sanitizer control: ${JSON.stringify(control)}\n`);
+    if (evidence)
+      writeFileSync(join(evidence, "upstream-control.json"), JSON.stringify(control, null, 2), {
+        flag: "wx",
+        mode: 0o600,
       });
-    process.stdout.write(`Expected upstream UBSan control failure:\n${result.stderr}`);
+    requireWindowPaneDataControl(control.outcome, process.platform, process.arch);
   }
   const fixed = compileWindow("window-pane-data", readFileSync(join(scratch, "window.c"), "utf8"));
   run(fixed, [], scratch, { env: regressionEnv, timeout: 10000 });
