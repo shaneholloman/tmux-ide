@@ -295,3 +295,88 @@ test("retirement persists bounded safe command diagnostics without treating lost
     f.cleanup();
   }
 });
+
+test("exit proof retries transient missing proc reads until a confirmed null witness", async () => {
+  const f = fixture();
+  try {
+    await sparkSecondaryAction(f.descriptor, "secondary-start", f.io);
+    const original = f.io.witness;
+    let exitReads = 0;
+    let sleeps = 0;
+    f.io.witness = () => {
+      if (f.killed() && ++exitReads === 1)
+        throw Object.assign(new Error("transient proc read"), { code: "ENOENT" });
+      return original();
+    };
+    f.io.sleep = async () => {
+      sleeps += 1;
+    };
+    await sparkSecondaryAction(f.descriptor, "secondary-retire", f.io);
+    assert.equal(exitReads, 2);
+    assert.equal(sleeps, 1);
+    assert.equal(
+      JSON.parse(readFileSync(`${f.descriptor.root}/secondary.json`, "utf8")).phase,
+      "retired",
+    );
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("persistent missing exit reads stop at the existing deadline and retain proof", async () => {
+  const f = fixture();
+  let now = 0;
+  const clock = mock.method(Date, "now", () => now);
+  try {
+    await sparkSecondaryAction(f.descriptor, "secondary-start", f.io);
+    const original = f.io.witness;
+    let sleeps = 0;
+    f.io.witness = () => {
+      if (f.killed()) throw Object.assign(new Error("missing proc"), { code: "ENOENT" });
+      return original();
+    };
+    f.io.sleep = async () => {
+      sleeps += 1;
+      now += 1000;
+    };
+    await assert.rejects(sparkSecondaryAction(f.descriptor, "secondary-retire", f.io), {
+      code: "ENOENT",
+    });
+    assert.equal(sleeps, 3);
+    const state = JSON.parse(readFileSync(`${f.descriptor.root}/secondary.json`, "utf8"));
+    assert.equal(state.phase, "retiring");
+    assert.deepEqual(state.retirementDiagnostic, { stage: "exit-proof", code: "io-not-found" });
+  } finally {
+    clock.mock.restore();
+    f.cleanup();
+  }
+});
+
+test("nonmissing exit errors are refused immediately with closed diagnostics", async () => {
+  for (const [code, diagnostic] of [
+    ["EACCES", "io-permission"],
+    ["EPERM", "io-permission"],
+    ["ESRCH", "io-process-gone"],
+  ]) {
+    const f = fixture();
+    try {
+      await sparkSecondaryAction(f.descriptor, "secondary-start", f.io);
+      const original = f.io.witness;
+      let sleeps = 0;
+      f.io.witness = () => {
+        if (f.killed()) throw Object.assign(new Error("private io detail"), { code });
+        return original();
+      };
+      f.io.sleep = async () => {
+        sleeps += 1;
+      };
+      await assert.rejects(sparkSecondaryAction(f.descriptor, "secondary-retire", f.io), { code });
+      assert.equal(sleeps, 0);
+      const state = JSON.parse(readFileSync(`${f.descriptor.root}/secondary.json`, "utf8"));
+      assert.equal(state.phase, "retiring");
+      assert.deepEqual(state.retirementDiagnostic, { stage: "exit-proof", code: diagnostic });
+    } finally {
+      f.cleanup();
+    }
+  }
+});

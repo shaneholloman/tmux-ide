@@ -60,6 +60,9 @@ const RetirementDiagnostic = z
       "command-signal",
       "command-exit",
       "assertion",
+      "io-not-found",
+      "io-process-gone",
+      "io-permission",
       "io",
       "unknown",
     ]),
@@ -282,7 +285,17 @@ export async function sparkSecondaryAction(
         }
         retirementStage = "exit-proof";
         const deadline = Date.now() + 3000;
-        while (io.witness(Number(proof.pid)) !== null) {
+        while (true) {
+          let transientMissing: unknown;
+          try {
+            if (io.witness(Number(proof.pid)) === null) break;
+          } catch (error) {
+            // /proc exe/status reads may race teardown. Missing data is never
+            // exit proof; only a later confirmed null witness admits retirement.
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+            transientMissing = error;
+          }
+          if (Date.now() >= deadline && transientMissing) throw transientMissing;
           assert(Date.now() < deadline, "Secondary exit unproven; state retained");
           await io.sleep();
         }
@@ -312,9 +325,15 @@ export async function sparkSecondaryAction(
                 ? "command-exit"
                 : detail?.code === "ERR_ASSERTION"
                   ? "assertion"
-                  : typeof detail?.code === "string"
-                    ? "io"
-                    : "unknown";
+                  : detail?.code === "ENOENT"
+                    ? "io-not-found"
+                    : detail?.code === "ESRCH"
+                      ? "io-process-gone"
+                      : detail?.code === "EPERM" || detail?.code === "EACCES"
+                        ? "io-permission"
+                        : typeof detail?.code === "string"
+                          ? "io"
+                          : "unknown";
         try {
           const retained = read();
           write(retained.phase, retained.proof, { stage: retirementStage, code });
