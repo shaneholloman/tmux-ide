@@ -1,8 +1,10 @@
 name: Native x64 functional qualification
 
-# Deliberate invocation only; no release, publication or deployment job.
+# Dedicated qualification branch or deliberate invocation; no deployment job.
 on:
   workflow_dispatch:
+  push:
+    branches: [qualification/native-x64-20260929]
 
 permissions:
   contents: read
