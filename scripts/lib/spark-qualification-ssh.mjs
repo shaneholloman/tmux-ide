@@ -1,3 +1,4 @@
+import { dirname } from "node:path";
 /** Closed qualification adapter for the production SSH spawn seam; never executes itself. */
 const discoveryPrefix = ["-T", "-o", "BatchMode=yes", "-o", "ForkAfterAuthentication=no", "--"];
 const tunnelPrefix = [
@@ -40,7 +41,8 @@ export function sparkQualificationSshArgs(args, target) {
       .map(path)
       .map((value) => `'${value}'`)
       .join(" ");
-    return [...prefix, ...discoveryPrefix, target.alias, command];
+    const cleanCommand = `/usr/bin/env -i HOME='${path(dirname(target.descriptor))}' PATH=/usr/bin:/bin ${command}`;
+    return [...prefix, ...discoveryPrefix, target.alias, cleanCommand];
   }
   if (
     args.length !== tunnelPrefix.length + 3 ||

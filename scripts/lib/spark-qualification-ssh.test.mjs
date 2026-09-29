@@ -48,7 +48,7 @@ test("replaces only exact discovery with fixed private dispatcher", () => {
   assert.deepEqual(translated.slice(0, 2), ["-F", target.config]);
   assert.equal(
     translated.at(-1),
-    "'/tmp/remote/node' '/tmp/remote/handshake.mjs' '/tmp/remote/lease.json'",
+    "/usr/bin/env -i HOME='/tmp/remote' PATH=/usr/bin:/bin '/tmp/remote/node' '/tmp/remote/handshake.mjs' '/tmp/remote/lease.json'",
   );
   assert.deepEqual(sparkQualificationSshArgs(tunnel, target), ["-F", target.config, ...tunnel]);
 });

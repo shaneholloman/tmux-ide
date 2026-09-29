@@ -9,6 +9,7 @@ import { createTmuxServerProbe } from "../../packages/daemon/src/lib/tmux-server
 export interface CanonicalSshSecondary {
   readonly retainedRoot: string;
   start(semanticPaneId: string): Promise<{ socket: string }>;
+  registered?(serverId: string): Promise<void>;
   seed(): Promise<void>;
   retire(): Promise<void>;
   removeFiles(): void | Promise<void>;

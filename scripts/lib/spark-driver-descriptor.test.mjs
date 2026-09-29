@@ -71,7 +71,14 @@ test("driver binds source, native binary and managed tuple to one nonce root", (
 test("driver accepts only closed actions, never user tmux arguments", () => {
   const path = `${descriptor().root}/driver.json`;
   for (const action of SPARK_DRIVER_ACTIONS)
-    assert.equal(sparkDriverAction([path, action]).action, action);
+    assert.equal(
+      sparkDriverAction([
+        path,
+        action,
+        ...(action === "secondary-bind-registration" ? ["tmux-server." + "a".repeat(32)] : []),
+      ]).action,
+      action,
+    );
   for (const argv of [
     [path],
     [path, "exec"],

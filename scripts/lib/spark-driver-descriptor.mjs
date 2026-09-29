@@ -22,6 +22,8 @@ const absolute = (value) =>
     typeof value === "string" &&
       value.startsWith("/") &&
       value.length <= 4096 &&
+      // Reject control characters in private filesystem authority.
+      // eslint-disable-next-line no-control-regex
       !/[\x00-\x1f\x7f]/u.test(value) &&
       resolve(value) === value,
   );
@@ -29,6 +31,7 @@ const absolute = (value) =>
 export const SPARK_DRIVER_ACTIONS = Object.freeze([
   "prepare",
   "secondary-start",
+  "secondary-bind-registration",
   "secondary-seed",
   "secondary-probe",
   "secondary-retire",
@@ -103,8 +106,11 @@ export function readSparkDriverDescriptor(path, execution) {
 }
 
 export function sparkDriverAction(argv) {
-  assert.equal(argv.length, 2, "Driver requires one descriptor and one action");
+  const binding = argv[1] === "secondary-bind-registration";
+  assert.equal(argv.length, binding ? 3 : 2, "Unexpected driver action arguments");
   absolute(argv[0]);
   assert(SPARK_DRIVER_ACTIONS.includes(argv[1]), "Unknown qualification action");
-  return { descriptorPath: argv[0], action: argv[1] };
+  if (binding)
+    assert(/^tmux-server\.[a-f0-9]{32}$/u.test(argv[2]), "Invalid secondary registration ID");
+  return { descriptorPath: argv[0], action: argv[1], ...(binding ? { serverId: argv[2] } : {}) };
 }

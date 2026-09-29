@@ -167,23 +167,21 @@ export async function qualifyCanonicalSshAttribution(options: {
             acceptedFrames: frames.length,
             // Synthetic private fixture metadata only; no terminal captures or credentials.
             paneShape: Array.isArray(frame?.data?.project?.panes)
-              ? frame.data.project.panes
-                  .slice(0, 4)
-                  .map((pane) =>
-                    Object.fromEntries(
-                      Object.entries(pane).map(([key, value]) => [
-                        key,
-                        typeof value === "string"
-                          ? {
-                              length: value.length,
-                              tabs: value.split("\t").length - 1,
-                              newlines: value.split("\n").length - 1,
-                              prefix: value.slice(0, 120),
-                            }
-                          : value,
-                      ]),
-                    ),
-                  )
+              ? frame.data.project.panes.slice(0, 4).map((pane) =>
+                  Object.fromEntries(
+                    Object.entries(pane).map(([key, value]) => [
+                      key,
+                      typeof value === "string"
+                        ? {
+                            length: value.length,
+                            tabs: value.split("\t").length - 1,
+                            newlines: value.split("\n").length - 1,
+                            prefix: value.slice(0, 120),
+                          }
+                        : value,
+                    ]),
+                  ),
+                )
               : null,
           };
           protocolError = error;
@@ -236,6 +234,7 @@ export async function qualifyCanonicalSshAttribution(options: {
     });
     assert(registration?.generation);
     facts.createdServerId = registration.serverId;
+    await secondary.registered?.(registration.serverId);
     stage = "secondary-discover";
     const discovered = AutomationPanesResponseSchemaZ.parse(await json("/api/v1/automation/panes"));
     const target = discovered.panes.find(
