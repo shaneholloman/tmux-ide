@@ -30,6 +30,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { buildTuiHostPublicationEvidence } from "./lib/tui-host-publication.mjs";
 import { runBoundedChildCommand } from "./lib/bounded-child-command.mjs";
+import { startupLaunchDiagnostic } from "./lib/startup-launch-diagnostic.mjs";
 import {
   acquireClipboardPaneHook,
   ensureClipboardAcquisitionRollback,
@@ -1550,7 +1551,16 @@ async function start(args) {
   rmSync(perfLogPath, { force: true });
 
   const launchEpochMs = Date.now();
+  const launchMonotonicNs = process.env.TMUX_IDE_TESTDRIVE_STARTUP_DIAGNOSTIC_ROOT
+    ? process.hrtime.bigint()
+    : undefined;
   const launchId = randomUUID();
+  const startupDiagnosticRoot = process.env.TMUX_IDE_TESTDRIVE_STARTUP_DIAGNOSTIC_ROOT;
+  if (startupDiagnosticRoot && runtime !== "compiled")
+    fail("Startup launch diagnostics require the compiled target path");
+  const startupDiagnostic = startupLaunchDiagnostic(startupDiagnosticRoot, launchId);
+  startupDiagnostic?.mark("launch-epoch", launchEpochMs, launchMonotonicNs);
+  const execLaunch = startupDiagnostic?.wrap(launch) ?? launch;
   const environment = [
     // Clipboard fixtures observe their private tmux buffer, never the user's pasteboard.
     "TMUX_IDE_CLIPBOARD_BACKEND=osc52",
@@ -1612,6 +1622,7 @@ async function start(args) {
         ...(options.debug ? { TMUX_IDE_MIRROR_DEBUG: "1" } : {}),
       }
     : null;
+  startupDiagnostic?.mark("launcher-write-start");
   writeFileSync(
     launcherPath,
     [
@@ -1628,16 +1639,18 @@ async function start(args) {
       buildTestdriveExecCommand({
         clean: Boolean(publicEnvironment),
         environment: publicExecEnvironment ?? {},
-        binary: launch.binary,
-        binaryArgs: launch.binaryArgs,
+        binary: execLaunch.binary,
+        binaryArgs: execLaunch.binaryArgs,
         stderrPath: logPath,
       }),
       "",
     ].join("\n"),
   );
   chmodSync(launcherPath, 0o700);
+  startupDiagnostic?.mark("launcher-write-end");
 
   const launchStartedAt = performance.now();
+  startupDiagnostic?.mark("tmux-start");
   const hostIdentity = parseHostPaneIdentity(
     tmux([
       "new-session",
@@ -1662,6 +1675,7 @@ async function start(args) {
       launcherPath,
     ]),
   );
+  startupDiagnostic?.mark("tmux-return");
   const processId = hostIdentity.processId;
   const launchReceipt = Object.freeze({
     launchId,
@@ -1681,6 +1695,7 @@ async function start(args) {
     launchId,
     processId,
     hostIdentity,
+    ...(startupDiagnostic ? { startupDiagnosticPath: startupDiagnostic.path } : {}),
   };
   writeFileSync(
     metadataPath,

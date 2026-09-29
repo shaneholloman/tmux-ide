@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { createScratchFleet } from "../apps/desktop-renderer/e2e/fixtures/scratch-fleet.ts";
 import { startDaemon } from "../apps/desktop-renderer/e2e/fixtures/daemon.ts";
 import { createPackedCancellation } from "./lib/packed-cancellation.mjs";
+import { prepareStartupDiagnostic } from "./lib/startup-launch-diagnostic.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const output = resolve(process.argv[2] ?? ".tasks/isolated-product-performance");
@@ -17,7 +18,8 @@ mkdirSync(dirname(output), { recursive: true, mode: 0o700 });
 mkdirSync(output, { mode: 0o700 });
 const preflightOnly = process.argv[3] === "--preflight-only";
 const portableOnly = process.argv[3] === "--portable-only";
-if (process.argv[3] && !preflightOnly && !portableOnly)
+const startupDiagnostic = process.argv[3] === "--startup-diagnostic";
+if (process.argv[3] && !preflightOnly && !portableOnly && !startupDiagnostic)
   throw new Error("Unknown qualification mode");
 const cancellation = createPackedCancellation();
 const base = { ...process.env };
@@ -66,10 +68,13 @@ const failures = [];
 const cleanup = { rig: "not-started", daemon: "not-started", fleet: "not-started" };
 let deterministicRebuildVerified = false;
 let rigArtifactsVerified = false;
+let startupDiagnosticProvenance = null;
 try {
   provenance = snapshot();
   writeFileSync(join(output, "source.json"), JSON.stringify(provenance, null, 2), { mode: 0o600 });
   clean();
+  if (startupDiagnostic)
+    startupDiagnosticProvenance = prepareStartupDiagnostic(join(output, "startup-diagnostic"));
   if (!provenance.cliSha256 || !provenance.tuiSha256)
     throw new Error("Build both CLI and TUI before qualification");
   if (!portableOnly) {
@@ -102,6 +107,9 @@ try {
         join(output, "reference.json"),
         "--require-complete",
         ...(preflightOnly ? ["--preflight-only"] : []),
+        ...(startupDiagnostic
+          ? ["--startup-diagnostic-root", join(output, "startup-diagnostic")]
+          : []),
       ],
       referenceEnv,
     );
@@ -154,6 +162,11 @@ try {
     failures.push(new Error("Command-tree retirement unconfirmed"));
   let finalSource = null;
   try {
+    if (
+      startupDiagnosticProvenance &&
+      sha(join(output, "startup-diagnostic/preexec")) !== startupDiagnosticProvenance.binarySha256
+    )
+      failures.push(new Error("Startup diagnostic executable changed during measurement"));
     finalSource = snapshot();
     if (provenance && JSON.stringify(finalSource) !== JSON.stringify(provenance))
       failures.push(new Error("Frozen source or artifact identity changed during qualification"));
@@ -170,6 +183,13 @@ try {
           schemaVersion: 1,
           completed: failures.length === 0,
           mode: preflightOnly ? "preflight-only" : portableOnly ? "portable-only" : "measurement",
+          ...(startupDiagnostic
+            ? {
+                mode: "startup-diagnostic",
+                timingQualification: false,
+                startupDiagnosticProvenance,
+              }
+            : {}),
           source: provenance,
           finalSource,
           deterministicRebuildVerified,

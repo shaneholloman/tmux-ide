@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { referenceWorkspaceIntent } from "./lib/performance-reference-workspace.mjs";
 import { frameShowsTerminalFocus } from "./lib/packed-opentui-frame.mjs";
 import { referenceTarget } from "./lib/performance-reference-target.mjs";
+import { parseStartupLaunchDiagnostic } from "./lib/startup-launch-diagnostic.mjs";
 
 import {
   PERFORMANCE_STAGES,
@@ -313,6 +314,9 @@ if (options.preflightOnly) {
         : "incomplete",
     provenance,
     measurements,
+    ...(options.startupDiagnosticRoot
+      ? { timingQualification: false, purpose: "startup-launch-diagnostic" }
+      : {}),
   };
   validateReferenceReport(report, source);
   mkdirSync(dirname(reportPath), { recursive: true });
@@ -326,16 +330,16 @@ async function measureStartup() {
   const rawSamples = [];
   for (let ordinal = 0; ordinal < options.startupSamples; ordinal += 1) {
     rmSync(lifecyclePath, { force: true });
-    run("node", [
-      "scripts/tui-testdrive.mjs",
-      "start",
-      "--target",
-      target,
-      "--cols",
-      "160",
-      "--rows",
-      "44",
-    ]);
+    run(
+      "node",
+      ["scripts/tui-testdrive.mjs", "start", "--target", target, "--cols", "160", "--rows", "44"],
+      options.startupDiagnosticRoot
+        ? {
+            ...process.env,
+            TMUX_IDE_TESTDRIVE_STARTUP_DIAGNOSTIC_ROOT: options.startupDiagnosticRoot,
+          }
+        : process.env,
+    );
     const marks = await waitForLifecycleMarks([
       "entry-start",
       "root-import-end",
@@ -344,6 +348,24 @@ async function measureStartup() {
       "first-frame",
       "first-terminal-frame",
     ]);
+    const startupDiagnostic = options.startupDiagnosticRoot
+      ? (() => {
+          const state = JSON.parse(readFileSync(join(reference.runtimeDir, "state.json"), "utf8"));
+          const expectedPath = join(options.startupDiagnosticRoot, `${state.launchId}.jsonl`);
+          if (state.startupDiagnosticPath !== expectedPath)
+            throw new Error("Startup diagnostic path mismatch");
+          // Preserve clocks even if parsing or a later sample/measurement fails.
+          writeFileSync(
+            join(options.startupDiagnosticRoot, `${state.launchId}.lifecycle.json`),
+            JSON.stringify({ ordinal, launchId: state.launchId, lifecycleMarks: marks }),
+            { mode: 0o600, flag: "wx" },
+          );
+          return parseStartupLaunchDiagnostic(readFileSync(expectedPath, "utf8"), {
+            launchId: state.launchId,
+            lifecycleMarks: marks,
+          });
+        })()
+      : null;
     rawSamples.push({
       ordinal,
       class: ordinal === 0 ? "process-cold" : "warm-repeat",
@@ -351,6 +373,7 @@ async function measureStartup() {
       // Preserve clock/process context so pre-entry delays can be investigated
       // without relabeling a later warmed process as the first cold launch.
       lifecycleMarks: marks,
+      ...(startupDiagnostic ? { startupDiagnostic } : {}),
 
       firstUsableMs: Math.max(
         ...marks
@@ -654,6 +677,7 @@ function parseOptions(args) {
     requireComplete: false,
     preflightOnly: false,
     keepOnFailure: false,
+    startupDiagnosticRoot: null,
   };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -666,8 +690,12 @@ function parseOptions(args) {
     else if (arg === "--no-build") parsed.build = false;
     else if (arg === "--require-complete") parsed.requireComplete = true;
     else if (arg === "--keep-on-failure") parsed.keepOnFailure = true;
+    else if (arg === "--startup-diagnostic-root")
+      parsed.startupDiagnosticRoot = resolve(args[++index]);
     else throw new Error(`Unknown option ${arg}`);
   }
+  if (parsed.startupDiagnosticRoot && (parsed.startupSamples !== 6 || parsed.preflightOnly))
+    throw new Error("Startup diagnostics require exactly one cold and five warm samples");
   for (const field of ["startupSamples", "memorySamples", "inputSamples"])
     if (
       !Number.isSafeInteger(parsed[field]) ||
