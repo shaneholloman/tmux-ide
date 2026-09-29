@@ -1,3 +1,4 @@
+import { layoutContentRows } from "./layout-content-rows.ts";
 import {
   decodeNativeAtomicSnapshot,
   decodeNativeAtomicDualSnapshot,
@@ -103,7 +104,7 @@ import {
   classifyNativeWindowLinkGuardResult,
 } from "../../lib/tmux-window-link-guard.ts";
 import { FlowLedger } from "./flow-ledger.ts";
-import { PaneFeed, captureLinesFromAnsiBytes } from "./pane-feed.ts";
+import { PaneFeed, captureLinesFromAnsiBytes, parseCursorProbe } from "./pane-feed.ts";
 import type {
   TrustedMirrorPaneInventory,
   TrustedMirrorSessionInventory,
@@ -295,7 +296,7 @@ export interface LayoutSubscriptionHandle {
 interface SubRecord {
   nativeBootstrap?: boolean;
   cancelCapture?: (() => void) | null;
-  resumeLayoutCapture?: (() => void) | null;
+  resumeLayoutCapture?: ((syncOrdinal?: number) => void) | null;
   readonly feed: PaneFeed;
   readonly onEvent: (event: MirrorPaneEvent) => void;
   readonly onLayout: ((event: MirrorLayoutEvent) => void) | null;
@@ -483,6 +484,7 @@ export class SessionChannel {
   private geometryParticipating = false;
   private readonly fittedWindows = new Map<string, { cols: number; rows: number }>();
   private cancelSync: (() => void) | null = null;
+  private syncOrdinal = 0;
   private lastDisplayNameSyncAtMs = 0;
   private disposed = false;
   private readonly nativeGrid: NativeGridCaptureReader;
@@ -1342,8 +1344,9 @@ export class SessionChannel {
     let captureSucceeded = false;
     let markerRetired = false;
     let captureLines: readonly string[] | null = null;
+    let capturedNativeSize: { cols: number; rows: number } | null = null;
     let cancelDeadline: (() => void) | null = null;
-    let resumeLayoutCapture: (() => void) | null = null;
+    let resumeLayoutCapture: ((syncOrdinal?: number) => void) | null = null;
     const clearLayoutWait = () => {
       if (sub.resumeLayoutCapture === resumeLayoutCapture) sub.resumeLayoutCapture = null;
       resumeLayoutCapture = null;
@@ -1452,7 +1455,10 @@ export class SessionChannel {
           return;
         }
         captureLines = [...reply.lines];
-        if (native) this.nativeBootstrapConfirmed = true;
+        if (native) {
+          this.nativeBootstrapConfirmed = true;
+          capturedNativeSize = { cols: native.cols, rows: native.rows };
+        }
         if (native) sub.feed.captureNativeReply(epoch, native);
         else sub.feed.captureReply(epoch, reply.lines);
       },
@@ -1477,15 +1483,41 @@ export class SessionChannel {
         // output over its snapshot. Recapture after the latest layout releases,
         // retaining this recipe's original deadline and one queue lease.
         const windowId = sub.pane.windowRuntimeId;
-        if (windowId && this.pendingLayoutOutput.has(windowId)) {
+        const probe = parseCursorProbe(reply.lines[0] ?? "");
+        const validCaptureGeometry =
+          probe &&
+          Number.isSafeInteger(probe.x) &&
+          Number.isSafeInteger(probe.y) &&
+          probe.y < probe.rows &&
+          (!capturedNativeSize ||
+            (capturedNativeSize.cols === probe.cols && capturedNativeSize.rows === probe.rows));
+        const layoutSize = validCaptureGeometry ? this.layoutCaptureSizeFor(sub) : null;
+        const pendingLayout = windowId !== null && this.pendingLayoutOutput.has(windowId);
+        const aheadOfLayout =
+          layoutSize && probe && (layoutSize.cols !== probe.cols || layoutSize.rows !== probe.rows);
+        if (windowId && layoutSize && validCaptureGeometry && (pendingLayout || aheadOfLayout)) {
           sub.feed.abort(epoch);
           captureLines = null;
-          resumeLayoutCapture = () => {
+          const waitingAfterSyncOrdinal = this.syncOrdinal;
+          resumeLayoutCapture = (completedSyncOrdinal) => {
             if (settled) return;
             if (this.recoveryNowMs() >= deadlineAt) {
               settle(FAILED_RESEED_RESULT);
               return;
             }
+            const current = this.layoutCaptureSizeFor(sub);
+            // Only a successful truth sync started after this wait is a causal
+            // barrier, including resize-back to identical geometry. An older
+            // in-flight sync and cached layout emissions cannot qualify it.
+            if (!current) return;
+            if (completedSyncOrdinal !== undefined) {
+              if (completedSyncOrdinal <= waitingAfterSyncOrdinal) return;
+            } else if (
+              !pendingLayout &&
+              current.cols === layoutSize.cols &&
+              current.rows === layoutSize.rows
+            )
+              return;
             settled = true;
             clearLayoutWait();
             cancelDeadline?.();
@@ -1493,6 +1525,7 @@ export class SessionChannel {
             this.reseed(lease, onSettled, deferPublish, deadlineAt);
           };
           sub.resumeLayoutCapture = resumeLayoutCapture;
+          if (!pendingLayout) this.scheduleSync();
           return;
         }
         const cursorLine = reply.lines[0] ?? "";
@@ -1627,6 +1660,34 @@ export class SessionChannel {
       1,
       () => {},
     );
+  }
+
+  private layoutCaptureSizeFor(sub: SubRecord): { cols: number; rows: number } | null {
+    const windowId = sub.pane.windowRuntimeId;
+    const event = windowId ? this.layoutEventFor(windowId, sub.pane.runtimeId) : null;
+    if (!event || event.semanticWindowId === null) return null;
+    const identities = event.panes.map((pane) => pane.semanticPaneId);
+    if (identities.some((id) => id === null) || new Set(identities).size !== identities.length)
+      return null;
+    const matches = event.panes.filter((pane) => pane.semanticPaneId === sub.pane.semanticId);
+    if (matches.length !== 1) return null;
+    const pane = matches[0]!;
+    if (
+      ![event.cols, event.rows, pane.width, pane.height].every(
+        (value) => Number.isSafeInteger(value) && value > 0,
+      ) ||
+      !Number.isSafeInteger(pane.left) ||
+      !Number.isSafeInteger(pane.top) ||
+      pane.left < 0 ||
+      pane.top < 0 ||
+      pane.left + pane.width > event.cols ||
+      pane.top + pane.height > event.rows
+    )
+      return null;
+    return {
+      cols: pane.width,
+      rows: layoutContentRows(pane.top, pane.height, event.rows, event.paneBorderStatus),
+    };
   }
 
   private layoutSizeFor(runtime: string): { cols: number; rows: number } | null {
@@ -3030,13 +3091,13 @@ export class SessionChannel {
       });
   }
 
-  private releasePendingLayout(windowRuntimeId: string): void {
+  private releasePendingLayout(windowRuntimeId: string, syncOrdinal?: number): void {
     const pending = this.pendingLayoutOutput.get(windowRuntimeId);
     this.pendingLayoutOutput.delete(windowRuntimeId);
     this.emitLayout(windowRuntimeId);
     for (const pane of this.panesByRuntime.values()) {
       if (pane.windowRuntimeId !== windowRuntimeId) continue;
-      for (const sub of pane.subs) sub.resumeLayoutCapture?.();
+      for (const sub of pane.subs) sub.resumeLayoutCapture?.(syncOrdinal);
     }
     if (pending?.overflowed) {
       for (const pane of this.panesByRuntime.values()) {
@@ -3177,6 +3238,7 @@ export class SessionChannel {
 
   private async syncNow(): Promise<void> {
     if (this.disposed) return;
+    const syncOrdinal = ++this.syncOrdinal;
     const lines = await this.io.request(
       `list-panes -s -t "${this.opts.session}" -F "#{pane_id}\t#{pane_active}\t#{window_id}\t#{?window_active,1,0}"`,
     );
@@ -3198,7 +3260,14 @@ export class SessionChannel {
     }
     const previousCurrentWindow = this.currentWindow;
     const { listed, movedWindowRuntimeIds } = this.applyPaneTruth(truth);
-    await this.syncWindows(this.opts.session, movedWindowRuntimeIds, previousCurrentWindow);
+    await this.syncWindows(
+      this.opts.session,
+      movedWindowRuntimeIds,
+      previousCurrentWindow,
+      syncOrdinal,
+    );
+    for (const pane of this.panesByRuntime.values())
+      for (const sub of pane.subs) sub.resumeLayoutCapture?.(syncOrdinal);
     this.discovery.discover(listed);
   }
 
@@ -3478,13 +3547,14 @@ export class SessionChannel {
     target = this.opts.session,
     requiredLayoutEmits: ReadonlySet<string> = new Set(),
     previousCurrentWindow = this.currentWindow,
+    syncOrdinal?: number,
   ): Promise<boolean> {
     const stage = await this.stageWindows(target).catch((error) => {
       this.windowLinkAuthority?.invalidate();
       this.latestWindowStage = null;
       throw error;
     });
-    this.commitWindowStage(stage, requiredLayoutEmits, previousCurrentWindow);
+    this.commitWindowStage(stage, requiredLayoutEmits, previousCurrentWindow, syncOrdinal);
     return stage.repairedIdentity;
   }
 
@@ -3492,6 +3562,7 @@ export class SessionChannel {
     stage: WindowSyncStage,
     requiredLayoutEmits: ReadonlySet<string> = new Set(),
     previousCurrentWindow = this.currentWindow,
+    syncOrdinal?: number,
   ): void {
     this.windowLinkAuthority?.reconcile(stage.links);
     this.latestWindowStage = stage;
@@ -3548,7 +3619,7 @@ export class SessionChannel {
         );
     for (const runtimeId of this.pendingLayoutOutput.keys())
       if (!stage.windows.has(runtimeId)) this.pendingLayoutOutput.delete(runtimeId);
-    for (const runtimeId of layoutEmits) this.releasePendingLayout(runtimeId);
+    for (const runtimeId of layoutEmits) this.releasePendingLayout(runtimeId, syncOrdinal);
     this.emitLayoutAuthority();
   }
 

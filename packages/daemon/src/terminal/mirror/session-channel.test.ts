@@ -66,6 +66,7 @@ async function startedRig(
     onFlowRecoveryObserved?: (observation: MirrorFlowRecoveryObservation) => void;
     continueReply?: "auto-success" | "manual";
     borderReply?: "manual";
+    descriptorReply?: { manual: boolean };
     historyLines?: number;
     atomicHook?: boolean;
     replaceAtomicHookBeforeInvoke?: boolean;
@@ -88,6 +89,8 @@ async function startedRig(
     createIo: (handlers) => {
       const autoReply = fixtureAutoReply(state);
       sim = new SimulatedChannel(handlers, (command) => {
+        if (options.descriptorReply?.manual && command.includes("qa:@tmux_ide_pane_id"))
+          return null;
         if (options.borderReply === "manual" && command.endsWith('"#{pane-border-status}"'))
           return null;
         if (options.atomicHook && command.startsWith("set-option -po -t %1 @tmux_ide_atomic_")) {
@@ -701,7 +704,7 @@ describe("flow control", () => {
     parked.freeze();
     rig.channel.subscribePane("pane.beta", beta.onEvent);
     rig.sim.reply(["beta"]);
-    rig.sim.reply(["0 0 100 50"]);
+    rig.sim.reply(["0 0 99 50"]);
     alpha.events.length = frozen.events.length = beta.events.length = 0;
     rig.sim.feedLines("%pause %1");
     advanceRecoveryClock(rig, 500);
@@ -735,7 +738,7 @@ describe("flow control", () => {
     for (const [index, text] of ["alpha", "beta", "second alpha"].entries()) {
       advanceRecoveryClock(rig, 4000);
       rig.sim.reply([text]);
-      rig.sim.reply(["0 0 100 50"]);
+      rig.sim.reply([`0 0 ${index === 1 ? 99 : 100} 50`]);
       expect(captures()).toHaveLength(Math.min(index + 2, 3));
     }
     expect(rig.recoveryClock.nowMs).toBe(12000);
@@ -789,7 +792,7 @@ describe("flow control", () => {
       advanceRecoveryClock(rig, 4000);
       rig.sim.reply([]);
       rig.sim.reply([`pane-${index}`]);
-      rig.sim.reply(["0 0 100 50"]);
+      rig.sim.reply([`0 0 ${index === 1 ? 99 : 100} 50`]);
       expect(bytesOf(panes[index]!.events)).toEqual([`pane-${index}`]);
     }
     expect(rig.recoveryClock.nowMs).toBe(12000);
@@ -2492,6 +2495,292 @@ describe("layout push", () => {
     },
   );
 
+  it("waits for authoritative geometry progress when capture is ahead of every layout notification", async () => {
+    const descriptorReply = { manual: false };
+    const rig = await startedRig({ descriptorReply });
+    const events: MirrorPaneEvent[] = [];
+    const observability = createSessionRuntimeObservability();
+    const faults: unknown[] = [];
+    const mirror = {
+      subscribe: async (candidate: MirrorSubscribeRequest) => {
+        const handle = rig.channel.subscribePane(
+          "pane.alpha",
+          (event) => {
+            events.push(event);
+            candidate.onEvent(event);
+          },
+          candidate.onLayout,
+          true,
+        );
+        return { ...handle, session: candidate.session, close: async () => handle.close() };
+      },
+    };
+    const owner = new SessionRuntimeTerminalReplicaOwner(
+      "00000000-0000-4000-8000-000000000001",
+      FIXTURE.session,
+      "pane.alpha",
+      mirror as never,
+      {
+        incarnation: "ahead-layout:0",
+        initialRevision: 0,
+        observability,
+        onFault: (error) => faults.push(error),
+      },
+    );
+    const ready = owner.subscribe(() => {});
+    void ready.catch(() => {});
+    try {
+      await Promise.resolve();
+      const native = nativeBootstrapLines();
+      native[0] = JSON.stringify({ ...JSON.parse(native[0]!), cols: 150 });
+      const captures = () =>
+        rig.sim.written.filter((command) => command.includes("capture-pane")).length;
+      const before = captures();
+      rig.sim.reply(native);
+      rig.sim.reply(["0 0 150 50"]);
+      await Promise.resolve();
+      expect(events).toEqual([]);
+      expect(captures()).toBe(before);
+      expect(rig.pendingSyncs).toHaveLength(1);
+      // No layout notification: an authoritative list-windows response alone
+      // provides the missing geometry, under the original capture deadline.
+      rig.state.windowRows = FIXTURE.windowRows(
+        "aaaa,200x50,0,0{150x50,0,0,1,49x50,151,0,2}",
+        FIXTURE.layoutW2,
+      );
+      descriptorReply.manual = true;
+      rig.pendingSyncs.shift()!();
+      await vi.waitFor(() => expect(captures()).toBe(before + 1));
+      rig.sim.reply(native);
+      rig.sim.reply(["0 0 150 50"]);
+      rig.sim.reply(rig.state.descriptorRows);
+      await ready;
+      expect(events.map((event) => event.type)).toEqual(["reset", "seed", "cursor"]);
+      expect(faults).toEqual([]);
+      expect(observability.snapshot().spans.filter((span) => span.terminalReseed)).toEqual([]);
+    } finally {
+      await owner.dispose();
+      await rig.channel.dispose();
+    }
+  });
+
+  it("recaptures after fresh unchanged truth when a resize returns to the published size", async () => {
+    const descriptorReply = { manual: false };
+    const rig = await startedRig({ descriptorReply });
+    const events = collect();
+    try {
+      rig.channel.subscribePane("pane.alpha", events.onEvent);
+      rig.sim.reply(["stale enlarged capture"]);
+      rig.sim.reply(["0 0 150 50"]);
+      const captures = () =>
+        rig.sim.written.filter((command) => command.includes("capture-pane")).length;
+      expect(captures()).toBe(1);
+      expect(events.events).toEqual([]);
+      descriptorReply.manual = true;
+      rig.pendingSyncs.shift()!();
+      await vi.waitFor(() => expect(captures()).toBe(2));
+      rig.sim.reply(["stable original size"]);
+      rig.sim.reply(["0 0 100 50"]);
+      expect(bytesOf(events.events)).toEqual(["stable original size"]);
+      expect(rig.pendingRecoveries.filter((task) => !task.cancelled)).toEqual([]);
+    } finally {
+      await rig.channel.dispose();
+    }
+  });
+
+  it("does not release on an older in-flight sync and schedules a subsequent fresh barrier", async () => {
+    const descriptorReply = { manual: false };
+    const rig = await startedRig({ descriptorReply });
+    const events = collect();
+    try {
+      let release!: (lines: string[]) => void;
+      vi.spyOn(rig.sim, "request").mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+      );
+      rig.sim.feedLines("%window-renamed @1 main");
+      rig.pendingSyncs.shift()!();
+      rig.channel.subscribePane("pane.alpha", events.onEvent);
+      rig.sim.reply(["ahead"]);
+      rig.sim.reply(["0 0 150 50"]);
+      const captures = () =>
+        rig.sim.written.filter((command) => command.includes("capture-pane")).length;
+      expect(rig.pendingSyncs).toHaveLength(1);
+      const before = rig.sim.written.length;
+      release(rig.state.truthRows);
+      await vi.waitFor(() => expect(rig.sim.written.length).toBeGreaterThan(before));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(captures()).toBe(1);
+      expect(events.events).toEqual([]);
+      descriptorReply.manual = true;
+      rig.pendingSyncs.shift()!();
+      await vi.waitFor(() => expect(captures()).toBe(2));
+      rig.sim.reply(["after fresh barrier"]);
+      rig.sim.reply(["0 0 100 50"]);
+      expect(bytesOf(events.events)).toEqual(["after fresh barrier"]);
+    } finally {
+      await rig.channel.dispose();
+    }
+  });
+
+  it("coalesces repeated mismatches behind a fresh sync without extending the deadline", async () => {
+    const descriptorReply = { manual: false };
+    const rig = await startedRig({ descriptorReply });
+    const events = collect();
+    try {
+      const handle = rig.channel.subscribePane("pane.alpha", events.onEvent);
+      rig.sim.reply(["ahead"]);
+      rig.sim.reply(["0 0 150 50"]);
+      descriptorReply.manual = true;
+      const captures = () =>
+        rig.sim.written.filter((command) => command.includes("capture-pane")).length;
+      for (let cycle = 0; cycle < 3; cycle++) {
+        for (let request = 0; request < 100; request++) handle.reseed();
+        expect(rig.pendingSyncs).toHaveLength(1);
+        expect(captures()).toBe(cycle + 1);
+        advanceRecoveryClock(rig, 1000);
+        rig.pendingSyncs.shift()!();
+        await vi.waitFor(() => expect(captures()).toBe(cycle + 2));
+        rig.sim.reply(["still ahead"]);
+        rig.sim.reply(["0 0 150 50"]);
+        rig.sim.reply(rig.state.descriptorRows);
+        expect(events.events).toEqual([]);
+        expect(
+          rig.pendingRecoveries.filter((task) => !task.cancelled).map((task) => task.dueAtMs),
+        ).toEqual([5000]);
+      }
+      advanceRecoveryClock(rig, 2000);
+      const before = captures();
+      rig.pendingSyncs.shift()!();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(captures()).toBe(before);
+      expect(bytesOf(events.events)).toEqual([]);
+    } finally {
+      await rig.channel.dispose();
+    }
+  });
+
+  it("does not qualify failed truth sync or extend the original recovery deadline", async () => {
+    const rig = await startedRig();
+    const events = collect();
+    try {
+      rig.channel.subscribePane("pane.alpha", events.onEvent);
+      rig.sim.reply(["ahead"]);
+      rig.sim.reply(["0 0 150 50"]);
+      vi.spyOn(rig.sim, "request").mockRejectedValueOnce(new Error("truth unavailable"));
+      rig.pendingSyncs.shift()!();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(rig.sim.written.filter((command) => command.includes("capture-pane"))).toHaveLength(1);
+      expect(events.events).toEqual([]);
+      expect(
+        rig.pendingRecoveries.filter((task) => !task.cancelled).map((task) => task.dueAtMs),
+      ).toEqual([5000]);
+      advanceRecoveryClock(rig, 5000);
+      expect(bytesOf(events.events)).toEqual([]);
+    } finally {
+      await rig.channel.dispose();
+    }
+  });
+
+  it("uses saved geometry for a hidden zoom pane and waits for saved-layout progress", async () => {
+    const rig = await startedRig();
+    const events = collect();
+    try {
+      const visible = "aaaa,200x50,0,0,2";
+      rig.sim.feedLines(`%layout-change @1 ${FIXTURE.layoutW1} ${visible} *Z`);
+      rig.channel.subscribePane("pane.alpha", events.onEvent);
+      rig.sim.reply(["ahead"]);
+      rig.sim.reply(["0 0 150 50"]);
+      expect(events.events).toEqual([]);
+      rig.sim.feedLines(
+        `%layout-change @1 aaaa,200x50,0,0{150x50,0,0,1,49x50,151,0,2} ${visible} *Z`,
+      );
+      rig.sim.reply(["saved current"]);
+      rig.sim.reply(["0 0 150 50"]);
+      expect(bytesOf(events.events)).toEqual(["saved current"]);
+    } finally {
+      await rig.channel.dispose();
+    }
+  });
+
+  it.each(["top", "bottom"] as const)(
+    "waits for content-row progress at a %s pane border",
+    async (border) => {
+      const rig = await startedRig({ borderReply: "manual" });
+      const events = collect();
+      try {
+        rig.sim.feedLines(`%layout-change @1 ${FIXTURE.layoutW1} ${FIXTURE.layoutW1} 0`);
+        rig.sim.reply([border]);
+        rig.channel.subscribePane("pane.alpha", events.onEvent);
+        rig.sim.reply(["ahead"]);
+        rig.sim.reply(["0 0 100 50"]); // Current pane has only49 content rows.
+        expect(events.events).toEqual([]);
+        rig.sim.feedLines(
+          `%layout-change @1 ${FIXTURE.layoutW1} aaaa,200x51,0,0{100x51,0,0,1,99x51,101,0,2} 0`,
+        );
+        rig.sim.reply([border]);
+        rig.sim.reply(["current"]);
+        rig.sim.reply(["0 0 100 50"]);
+        expect(bytesOf(events.events)).toEqual(["current"]);
+      } finally {
+        await rig.channel.dispose();
+      }
+    },
+  );
+
+  it("keeps native/probe corruption on the owner's fail-closed path instead of a layout wait", async () => {
+    const rig = await startedRig();
+    const faults: unknown[] = [];
+    const observability = createSessionRuntimeObservability();
+    const mirror = {
+      subscribe: async (candidate: MirrorSubscribeRequest) => {
+        const handle = rig.channel.subscribePane(
+          "pane.alpha",
+          candidate.onEvent,
+          candidate.onLayout,
+          true,
+        );
+        return { ...handle, session: candidate.session, close: async () => handle.close() };
+      },
+    };
+    const owner = new SessionRuntimeTerminalReplicaOwner(
+      "00000000-0000-4000-8000-000000000001",
+      FIXTURE.session,
+      "pane.alpha",
+      mirror as never,
+      {
+        incarnation: "corrupt:0",
+        initialRevision: 0,
+        observability,
+        onFault: (error) => faults.push(error),
+      },
+    );
+    const ready = owner.subscribe(() => {});
+    void ready.catch(() => {});
+    try {
+      await Promise.resolve();
+      for (let i = 0; i < 2; i++) {
+        rig.sim.reply(nativeBootstrapLines()); // Native100x50, probe150x50.
+        rig.sim.reply(["0 0 150 50"]);
+        await Promise.resolve();
+      }
+      await expect(ready).rejects.toThrow(/terminal reseed/);
+      expect(rig.pendingSyncs).toEqual([]);
+      expect(faults).toHaveLength(1);
+      expect(
+        observability
+          .snapshot()
+          .spans.filter((span) => span.terminalReseed)
+          .map((span) => span.terminalReseed!.reason),
+      ).toEqual(["native-size-mismatch", "native-size-mismatch"]);
+    } finally {
+      await owner.dispose();
+      await rig.channel.dispose();
+    }
+  });
+
   it("coalesces superseded layout replies and reentrant reseed requests under the original deadline", async () => {
     const rig = await startedRig({ borderReply: "manual" });
     const events = collect();
@@ -3533,10 +3822,10 @@ describe("native bootstrap capability fallback", () => {
         rig.sim.written.filter((command) => command.includes("capture-pane"));
       const alpha = collect();
       const beta = collect();
-      const replyCapture = (lines: string[], ok = true) => {
+      const replyCapture = (lines: string[], ok = true, cols = 100) => {
         rig.sim.reply([]);
         rig.sim.reply(lines, ok);
-        rig.sim.reply(["0 0 100 50"]);
+        rig.sim.reply([`0 0 ${cols} 50`]);
       };
       const replyCleanup = () => {
         rig.sim.reply([]);
@@ -3574,7 +3863,7 @@ describe("native bootstrap capability fallback", () => {
           expect(
             rig.pendingRecoveries.filter((task) => !task.cancelled).map((task) => task.dueAtMs),
           ).toEqual([9000]);
-          replyCapture(["quiet sibling"]);
+          replyCapture(["quiet sibling"], true, 99);
           expect(bytesOf(beta.events)).toEqual(["quiet sibling"]);
         }
         if (operation === "reseed") {

@@ -1,3 +1,4 @@
+import { layoutContentRows } from "../mirror/layout-content-rows.ts";
 import type { NativeGridCapture } from "../mirror/native-grid-capture.ts";
 import type {
   CanonicalTerminalReplicaUpdate,
@@ -744,16 +745,12 @@ function nativeRowsMatchLease(lease: LayoutLease, nativeRows: number): boolean {
 }
 
 function nativeRowsForLease(lease: Omit<LayoutLease, "epoch">): number {
-  if (lease.paneBorderStatus === "off") return lease.pane.height;
-
-  // pane-border-status consumes a terminal row only on the pane touching the
-  // configured outer window edge. Interior separators are drawn inside the
-  // layout and tmux reports their capture at the full visible pane height.
-  const touchesStatusEdge =
-    lease.paneBorderStatus === "top"
-      ? lease.pane.top === 0
-      : lease.pane.top + lease.pane.height === lease.windowRows;
-  return lease.pane.height - (touchesStatusEdge ? 1 : 0);
+  return layoutContentRows(
+    lease.pane.top,
+    lease.pane.height,
+    lease.windowRows,
+    lease.paneBorderStatus,
+  );
 }
 
 function layoutLeaseEqual(
