@@ -36,7 +36,11 @@ import { mkdirSync, existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { releaseSourceState } from "./lib/release-source-state.mjs";
-import { validateNativeScrollReleaseManifest } from "./lib/native-scroll-release-manifest.mjs";
+import {
+  assertQualifiedNativeAssetDeduplicated,
+  NATIVE_ASSET_NAMESPACE,
+  qualifiedNativeAssetRedirect,
+} from "./lib/qualified-native-asset.mjs";
 
 import { contractsInitializerPurityPlugin } from "./lib/contracts-initializer-purity.mjs";
 
@@ -94,6 +98,7 @@ const outfile =
     ? resolve(process.argv[outfileArg + 1])
     : resolve(defaultOutDir, "tmux-ide-tui");
 
+let nativeAssetRedirect = null;
 if (releaseManifest) {
   const coreVersion = JSON.parse(
     readFileSync(
@@ -101,12 +106,15 @@ if (releaseManifest) {
       "utf8",
     ),
   ).version;
-  scrollLibrary = validateNativeScrollReleaseManifest(releaseManifest, {
+  nativeAssetRedirect = qualifiedNativeAssetRedirect(releaseManifest, {
     repository: repoRoot,
     target,
     sourceState,
     coreVersion,
-  }).library;
+    resolveHostModule: (name) =>
+      fileURLToPath(import.meta.resolve(name, import.meta.resolve("@opentui/core"))),
+  });
+  scrollLibrary = nativeAssetRedirect.library;
 }
 const experimentalLibrary = Boolean(scrollLibrary && !releaseManifest);
 
@@ -144,20 +152,21 @@ const workerAssetPlugin = {
     if (scrollLibrary) {
       build.onResolve({ filter: /^tmux-ide:experimental-scroll-library$/ }, () => ({
         path: resolve(scrollLibrary),
-        namespace: "tmux-ide-opentui-worker-asset",
+        namespace: NATIVE_ASSET_NAMESPACE,
       }));
     }
+    if (nativeAssetRedirect)
+      build.onResolve({ filter: /^\.\/libopentui\.(dylib|so)$/ }, (args) =>
+        nativeAssetRedirect.resolve(args),
+      );
     build.onResolve({ filter: /^tmux-ide:opentui-parser-worker$/ }, () => ({
       path: parserWorkerSource,
-      namespace: "tmux-ide-opentui-worker-asset",
+      namespace: NATIVE_ASSET_NAMESPACE,
     }));
-    build.onLoad(
-      { filter: /.*/, namespace: "tmux-ide-opentui-worker-asset" },
-      async ({ path }) => ({
-        contents: new Uint8Array(await Bun.file(path).arrayBuffer()),
-        loader: "file",
-      }),
-    );
+    build.onLoad({ filter: /.*/, namespace: NATIVE_ASSET_NAMESPACE }, async ({ path }) => ({
+      contents: new Uint8Array(await Bun.file(path).arrayBuffer()),
+      loader: "file",
+    }));
   },
 };
 
@@ -191,6 +200,13 @@ const result = await Bun.build({
 if (!result.success) {
   for (const log of result.logs) console.error(log);
   throw new Error("[build-tui] compile failed");
+}
+
+if (nativeAssetRedirect) {
+  const assets = assertQualifiedNativeAssetDeduplicated(outfile, nativeAssetRedirect);
+  console.log(
+    `[build-tui] qualified native asset embedded once; omitted ${assets.removedStockBytes} stock bytes`,
+  );
 }
 
 const bytes = statSync(outfile).size;
