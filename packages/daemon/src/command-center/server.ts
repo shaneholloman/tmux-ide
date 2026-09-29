@@ -1813,7 +1813,6 @@ export function createApp(options: CreateAppOptions = {}): Hono {
   });
 
   // -------------------------------------------------------------------------
-  // POST /api/filesystem/inspect — registry-agnostic directory inspection.
   // POST /api/projects/onboard   — generate workspace.yml + register the project.
   // -------------------------------------------------------------------------
 

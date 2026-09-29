@@ -385,74 +385,23 @@ describe("REST /api/projects/init", () => {
   });
 });
 
-describe("REST /api/filesystem/inspect", () => {
-  it("returns inspect data for a directory without ide.yml", async () => {
+describe("retired REST /api/filesystem/inspect", () => {
+  it("does not expose the removed inspection route", async () => {
     const app = createApp();
     const res = await app.request("/api/filesystem/inspect", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ dir: projectDir }),
-    });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      project: {
-        hasIdeYml: boolean;
-        dir: string;
-        detected: { packageManager: string | null; frameworks: string[] };
-      };
-    };
-    expect(body.project.hasIdeYml).toBe(false);
-    expect(body.project.detected.frameworks).toEqual([]);
-  });
-
-  it("returns hasIdeYml=true when an ide.yml is present", async () => {
-    writeFileSync(
-      join(projectDir, "ide.yml"),
-      "name: x\nrows:\n  - panes:\n      - title: Shell\n",
-    );
-    const app = createApp();
-    const res = await app.request("/api/filesystem/inspect", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ dir: projectDir }),
-    });
-    const body = (await res.json()) as { project: { hasIdeYml: boolean } };
-    expect(body.project.hasIdeYml).toBe(true);
-  });
-
-  it("returns 404 when the directory does not exist", async () => {
-    const app = createApp();
-    const res = await app.request("/api/filesystem/inspect", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ dir: join(sandboxRoot, "nope-does-not-exist") }),
     });
     expect(res.status).toBe(404);
-  });
-
-  it("returns 400 for relative paths", async () => {
-    const app = createApp();
-    const res = await app.request("/api/filesystem/inspect", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ dir: "relative/path" }),
-    });
-    expect(res.status).toBe(400);
-  });
-
-  it("returns 403 for paths outside the sandbox", async () => {
-    const app = createApp();
-    const res = await app.request("/api/filesystem/inspect", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ dir: "/etc" }),
-    });
-    expect(res.status).toBe(403);
+    expect(existsSync(join(projectDir, ".tmux-ide", "workspace.yml"))).toBe(false);
+    const body = await app.request("/api/projects").then((r) => r.json());
+    expect(body.projects).toEqual([]);
   });
 });
 
 describe("REST /api/projects/onboard", () => {
-  it("writes an ide.yml and registers the project", async () => {
+  it("writes a workspace config without legacy team metadata and registers the project", async () => {
     const app = createApp();
     const res = await app.request("/api/projects/onboard", {
       method: "POST",
@@ -461,18 +410,29 @@ describe("REST /api/projects/onboard", () => {
     });
     expect(res.status).toBe(201);
     const body = (await res.json()) as {
-      project: { name: string; dir: string; hasIdeYml: boolean };
+      project: {
+        name: string;
+        dir: string;
+        hasIdeYml: boolean;
+        hasWorkspaceConfig: boolean;
+        configKind: string;
+      };
     };
-    expect(body.project.hasIdeYml).toBe(true);
+    expect(body.project.hasIdeYml).toBe(false);
+    expect(body.project.hasWorkspaceConfig).toBe(true);
+    expect(body.project.configKind).toBe("workspace");
 
-    // ide.yml landed on disk with our 2-agent layout.
-    const yamlPath = join(projectDir, "ide.yml");
+    // The current workspace format contains the two-agent terminal layout.
+    expect(existsSync(join(projectDir, "ide.yml"))).toBe(false);
+    const yamlPath = join(projectDir, ".tmux-ide", "workspace.yml");
     expect(existsSync(yamlPath)).toBe(true);
     const yaml = readFileSync(yamlPath, "utf-8");
     expect(yaml).toContain("Lead");
     expect(yaml).toContain("Teammate 1");
     expect(yaml).toContain("pnpm dev");
-    expect(yaml).toContain("team:");
+    expect(yaml).not.toContain("team:");
+    expect(yaml).toContain("version: 1");
+    expect(yaml).toContain("terminal:");
 
     // Registry now contains the project.
     const list = (await app.request("/api/projects").then((r) => r.json())) as {
