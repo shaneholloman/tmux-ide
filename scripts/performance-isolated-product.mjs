@@ -19,7 +19,8 @@ mkdirSync(output, { mode: 0o700 });
 const preflightOnly = process.argv[3] === "--preflight-only";
 const portableOnly = process.argv[3] === "--portable-only";
 const startupDiagnostic = process.argv[3] === "--startup-diagnostic";
-if (process.argv[3] && !preflightOnly && !portableOnly && !startupDiagnostic)
+const referenceOnly = process.argv[3] === "--reference-only";
+if (process.argv[3] && !preflightOnly && !portableOnly && !startupDiagnostic && !referenceOnly)
   throw new Error("Unknown qualification mode");
 const cancellation = createPackedCancellation();
 const base = { ...process.env };
@@ -127,7 +128,7 @@ try {
     cleanup.fleet = "confirmed";
   }
 
-  if (!startupDiagnostic) {
+  if (!startupDiagnostic && !referenceOnly) {
     // Separate multi-client coherence lane: actual rig Web+TUI are intentional.
     rigAttempted = true;
     cleanup.rig = "pending";
@@ -190,7 +191,13 @@ try {
         {
           schemaVersion: 1,
           completed: failures.length === 0,
-          mode: preflightOnly ? "preflight-only" : portableOnly ? "portable-only" : "measurement",
+          mode: preflightOnly
+            ? "preflight-only"
+            : portableOnly
+              ? "portable-only"
+              : referenceOnly
+                ? "reference-only"
+                : "measurement",
           ...(startupDiagnostic
             ? {
                 mode: "startup-diagnostic",
