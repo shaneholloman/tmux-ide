@@ -295,6 +295,7 @@ export interface LayoutSubscriptionHandle {
 interface SubRecord {
   nativeBootstrap?: boolean;
   cancelCapture?: (() => void) | null;
+  resumeLayoutCapture?: (() => void) | null;
   readonly feed: PaneFeed;
   readonly onEvent: (event: MirrorPaneEvent) => void;
   readonly onLayout: ((event: MirrorLayoutEvent) => void) | null;
@@ -1342,9 +1343,15 @@ export class SessionChannel {
     let markerRetired = false;
     let captureLines: readonly string[] | null = null;
     let cancelDeadline: (() => void) | null = null;
+    let resumeLayoutCapture: (() => void) | null = null;
+    const clearLayoutWait = () => {
+      if (sub.resumeLayoutCapture === resumeLayoutCapture) sub.resumeLayoutCapture = null;
+      resumeLayoutCapture = null;
+    };
     const settle = (result: ReseedResult) => {
       if (settled) return;
       settled = true;
+      clearLayoutWait();
       cancelDeadline?.();
       lease.cancelRecipe = null;
       onSettled?.(result);
@@ -1361,6 +1368,7 @@ export class SessionChannel {
     lease.cancelRecipe = () => {
       if (settled) return;
       settled = true;
+      clearLayoutWait();
       cancelDeadline?.();
       lease.cancelRecipe = null;
       sub.feed.abort(epoch);
@@ -1464,6 +1472,29 @@ export class SessionChannel {
           settle(FAILED_RESEED_RESULT);
           return;
         }
+        // Native/cursor replies can precede the paired layout/border reply.
+        // Never publish that candidate against old authority, nor replay held
+        // output over its snapshot. Recapture after the latest layout releases,
+        // retaining this recipe's original deadline and one queue lease.
+        const windowId = sub.pane.windowRuntimeId;
+        if (windowId && this.pendingLayoutOutput.has(windowId)) {
+          sub.feed.abort(epoch);
+          captureLines = null;
+          resumeLayoutCapture = () => {
+            if (settled) return;
+            if (this.recoveryNowMs() >= deadlineAt) {
+              settle(FAILED_RESEED_RESULT);
+              return;
+            }
+            settled = true;
+            clearLayoutWait();
+            cancelDeadline?.();
+            lease.cancelRecipe = null;
+            this.reseed(lease, onSettled, deferPublish, deadlineAt);
+          };
+          sub.resumeLayoutCapture = resumeLayoutCapture;
+          return;
+        }
         const cursorLine = reply.lines[0] ?? "";
         const historySize = Number(cursorLine.trim().split(/\s+/)[14]);
         if (Number.isSafeInteger(historySize) && historySize >= 0)
@@ -1494,6 +1525,9 @@ export class SessionChannel {
 
   private reseedPlain(sub: SubRecord, resumeReason: "requested" | null = null): void {
     if (sub.closed || sub.frozen || this.disposed) return;
+    // Layout observers can request a reseed reentrantly during admission. The
+    // waiting recipe already owns that request and its absolute deadline.
+    if (sub.resumeLayoutCapture) return;
     if (this.plainReseedActive?.sub === sub) sub.cancelCapture?.();
     if (!this.plainReseedQueue.has(sub) && this.plainReseedQueue.size >= MAX_QUEUED_PLAIN_RESEEDS) {
       this.failPlainReseed(sub);
@@ -3000,6 +3034,10 @@ export class SessionChannel {
     const pending = this.pendingLayoutOutput.get(windowRuntimeId);
     this.pendingLayoutOutput.delete(windowRuntimeId);
     this.emitLayout(windowRuntimeId);
+    for (const pane of this.panesByRuntime.values()) {
+      if (pane.windowRuntimeId !== windowRuntimeId) continue;
+      for (const sub of pane.subs) sub.resumeLayoutCapture?.();
+    }
     if (pending?.overflowed) {
       for (const pane of this.panesByRuntime.values()) {
         if (pane.windowRuntimeId === windowRuntimeId) this.restartRecoveryAfterOutputOverflow(pane);

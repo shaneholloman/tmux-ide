@@ -3,6 +3,7 @@
  * ControlChannelCore fed raw protocol lines — see __tests__/simulated-channel).
  */
 import { describe, expect, it, vi } from "vitest";
+import type { CanonicalTerminalReplicaUpdate } from "@tmux-ide/contracts";
 import { hostname } from "node:os";
 import { memorablePaneName } from "../protocol/pane-display-name.ts";
 import {
@@ -18,6 +19,9 @@ import type {
   MirrorPaneEvent,
 } from "./events.ts";
 import { PaneFeed } from "./pane-feed.ts";
+import { SessionRuntimeTerminalReplicaOwner } from "../session-runtime/terminal-replica-owner.ts";
+import { createSessionRuntimeObservability } from "../session-runtime/runtime-observability.ts";
+import type { MirrorSubscribeRequest } from "./mirror-service.ts";
 import { SessionChannel } from "./session-channel.ts";
 import type { MirrorFlowRecoveryObservation } from "./session-channel.ts";
 import type { SessionChannelOptions } from "./session-channel.ts";
@@ -2403,6 +2407,280 @@ describe("flow control", () => {
 });
 
 describe("layout push", () => {
+  it.each([true, false])(
+    "recaptures after pending layout admission before publishing a new-size seed to its owner (native=%s)",
+    async (nativeBootstrap) => {
+      const rig = await startedRig({ borderReply: "manual" });
+      const events: MirrorPaneEvent[] = [];
+      const observability = createSessionRuntimeObservability();
+      const faults: unknown[] = [];
+      const mirror = {
+        subscribe: async (candidate: MirrorSubscribeRequest) => {
+          const handle = rig.channel.subscribePane(
+            "pane.alpha",
+            (event) => {
+              events.push(event);
+              candidate.onEvent(event);
+            },
+            candidate.onLayout,
+            nativeBootstrap,
+          );
+          return { ...handle, session: candidate.session, close: async () => handle.close() };
+        },
+      };
+      const owner = new SessionRuntimeTerminalReplicaOwner(
+        "00000000-0000-4000-8000-000000000001",
+        FIXTURE.session,
+        "pane.alpha",
+        mirror as never,
+        {
+          incarnation: "pending-layout:0",
+          initialRevision: 0,
+          observability,
+          onFault: (error) => faults.push(error),
+        },
+      );
+      const updates: CanonicalTerminalReplicaUpdate[] = [];
+      const ready = owner.subscribe((update) => updates.push(update));
+      void ready.catch(() => {});
+      try {
+        await Promise.resolve();
+        rig.sim.feedLines(
+          `%layout-change @1 ${FIXTURE.layoutW1} aaaa,200x50,0,0{150x50,0,0,1,49x50,151,0,2} 0`,
+        );
+        const nativeWithText = (text: string) => {
+          const lines = nativeBootstrapLines();
+          lines[0] = JSON.stringify({
+            ...JSON.parse(lines[0]!),
+            cols: 150,
+            cursor: [text.length, 0],
+          });
+          lines[1] = JSON.stringify({
+            row: 0,
+            flags: 0,
+            used: text.length,
+            cells: [...text].map((c) => [0, 1, Buffer.from(c).toString("hex"), 0, 8, 8, 8, 0, 0]),
+          });
+          return lines;
+        };
+        const native = nativeWithText("BEFORE");
+        rig.sim.reply(nativeBootstrap ? native : ["BEFORE"]);
+        rig.sim.reply(["0 0 150 50"]);
+        expect(events).toEqual([]);
+        expect(observability.snapshot().spans.filter((span) => span.terminalReseed)).toEqual([]);
+        rig.sim.output("%1", "DURING");
+        rig.sim.reply(["off"]);
+        rig.sim.reply(nativeBootstrap ? nativeWithText("BEFOREDURING") : ["BEFOREDURING"]);
+        rig.sim.reply(["11 0 150 50"]);
+        await ready;
+        expect(events.map((event) => event.type)).toEqual(["reset", "seed", "cursor"]);
+        expect(updates[0]).toMatchObject({ type: "terminal.seed", cols: 150, rows: 50 });
+        const first = updates[0]!;
+        expect(
+          first.type === "terminal.seed" &&
+            first.snapshot.grid[0]!.cells.map((cell) => cell.grapheme)
+              .join("")
+              .trimEnd(),
+        ).toBe("BEFOREDURING");
+        rig.sim.output("%1", "AFTER");
+        expect(bytesOf(events)).toEqual([nativeBootstrap ? "" : "BEFOREDURING", "AFTER"]);
+        expect(faults).toEqual([]);
+      } finally {
+        await owner.dispose();
+        await rig.channel.dispose();
+      }
+    },
+  );
+
+  it("coalesces superseded layout replies and reentrant reseed requests under the original deadline", async () => {
+    const rig = await startedRig({ borderReply: "manual" });
+    const events = collect();
+    let handle: ReturnType<SessionChannel["subscribePane"]> | undefined;
+    try {
+      handle = rig.channel.subscribePane(
+        "pane.alpha",
+        events.onEvent,
+        () => handle?.reseed(),
+        true,
+      );
+      const captures = () =>
+        rig.sim.written.filter((command) => command.includes("capture-pane")).length;
+      const before = captures();
+      rig.sim.feedLines(
+        `%layout-change @1 ${FIXTURE.layoutW1} aaaa,200x50,0,0{150x50,0,0,1,49x50,151,0,2} 0`,
+      );
+      rig.sim.reply(nativeBootstrapLines());
+      rig.sim.reply(["0 0 100 50"]);
+      for (let i = 0; i < 100; i++) handle.reseed();
+      expect(captures()).toBe(before);
+      advanceRecoveryClock(rig, 4000);
+      rig.sim.feedLines(`%layout-change @1 ${FIXTURE.layoutW1} ${FIXTURE.layoutW1} 0`);
+      rig.sim.reply(["off"]); // Superseded reply must not release the wait.
+      expect(captures()).toBe(before);
+      rig.sim.reply(["off"]);
+      expect(captures()).toBe(before + 1);
+      expect(
+        rig.pendingRecoveries.filter((task) => !task.cancelled).map((task) => task.dueAtMs),
+      ).toEqual([5000]);
+      rig.sim.reply(nativeBootstrapLines());
+      rig.sim.reply(["0 0 100 50"]);
+      expect(events.events.map((event) => event.type)).toEqual(["reset", "seed", "cursor"]);
+      expect(rig.pendingRecoveries.filter((task) => !task.cancelled)).toEqual([]);
+    } finally {
+      await rig.channel.dispose();
+    }
+  });
+
+  it("does not extend the deadline across another layout crossing during the replacement capture", async () => {
+    const rig = await startedRig({ borderReply: "manual", continueReply: "manual" });
+    const events = collect();
+    try {
+      rig.channel.subscribePane("pane.alpha", events.onEvent, undefined, true);
+      rig.sim.feedLines(`%layout-change @1 ${FIXTURE.layoutW1} ${FIXTURE.layoutW1} 0`);
+      rig.sim.reply(nativeBootstrapLines());
+      rig.sim.reply(["0 0 100 50"]);
+      advanceRecoveryClock(rig, 4000);
+      rig.sim.reply(["off"]); // Starts a replacement with only one second remaining.
+      rig.sim.feedLines(`%layout-change @1 ${FIXTURE.layoutW1} ${FIXTURE.layoutW1} 0`);
+      rig.sim.reply(nativeBootstrapLines());
+      rig.sim.reply(["0 0 100 50"]);
+      expect(events.events).toEqual([]);
+      expect(
+        rig.pendingRecoveries.filter((task) => !task.cancelled).map((task) => task.dueAtMs),
+      ).toEqual([5000]);
+      advanceRecoveryClock(rig, 1000);
+      const before = rig.sim.written.filter((command) => command.includes("capture-pane")).length;
+      rig.sim.reply(["off"]);
+      expect(rig.sim.written.filter((command) => command.includes("capture-pane"))).toHaveLength(
+        before,
+      );
+      expect(events.events.some((event) => event.type === "seed")).toBe(false);
+    } finally {
+      await rig.channel.dispose();
+    }
+  });
+
+  it("honors reentrant closure during layout admission before resuming the held capture", async () => {
+    const rig = await startedRig({ borderReply: "manual" });
+    const events = collect();
+    let handle: ReturnType<SessionChannel["subscribePane"]> | undefined;
+    try {
+      handle = rig.channel.subscribePane("pane.alpha", events.onEvent, () => handle?.close(), true);
+      rig.sim.feedLines(`%layout-change @1 ${FIXTURE.layoutW1} ${FIXTURE.layoutW1} 0`);
+      rig.sim.reply(nativeBootstrapLines());
+      rig.sim.reply(["0 0 100 50"]);
+      const before = rig.sim.written.filter((command) => command.includes("capture-pane")).length;
+      rig.sim.reply(["off"]);
+      expect(rig.sim.written.filter((command) => command.includes("capture-pane"))).toHaveLength(
+        before,
+      );
+      expect(events.events.some((event) => event.type === "seed")).toBe(false);
+      expect(rig.pendingRecoveries.filter((task) => !task.cancelled)).toEqual([]);
+    } finally {
+      await rig.channel.dispose();
+    }
+  });
+
+  it("retires the layout-blocked replacement when quarantined output overflow requires recovery", async () => {
+    const rig = await startedRig({ borderReply: "manual", continueReply: "manual" });
+    const events = collect();
+    try {
+      rig.channel.subscribePane("pane.alpha", events.onEvent, undefined, true);
+      rig.sim.feedLines(`%layout-change @1 ${FIXTURE.layoutW1} ${FIXTURE.layoutW1} 0`);
+      rig.sim.reply(nativeBootstrapLines());
+      rig.sim.reply(["0 0 100 50"]);
+      for (let i = 0; i < 1025; i++) rig.sim.output("%1", "x");
+      expect(events.events).toEqual([]);
+      rig.sim.commandListInline = (command, count, resultIndex, onReply) => {
+        rig.sim.core.pushCommandList(count, resultIndex, onReply);
+        rig.sim.written.push(command);
+      };
+      rig.sim.reply(["off"]);
+      expect(events.events).toContainEqual({
+        type: "flow",
+        state: "paused",
+        reason: "backpressure",
+      });
+      rig.sim.reply([]); // Retired replacement marker, capture and cursor slots.
+      rig.sim.reply(nativeBootstrapLines());
+      rig.sim.reply(["0 0 100 50"]);
+      expect(bytesOf(events.events)).toEqual([]);
+      expect(events.events.some((event) => event.type === "reset" || event.type === "cursor")).toBe(
+        false,
+      );
+    } finally {
+      await rig.channel.dispose();
+    }
+  });
+
+  it("expires a layout-blocked capture at its original deadline without publishing or late restart", async () => {
+    const rig = await startedRig({ borderReply: "manual", continueReply: "manual" });
+    const events = collect();
+    try {
+      const handle = rig.channel.subscribePane("pane.alpha", events.onEvent, undefined, true);
+      rig.sim.feedLines(`%layout-change @1 ${FIXTURE.layoutW1} ${FIXTURE.layoutW1} 0`);
+      rig.sim.reply(nativeBootstrapLines());
+      rig.sim.reply(["0 0 100 50"]);
+      advanceRecoveryClock(rig, 4999);
+      for (let i = 0; i < 100; i++) handle.reseed();
+      expect(events.events).toEqual([]);
+      expect(
+        rig.pendingRecoveries.filter((task) => !task.cancelled).map((task) => task.dueAtMs),
+      ).toEqual([5000]);
+      advanceRecoveryClock(rig, 1);
+      expect(events.events.some((event) => event.type === "seed")).toBe(false);
+      const captures = rig.sim.written.filter((command) => command.includes("capture-pane")).length;
+      rig.sim.reply(["off"]);
+      expect(rig.sim.written.filter((command) => command.includes("capture-pane"))).toHaveLength(
+        captures,
+      );
+      expect(events.events.some((event) => event.type === "seed")).toBe(false);
+    } finally {
+      await rig.channel.dispose();
+    }
+  });
+
+  it.each(["close", "freeze", "dispose", "replace-subscription"] as const)(
+    "retires a pending layout capture on %s before a late border reply",
+    async (operation) => {
+      const rig = await startedRig({ borderReply: "manual" });
+      const events = collect();
+      try {
+        const handle = rig.channel.subscribePane("pane.alpha", events.onEvent, undefined, true);
+        rig.sim.feedLines(`%layout-change @1 ${FIXTURE.layoutW1} ${FIXTURE.layoutW1} 0`);
+        rig.sim.reply(nativeBootstrapLines());
+        rig.sim.reply(["0 0 100 50"]);
+        const fresh = collect();
+        if (operation === "replace-subscription") {
+          // Preserve the real FIFO when a new recipe queues behind the held
+          // border reply; the default simulator auto-acks marker installation.
+          rig.sim.commandListInline = (command, count, resultIndex, onReply) => {
+            rig.sim.core.pushCommandList(count, resultIndex, onReply);
+            rig.sim.written.push(command);
+          };
+          rig.channel.subscribePane("pane.alpha", fresh.onEvent, undefined, true);
+        }
+        if (operation === "dispose") await rig.channel.dispose();
+        else if (operation === "freeze") handle.freeze();
+        else handle.close();
+        const before = rig.sim.written.filter((command) => command.includes("capture-pane")).length;
+        rig.sim.reply(["off"]);
+        expect(rig.sim.written.filter((command) => command.includes("capture-pane"))).toHaveLength(
+          before,
+        );
+        expect(events.events.some((event) => event.type === "seed")).toBe(false);
+        if (operation === "replace-subscription") {
+          rig.sim.reply([]); // New capture marker installation.
+          rig.sim.reply(nativeBootstrapLines());
+          rig.sim.reply(["0 0 100 50"]);
+          expect(fresh.events.map((event) => event.type)).toEqual(["reset", "seed", "cursor"]);
+        }
+      } finally {
+        await rig.channel.dispose();
+      }
+    },
+  );
+
   it("retains every coherent window while another window is awaiting border metadata", async () => {
     const rig = await startedRig({ borderReply: "manual" });
     rig.state.descriptorRows[2] = rig.state.descriptorRows[2]!.replace(
