@@ -1523,7 +1523,10 @@ async function start(args) {
     )
       fail("Card5 host-focus control root was not private and owned");
   }
-  if (!existsSync(launch.cwd)) fail(`test-drive cwd does not exist: ${launch.cwd}`);
+  // Compiled launches use our private stateHome, created below after retiring
+  // any previous owned process. Only caller/source directories must pre-exist.
+  if (runtime !== "compiled" && !existsSync(launch.cwd))
+    fail(`test-drive cwd does not exist: ${launch.cwd}`);
   if (
     options.publicEntry &&
     [join(launch.cwd, ".tmux-ide", "workspace.yml"), join(launch.cwd, "ide.yml")].some(existsSync)

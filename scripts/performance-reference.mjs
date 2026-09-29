@@ -328,8 +328,6 @@ async function measureStartup() {
     run("node", [
       "scripts/tui-testdrive.mjs",
       "start",
-      "--cwd",
-      referenceProjectDir,
       "--target",
       target,
       "--cols",
@@ -400,8 +398,6 @@ async function collectInputTrace(sampleCount = options.inputSamples) {
     [
       "scripts/tui-testdrive.mjs",
       "start",
-      "--cwd",
-      referenceProjectDir,
       "--target",
       target,
       "--cols",
