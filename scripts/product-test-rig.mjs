@@ -16977,6 +16977,7 @@ async function owner() {
           if (down.requestedAction !== "down")
             throw new Error("resize pointer-down delivery receipt was invalid");
           const samples = [];
+          let previousPanes = panes;
           let lastX = x;
           for (let ordinal = 0; ordinal < 30; ordinal += 1) {
             lastX = x + 1 + (ordinal % 2);
@@ -17100,8 +17101,18 @@ async function owner() {
                 fence: Object.freeze({ writerHealth: joined.fence.writerHealth }),
                 delivery,
                 pointerIngress: record.pointerIngress,
+                dividerEvidence: Object.freeze({
+                  before: previousPanes,
+                  after: nativePanes,
+                  operationId: settled.record.operationId,
+                  records: settled.records
+                    .slice(baselineCount)
+                    .filter((entry) => entry.operationId === settled.record.operationId),
+                  host: captureEnvelope.hostIdentity,
+                }),
               }),
             );
+            previousPanes = nativePanes;
           }
           activeDrag = Object.freeze({
             x: lastX,
@@ -17110,6 +17121,7 @@ async function owner() {
             lifecycleBefore,
             watermark,
             finalSample: samples.at(-1),
+            downDelivery: down,
           });
           event("resize-pointer-preview-distribution", { samples: samples.length });
           return Object.freeze(samples);
@@ -17123,7 +17135,7 @@ async function owner() {
           keyboard,
         ) => {
           if (!activeDrag) throw new Error("resize pointer drag ownership was unavailable");
-          const { lifecycleBefore, watermark, finalSample } = activeDrag;
+          const { lifecycleBefore, watermark, finalSample, downDelivery } = activeDrag;
           const delivery = await driveExactHostedInput(
             state,
             {
@@ -17259,6 +17271,11 @@ async function owner() {
             pointerIngress: releaseRecord.pointerIngress,
             operationPointerIngress: joined.settled.pointerIngress,
             releaseProof: finalOperation.releaseProof,
+            dividerEvidence: Object.freeze({
+              downDelivery,
+              releaseRecord,
+              records: gestureRecords,
+            }),
           });
           event("resize-pointer-release-proved", { axis: "cols" });
           return evidence;
