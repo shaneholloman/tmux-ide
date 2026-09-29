@@ -62,6 +62,32 @@ export function sparkTuiMachineAdmitted(frame: string, machine: string): boolean
   return sparkTuiAdmission(frame) === "terminal" && header.includes(` ${machine} · `);
 }
 
+/** Drive only product keyboard/mouse routes; Home deliberately has no Machines sidebar. */
+export async function selectSparkTuiMachine(options: {
+  machine: string;
+  frame(): string;
+  write(input: string): void;
+  wait(predicate: () => boolean): Promise<void>;
+  checkpoint(value: "home-frame" | "machine-selection" | "terminal-frame"): void;
+}) {
+  options.checkpoint("home-frame");
+  await options.wait(
+    () =>
+      sparkTuiAdmission(options.frame()) === "home" ||
+      sparkTuiMachineSessionRow(options.frame(), options.machine) !== null,
+  );
+  // OpenTUI's testdrive KeyCodes.F2 uses the SS3 OQ sequence.
+  if (sparkTuiAdmission(options.frame()) === "home") options.write("\x1bOQ");
+  options.checkpoint("machine-selection");
+  let row: number | null = null;
+  await options.wait(
+    () => (row = sparkTuiMachineSessionRow(options.frame(), options.machine)) !== null,
+  );
+  options.write(`\x1b[<0;10;${row}M\x1b[<0;10;${row}m`);
+  options.checkpoint("terminal-frame");
+  await options.wait(() => sparkTuiMachineAdmitted(options.frame(), options.machine));
+}
+
 const execute = promisify(execFile);
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 
@@ -428,19 +454,15 @@ export async function createSparkRetainedTuiObserver(options: {
     });
     const client = clients.get(side)!;
     const machine = side === "local" ? "Local" : config.ssh.alias;
-    diagnostics.checkpoint("machine-selection", side);
-    let row: number | null = null;
-    await wait(() => {
-      assert(!client.exited && !client.overflow);
-      row = sparkTuiMachineSessionRow(client.frame(), machine);
-      return row !== null;
-    });
-    // Exercise the actual sidebar mouse route, binding the colliding name to its machine.
-    client.pty.write(`\x1b[<0;10;${row}M\x1b[<0;10;${row}m`);
-    diagnostics.checkpoint("terminal-frame", side);
-    await wait(() => {
-      assert(!client.exited && !client.overflow);
-      return sparkTuiMachineAdmitted(client.frame(), machine);
+    await selectSparkTuiMachine({
+      machine,
+      frame: () => {
+        assert(!client.exited && !client.overflow);
+        return client.frame();
+      },
+      write: (input) => client.pty.write(input),
+      wait,
+      checkpoint: (checkpoint) => diagnostics.checkpoint(checkpoint, side),
     });
     await tracker.capture();
   }
@@ -463,6 +485,14 @@ export async function createSparkRetainedTuiObserver(options: {
     assert(sparkTuiMachineAdmitted(frame, side === "local" ? "Local" : config.ssh.alias));
     const row = output ? frame.split("\n").findIndex((line) => line.includes(output)) + 1 : 16;
     client.pty.write(`\x1b[<0;55;${row}M\x1b[<0;55;${row}m`);
+    // Selecting a read-only pane requests control asynchronously; await its actual UI acknowledgement.
+    if (frame.includes("Read-only input")) {
+      await wait(
+        () =>
+          !client.frame().includes("Read-only input") &&
+          sparkTuiMachineAdmitted(client.frame(), side === "local" ? "Local" : config.ssh.alias),
+      );
+    }
     const probe = sparkTuiInput(randomUUID().replaceAll("-", ""));
     assert(!client.frame().includes(probe.marker));
     const parsedBefore = client.parsed;

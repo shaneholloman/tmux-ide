@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
   sparkTuiInput,
+  selectSparkTuiMachine,
   sparkTuiAdmission,
   sparkTuiMachineSessionRow,
   sparkTuiMachineAdmitted,
@@ -259,4 +260,62 @@ test("actual sidebar selection binds colliding sessions to their machine and act
     " ".repeat(28) + "attribution-collision 1p\n F6",
   );
   assert.equal(sparkTuiMachineSessionRow(mainBodyOnly, "spark-private"), null);
+});
+
+test("recorded full-width Home transitions through real F2 before exact machine selection", async () => {
+  // Significant lines of the saved 1c8c baseline remote frame: no Machines sidebar on Home.
+  const home = [
+    "   tmux-ide  F1 Home    F2 Terminals        DEV spark-observ:f7a283 SSH spark-private ● 1 live",
+    "                Agents",
+    "                Your agents, across your machines",
+    "                ┃ /  Find an agent or workspace",
+    "                  Agent 1",
+    "                  spark-private · Default · attribution-collision",
+    "                  Agent 1",
+    "                  Local · Default · attribution-collision",
+    "                Local / Default / attribution-collision · Enter open",
+    "                 Open terminals F2    Commands F5",
+  ].join("\n");
+  const sidebar = [
+    "tmux-ide F1 Home F2 Terminals Local · attribution-collision",
+    " Machines",
+    "▾ Local",
+    "   attribution-collision 1p",
+    "▾ spark-private",
+    "   attribution-collision 1p",
+  ].join("\n");
+  const selected = sidebar.replace(
+    "Local · attribution-collision",
+    "spark-private · attribution-collision",
+  );
+  for (const initial of [home, sidebar]) {
+    let frame = initial;
+    const writes: string[] = [];
+    const checkpoints: string[] = [];
+    await selectSparkTuiMachine({
+      machine: "spark-private",
+      frame: () => frame,
+      write: (input) => {
+        writes.push(input);
+        if (input === "\x1bOQ") {
+          assert.equal(frame, home);
+          frame = sidebar;
+        } else {
+          assert.equal(input, "\x1b[<0;10;6M\x1b[<0;10;6m");
+          assert.equal(frame, sidebar);
+          frame = selected;
+        }
+      },
+      wait: async (predicate) => {
+        assert(predicate());
+      },
+      checkpoint: (value) => checkpoints.push(value),
+    });
+    assert.deepEqual(writes, [
+      ...(initial === home ? ["\x1bOQ"] : []),
+      "\x1b[<0;10;6M\x1b[<0;10;6m",
+    ]);
+    assert.deepEqual(checkpoints, ["home-frame", "machine-selection", "terminal-frame"]);
+    assert(sparkTuiMachineAdmitted(frame, "spark-private"));
+  }
 });
