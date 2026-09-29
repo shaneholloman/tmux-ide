@@ -42,6 +42,7 @@ export async function qualifyCanonicalSshAttribution(options: {
 }) {
   const facts = options.facts;
   facts.kind = "canonical-daemon-real-ssh-fleet-and-global-clock";
+  let stage = "initialize";
   const secondary = options.secondary ?? createLocalCanonicalSecondary(options);
   const wait = async (predicate: () => boolean, label: string, ms = 15000) => {
     const end = Date.now() + ms;
@@ -148,11 +149,22 @@ export async function qualifyCanonicalSshAttribution(options: {
       protocolError = error;
     });
     events.on("message", (bytes) => {
+      let decoded: unknown;
       try {
         if (frames.length >= 512) throw Error("Bounded frame journal overflow");
-        frames.push(DaemonEventServerFrameSchemaZ.parse(JSON.parse(bytes.toString())));
+        decoded = JSON.parse(bytes.toString());
+        frames.push(DaemonEventServerFrameSchemaZ.parse(decoded));
       } catch (error) {
-        protocolError = error;
+        if (!protocolError) {
+          const frame = decoded as { type?: unknown } | null;
+          facts.firstProtocolFailure = {
+            stage,
+            frameType: typeof frame?.type === "string" ? frame.type.slice(0, 80) : null,
+            characters: bytes.toString().length,
+            acceptedFrames: frames.length,
+          };
+          protocolError = error;
+        }
       }
     });
     await wait(
@@ -192,19 +204,23 @@ export async function qualifyCanonicalSshAttribution(options: {
       ...frames.flatMap((frame) => ("sequence" in frame ? [frame.sequence] : [])),
     );
 
+    stage = "secondary-start";
     const { socket } = await secondary.start(defaultEndpoint.semanticPaneId);
+    stage = "secondary-register";
     registration = await json("/api/v1/tmux-servers", {
       label: "Owned attribution secondary",
       selector: { kind: "path", path: socket },
     });
     assert(registration?.generation);
     facts.createdServerId = registration.serverId;
+    stage = "secondary-discover";
     const discovered = AutomationPanesResponseSchemaZ.parse(await json("/api/v1/automation/panes"));
     const target = discovered.panes.find(
       (pane) => pane.endpoint.serverScope.serverId === registration!.serverId,
     )?.endpoint;
     assert(target);
     assert.equal(target.semanticPaneId, defaultEndpoint.semanticPaneId);
+    stage = "secondary-seed";
     await secondary.seed();
     const received: InteractionJournalEntry[] = [],
       operationIds: string[] = [];
@@ -219,6 +235,7 @@ export async function qualifyCanonicalSshAttribution(options: {
       },
     });
     await stream.ready;
+    stage = "scoped-operations";
     for (let count = 0; count < 3; count++) {
       const intent = { kind: "read", target, source: null };
       const { handle } = await json("/api/v1/automation/reserve", { version: 1, intent });
@@ -266,6 +283,7 @@ export async function qualifyCanonicalSshAttribution(options: {
       if (receipt.phase === "observed")
         assert(receipt.proof?.operationKind === "workspace.pane.read");
     }
+    stage = "default-clock-barrier";
     before = changed().length;
     await options.stampRemoteDefault(`done:${Date.now()}`);
     await wait(() => changed().length > before, "Default mutation after nondefault events");
@@ -330,6 +348,7 @@ export async function qualifyCanonicalSshAttribution(options: {
   } catch (error) {
     primary = error;
     facts.ok = false;
+    facts.failureStage = stage;
     facts.failure = error instanceof Error ? error.message : String(error);
   } finally {
     const cleanup = async (name: string, action: () => unknown | Promise<unknown>) => {
