@@ -133,9 +133,14 @@ try:
  assert modes==call('display-message','-p','-t',pane,fmt).strip()
  values=modes.split();assert values[4]=='1' and values[5]=='0' and values[16]=='1',values
  # Already queued output is checked before committing new recovery offsets.
- # One large prior command, not an unbounded request flood.
+ # One large prior output, not an unbounded request flood. Expand a compact
+ # format so the sanitizer test measures the output-backlog guard rather
+ # than the upstream lexer's per-character reallocation of a 70k token.
  a.pause()
- blocked=a.execute('display-message -p '+shlex.quote('x'*70000)+' ; '+wrap(f'capture-pane -p -R -Q -S -10 -t {pane}'))
+ backlog_format='#{p10000:#{l:x}}'*7
+ backlog_output=('x'+' '*9999)*7
+ blocked=a.execute('display-message -p '+shlex.quote(backlog_format)+' ; '+wrap(f'capture-pane -p -R -Q -S -10 -t {pane}'))
+ assert blocked.count(backlog_output)==1,'expected exact 70000-byte queued output'
  assert any(l.startswith('%error ') for l in blocked),blocked[-5:]
  assert '%continue '+pane not in blocked
  assert snapshot(capture(a))['resumed']

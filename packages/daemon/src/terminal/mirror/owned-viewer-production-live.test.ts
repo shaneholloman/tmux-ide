@@ -113,7 +113,7 @@ it.skipIf(!binary)(
         subscription.sendText(`VIEWER_${label}`);
         subscription.sendKey("Enter");
         const backing = await subscription.captureNativeBacking();
-        expect(["ok", "changed"]).toContain(backing.status);
+        expect(["captured", "changed"]).toContain(backing.status);
         // This separate ordinary CLI connection is NOT the viewer, despite the same target and overlapping timing.
         const raw = run("tmux-ide-events", "-i", ";", "capture-pane", "-p", "-t", paneId);
         const rawIdentity = JSON.parse(raw.split("\n")[0]!);

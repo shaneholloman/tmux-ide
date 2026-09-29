@@ -126,7 +126,7 @@ it.skipIf(!binary).each(["native", "plain", "mixed"])(
         subscription.sendKey("Enter");
         if (representation === "native") {
           const backing = await subscription.captureNativeBacking();
-          expect(["ok", "changed"]).toContain(backing.status);
+          expect(["captured", "changed"]).toContain(backing.status);
         }
         expect(owner.atomicPaneSnapshot).toBe(true);
         await vi.waitFor(() => expect(events.some((event) => event.type === "seed")).toBe(true));
