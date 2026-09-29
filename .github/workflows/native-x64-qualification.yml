@@ -30,7 +30,6 @@ jobs:
       run:
         shell: bash
     env:
-      PROOF: ${{ runner.temp }}/native-x64-evidence
       TMPDIR: /tmp
       NATIVE_PLATFORM: ${{ matrix.platform }}
     steps:
@@ -46,6 +45,8 @@ jobs:
           bun-version-file: .bun-version
       - name: Record exact host and candidate
         run: |
+          export PROOF="$RUNNER_TEMP/native-x64-evidence"
+          echo "PROOF=$PROOF" >> "$GITHUB_ENV"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           mkdir -p "$PROOF"
           node scripts/lib/native-x64-qualification.mjs baseline "$PROOF"
@@ -99,6 +100,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: native-journal-${{ matrix.platform }}-${{ github.sha }}-${{ github.run_attempt }}
-          path: ${{ env.PROOF }}
+          path: ${{ runner.temp }}/native-x64-evidence
           if-no-files-found: error
           retention-days: 7
