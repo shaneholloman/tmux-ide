@@ -38,7 +38,7 @@ import {
 export function sparkTuiAdmission(frame: string): "home" | "terminal" | null {
   if (!/(?:^|[^A-Za-z0-9_.-])attribution-collision(?:$|[^A-Za-z0-9_.-])/u.test(frame)) return null;
   if (frame.includes("Your agents, across your machines")) return "home";
-  return /Terminals\s+F2/u.test(frame) && !frame.includes("PASSIVE PREVIEW") ? "terminal" : null;
+  return /\bF2\s+Terminals\b/u.test(frame) && !frame.includes("PASSIVE PREVIEW") ? "terminal" : null;
 }
 
 const execute = promisify(execFile);

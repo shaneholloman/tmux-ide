@@ -192,16 +192,17 @@ test("cleanup cancels observer work and refuses unsettled or new hooks", async (
 test("startup admits Home selection or sole-session automatic open without Enter in terminal", () => {
   assert.equal(
     sparkTuiAdmission(
-      "Home F1  Terminals F2\nYour agents, across your machines\nattribution-collision",
+      "F1 Home  F2 Terminals\nYour agents, across your machines\nattribution-collision",
     ),
     "home",
   );
-  assert.equal(sparkTuiAdmission("Home F1  Terminals F2\nattribution-collision\n$"), "terminal");
+  assert.equal(sparkTuiAdmission("F1 Home  F2 Terminals\nattribution-collision\n$"), "terminal");
   for (const frame of [
     "Loading attribution-collision",
-    "Terminals F2 attribution-collision PASSIVE PREVIEW",
-    "Terminals F2 another-session",
-    "Terminals F2 attribution-collision-other",
+    "Terminals F2 attribution-collision",
+    "F2 Terminals attribution-collision PASSIVE PREVIEW",
+    "F2 Terminals another-session",
+    "F2 Terminals attribution-collision-other",
     "Your agents, across your machines",
   ])
     assert.equal(sparkTuiAdmission(frame), null);
