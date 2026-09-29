@@ -322,7 +322,22 @@ try {
       assert.equal(oracleModes.bracketedPaste, true, "Producer mode probe did not execute");
       assert.equal(oracleModes.applicationCursor, true);
       assert.equal(oracleModes.applicationKeypad, true);
-      const [cols, rows] = shapes.at(-1)!;
+      const [cols, windowRows] = shapes.at(-1)!;
+      const geometry = tmux(
+        "display-message",
+        "-p",
+        "-t",
+        runtimePane,
+        "#{window_width}|#{window_height}|#{pane-border-status}|#{status}",
+      )
+        .trim()
+        .split("|");
+      assert.equal(Number(geometry[0]), cols);
+      assert.equal(Number(geometry[1]), windowRows, "Owning PTY final geometry was not applied");
+      assert.equal(geometry[3], "off", "Fixture unexpectedly gained a status line");
+      assert(["off", "top", "bottom"].includes(geometry[2]!));
+      // Workspace promotion installs a pane header; that row belongs to tmux chrome.
+      const rows = windowRows - (geometry[2] === "off" ? 0 : 1);
       assert.equal(oracle.cols, cols);
       assert.equal(oracle.rows, rows);
       const oracleGrid = oracle.grid
@@ -362,6 +377,8 @@ try {
         hashes: decoders.map((d) => d.state!.appliedHash),
         commits: decoders.map((d) => d.commits),
         oracleModes,
+        geometry,
+        windowRows,
         nativeDigest: createHash("sha256").update(raw).digest("hex"),
         cols,
         rows,
