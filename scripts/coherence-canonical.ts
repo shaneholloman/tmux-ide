@@ -316,9 +316,24 @@ try {
         modeValues.every((value) => value === "0" || value === "1"),
         "Native mode oracle unavailable",
       );
-      const oracleModes = Object.fromEntries(
-        Object.keys(modeFormats).map((key, index) => [key, modeValues[index] === "1"]),
+      assert.equal(
+        tmux(
+          "display-message",
+          "-p",
+          "-t",
+          runtimePane,
+          "#{mouse_any_flag}|#{mouse_sgr_flag}|#{mouse_utf8_flag}",
+        ).trim(),
+        "0|0|0",
+        "Producer unexpectedly enabled mouse reporting",
       );
+      const oracleModes = {
+        ...Object.fromEntries(
+          Object.keys(modeFormats).map((key, index) => [key, modeValues[index] === "1"]),
+        ),
+        mouseProtocol: "none",
+        mouseEncoding: "default",
+      };
       assert.equal(oracleModes.bracketedPaste, true, "Producer mode probe did not execute");
       assert.equal(oracleModes.applicationCursor, true);
       assert.equal(oracleModes.applicationKeypad, true);
@@ -357,6 +372,15 @@ try {
         assert.deepEqual(snapshot.modes, oracleModes);
         assert.equal(snapshot.cursor.hidden, modeValues.at(-1) === "0");
       }
+      assert.deepEqual(
+        observation.getObservationStatus()?.lastGap,
+        initialObservation?.lastGap,
+        "Native observation recorded a new gap during the workload",
+      );
+      assert.equal(
+        observation.getObservationStatus()?.droppedCount,
+        initialObservation?.droppedCount,
+      );
       finalHash = decoders[0]!.state!.appliedHash;
       await waitFor(
         "all final acknowledgements recorded by daemon",
