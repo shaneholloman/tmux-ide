@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { productRigReferenceEnvironment } from "./lib/product-rig-reference-environment.mjs";
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -306,14 +307,8 @@ async function readProductRigCoherentFrame() {
       "The explicit ProductTestRig state is not ready or lacks both coherent terminal marks.",
       budgets.coherentTerminalFrame,
     );
-  const productRigEnv = {
-    ...process.env,
-    TMUX_IDE_TESTDRIVE_RUNTIME_DIR: state.tui.runtimeDir,
-    TMUX_IDE_TESTDRIVE_HOST_SESSION: state.tui.hostSession,
-    TMUX_IDE_TESTDRIVE_HOST_SOCKET_PATH: state.runtimeNamespace.tmuxSocketPath,
-    TMUX_IDE_TESTDRIVE_USE_CANONICAL_DAEMON: "1",
-    TMUX_IDE_TESTDRIVE_CANONICAL_HOME: state.runtimeNamespace.daemonInfoDir,
-  };
+  const productRigEnv = productRigReferenceEnvironment(state);
+
   let warmup = null;
   const warmSamples = [];
   const rehostCount = budgets.coherentTerminalFrame.minimumWarmSamples + 1;
