@@ -17,6 +17,30 @@ export interface SessionRuntimeTraceContext {
   readonly authority: SessionRuntimeTraceAuthority;
 }
 
+export interface SessionRuntimeReseedDiagnostic {
+  readonly reason:
+    | "native-size-mismatch"
+    | "native-recapture-required"
+    | "missing-lease"
+    | "lease-crossed"
+    | "width-mismatch"
+    | "height-mismatch"
+    | "invalid-cursor";
+  readonly stage: "capture-qualification" | "before-commit";
+  readonly captureCols: number | null;
+  readonly captureRows: number | null;
+  readonly nativeCols: number | null;
+  readonly nativeRows: number | null;
+  readonly layoutCols: number | null;
+  readonly layoutRows: number | null;
+  readonly currentLayoutCols: number | null;
+  readonly currentLayoutRows: number | null;
+  readonly captureLeaseEpoch: number | null;
+  readonly currentLeaseEpoch: number | null;
+  readonly captureSubscriptionEpoch: number | null;
+  readonly currentSubscriptionEpoch: number | null;
+}
+
 export interface SessionRuntimeStageSpan {
   readonly traceId: string | null;
   readonly scenario: string | null;
@@ -30,6 +54,7 @@ export interface SessionRuntimeStageSpan {
   readonly sharedStartedAtMicros?: number;
   readonly sharedEndedAtMicros?: number;
   readonly operation: string;
+  readonly terminalReseed?: SessionRuntimeReseedDiagnostic;
   readonly terminalDelivery?: Readonly<{
     readonly representationCacheBytes?: number;
     readonly rawJournalBytes?: number;
@@ -171,6 +196,7 @@ export interface SessionRuntimeObservability {
     trace?: SessionRuntimeTraceContext | null,
     shared?: { readonly startedAtMicros: number; readonly endedAtMicros: number },
     terminalDelivery?: SessionRuntimeStageSpan["terminalDelivery"],
+    terminalReseed?: SessionRuntimeReseedDiagnostic,
   ): void;
   snapshot(): SessionRuntimeObservabilitySnapshot;
 }
@@ -228,6 +254,7 @@ export function createSessionRuntimeObservability(
       trace: SessionRuntimeTraceContext | null = null,
       shared?: { readonly startedAtMicros: number; readonly endedAtMicros: number },
       terminalDelivery?: SessionRuntimeStageSpan["terminalDelivery"],
+      terminalReseed?: SessionRuntimeReseedDiagnostic,
     ) {
       const span = Object.freeze({
         traceId: trace?.traceId ?? null,
@@ -247,6 +274,7 @@ export function createSessionRuntimeObservability(
             }
           : {}),
         ...(terminalDelivery ? { terminalDelivery: Object.freeze({ ...terminalDelivery }) } : {}),
+        ...(terminalReseed ? { terminalReseed: Object.freeze({ ...terminalReseed }) } : {}),
       });
       if (spans.length < capacity) spans.push(span);
       else {

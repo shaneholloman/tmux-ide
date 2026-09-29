@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DISABLED_SESSION_RUNTIME_OBSERVABILITY,
   createSessionRuntimeObservability,
+  type SessionRuntimeReseedDiagnostic,
 } from "./runtime-observability.ts";
 
 describe("session runtime observability", () => {
@@ -126,5 +127,65 @@ describe("session runtime observability", () => {
         },
       }),
     ]);
+  });
+});
+
+describe("reseed trace diagnostics", () => {
+  it("retains a frozen metadata snapshot through the daemon JSONL envelope and ring eviction", () => {
+    const lines: string[] = [];
+    const observer = createSessionRuntimeObservability({
+      capacity: 1,
+      processId: "daemon:test",
+      onSpan: (span) =>
+        lines.push(`${JSON.stringify({ version: 1, type: "performance.stage", ...span })}\n`),
+    });
+    const diagnostic: {
+      -readonly [K in keyof SessionRuntimeReseedDiagnostic]: SessionRuntimeReseedDiagnostic[K];
+    } = {
+      reason: "lease-crossed",
+      stage: "before-commit",
+      captureCols: 80,
+      captureRows: 24,
+      nativeCols: 80,
+      nativeRows: 24,
+      layoutCols: 80,
+      layoutRows: 24,
+      currentLayoutCols: 80,
+      currentLayoutRows: 24,
+      captureLeaseEpoch: 1,
+      currentLeaseEpoch: 2,
+      captureSubscriptionEpoch: 1,
+      currentSubscriptionEpoch: 1,
+    };
+    const expected = { ...diagnostic };
+    observer.recordSpan(
+      "reduce",
+      "terminal-replica-reseed-retry",
+      10,
+      10,
+      null,
+      undefined,
+      undefined,
+      diagnostic,
+    );
+    diagnostic.currentLeaseEpoch = 99;
+    expect(observer.snapshot().spans[0]?.terminalReseed).toEqual(expected);
+    expect(Object.isFrozen(observer.snapshot().spans[0]?.terminalReseed)).toBe(true);
+    observer.recordSpan("reduce", "ordinary-operation", 20, 20);
+    expect(observer.snapshot().droppedSpans).toBe(1);
+    expect(observer.snapshot().spans[0]).not.toHaveProperty("terminalReseed");
+    const records = lines
+      .join("")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(records).toHaveLength(2);
+    expect(records[0]).toMatchObject({
+      version: 1,
+      type: "performance.stage",
+      terminalReseed: expected,
+    });
+    expect(Object.keys(records[0].terminalReseed).sort()).toEqual(Object.keys(expected).sort());
+    expect(records[1]).not.toHaveProperty("terminalReseed");
   });
 });
