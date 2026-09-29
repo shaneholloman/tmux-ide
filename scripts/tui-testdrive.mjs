@@ -30,7 +30,10 @@ import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { buildTuiHostPublicationEvidence } from "./lib/tui-host-publication.mjs";
 import { runBoundedChildCommand } from "./lib/bounded-child-command.mjs";
-import { startupLaunchDiagnostic } from "./lib/startup-launch-diagnostic.mjs";
+import {
+  startupLaunchDiagnostic,
+  retainStartupParentState,
+} from "./lib/startup-launch-diagnostic.mjs";
 import {
   acquireClipboardPaneHook,
   ensureClipboardAcquisitionRollback,
@@ -1697,6 +1700,26 @@ async function start(args) {
     hostIdentity,
     ...(startupDiagnostic ? { startupDiagnosticPath: startupDiagnostic.path } : {}),
   };
+  // Retain the parent launch witness before readiness waits or later launches
+  // overwrite state.json. This is diagnostic overhead, never acceptance evidence.
+  if (startupDiagnostic) {
+    retainStartupParentState(startupDiagnosticRoot, {
+      version: 1,
+      timingQualification: false,
+      launchId,
+      parentPid: process.pid,
+      launchEpochMs,
+      launchMonotonicNs: launchMonotonicNs.toString(),
+      processId,
+      hostIdentity,
+      target,
+      runtime,
+      entry: launch.entry,
+      startedAt: metadataBase.startedAt,
+      startupDiagnosticPath: startupDiagnostic.path,
+      startedAtSemantics: "parent wall time after tmux returned; not child exec time",
+    });
+  }
   writeFileSync(
     metadataPath,
     `${JSON.stringify(

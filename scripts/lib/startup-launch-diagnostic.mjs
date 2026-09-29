@@ -1,6 +1,6 @@
 /** Optional qualification harness instrumentation; never changes product timing budgets. */
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
   appendFileSync,
@@ -21,12 +21,12 @@ const phases = [
   "tmux-start",
   "tmux-return",
 ];
-export function prepareStartupDiagnostic(root) {
+export function prepareStartupDiagnostic(root, { execFile = execFileSync } = {}) {
   assert(isAbsolute(root));
   mkdirSync(root, { mode: 0o700 });
   const source = fileURLToPath(new URL("./startup-preexec.c", import.meta.url));
   const binary = join(root, "preexec");
-  execFileSync(
+  execFile(
     "/usr/bin/cc",
     ["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", source, "-o", binary],
     {
@@ -38,9 +38,31 @@ export function prepareStartupDiagnostic(root) {
   );
   chmodSync(binary, 0o700);
   const hash = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
+  // Exercise only the reusable diagnostic wrapper, never the product. Its first
+  // loader/security cost must not masquerade as production tmux dispatch time.
+  const binarySha256 = hash(binary);
+  const prewarmId = randomUUID();
+  const prewarmPath = join(root, "trampoline-prewarm.jsonl");
+  writeFileSync(prewarmPath, "", { mode: 0o600, flag: "wx" });
+  execFile(binary, [prewarmPath, prewarmId, "/usr/bin/true"], {
+    timeout: 5000,
+    killSignal: "SIGKILL",
+    maxBuffer: 65536,
+    stdio: "pipe",
+  });
+  const prewarm = JSON.parse(readFileSync(prewarmPath, "utf8"));
+  assert(prewarm.version === 1 && prewarm.launchId === prewarmId && prewarm.phase === "pre-exec");
+  assert.equal(hash(binary), binarySha256, "Trampoline changed during prewarm");
   const provenance = {
     sourceSha256: hash(source),
-    binarySha256: hash(binary),
+    binarySha256,
+    trampolinePrewarm: {
+      target: "/usr/bin/true",
+      launchId: prewarmId,
+      logSha256: hash(prewarmPath),
+      productExecuted: false,
+      semantics: "wrapper warmed once before all product launches; diagnostic-only",
+    },
     compiler: "/usr/bin/cc",
     purpose: "diagnostic-only; trampoline and logging overhead included",
     timingQualification: false,
@@ -152,4 +174,32 @@ export function parseStartupLaunchDiagnostic(text, { launchId, lifecycleMarks })
       entryToTerminal: terminal.elapsedMs - entry.elapsedMs,
     },
   };
+}
+
+/** Exclusive per-launch snapshot; later active-state updates cannot replace it. */
+export function retainStartupParentState(root, parentState) {
+  assert(isAbsolute(root) && uuid.test(parentState.launchId));
+  const path = join(root, `${parentState.launchId}.parent.json`);
+  writeFileSync(path, `${JSON.stringify(parentState)}\n`, { mode: 0o600, flag: "wx" });
+  return path;
+}
+
+export function validateStartupParentWitness(diagnostic, parentState, state) {
+  const epoch = diagnostic.records.find((record) => record.phase === "launch-epoch");
+  assert(
+    epoch &&
+      parentState.version === 1 &&
+      parentState.timingQualification === false &&
+      parentState.launchId === diagnostic.launchId &&
+      parentState.launchId === state.launchId &&
+      parentState.parentPid === epoch.pid &&
+      parentState.launchEpochMs === epoch.atMs &&
+      parentState.launchMonotonicNs === epoch.monotonicNs &&
+      parentState.processId === state.processId &&
+      parentState.hostIdentity?.processId === parentState.processId &&
+      diagnostic.entry.processId === `opentui:${parentState.processId}` &&
+      parentState.startupDiagnosticPath === state.startupDiagnosticPath,
+    "Startup diagnostic parent witness mismatch",
+  );
+  return { ...diagnostic, parentState };
 }

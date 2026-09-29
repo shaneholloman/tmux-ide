@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
-import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   parseStartupLaunchDiagnostic,
+  retainStartupParentState,
+  validateStartupParentWitness,
   prepareStartupDiagnostic,
   startupLaunchDiagnostic,
 } from "./startup-launch-diagnostic.mjs";
@@ -110,7 +113,34 @@ test("native trampoline records its PID, preserves argv, and refuses redirected 
   const root = mkdtempSync(join(tmpdir(), "startup-marker-test-"));
   try {
     const directory = join(root, "private");
-    const provenance = prepareStartupDiagnostic(directory);
+    const executions = [];
+    const provenance = prepareStartupDiagnostic(directory, {
+      execFile: (file, args, options) => {
+        executions.push({ file, args });
+        return execFileSync(file, args, options);
+      },
+    });
+    assert.equal(executions.length, 2);
+    assert.equal(executions[0].file, "/usr/bin/cc");
+    assert.deepEqual(executions[1], {
+      file: join(directory, "preexec"),
+      args: [
+        join(directory, "trampoline-prewarm.jsonl"),
+        provenance.trampolinePrewarm.launchId,
+        "/usr/bin/true",
+      ],
+    });
+    const digest = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
+    assert.equal(digest(join(directory, "preexec")), provenance.binarySha256);
+    assert.equal(
+      digest(join(directory, "trampoline-prewarm.jsonl")),
+      provenance.trampolinePrewarm.logSha256,
+    );
+    assert.equal(provenance.trampolinePrewarm.productExecuted, false);
+    assert.equal(statSync(join(directory, "trampoline-prewarm.jsonl")).mode & 0o777, 0o600);
+    const prewarm = JSON.parse(readFileSync(join(directory, "trampoline-prewarm.jsonl"), "utf8"));
+    assert.equal(prewarm.phase, "pre-exec");
+    assert.equal(prewarm.launchId, provenance.trampolinePrewarm.launchId);
     assert.match(provenance.binarySha256, /^[0-9a-f]{64}$/u);
     const diagnostic = startupLaunchDiagnostic(directory, launchId);
     const wrapped = diagnostic.wrap({
@@ -135,6 +165,83 @@ test("native trampoline records its PID, preserves argv, and refuses redirected 
     assert.equal(rejected.status, 125);
     assert.equal(rejected.stdout, "");
     assert.throws(() => startupLaunchDiagnostic(directory, launchId), /EEXIST/u);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function parentFixture(root = "/private/diagnostic") {
+  const diagnostic = fixture().parse();
+  const parent = {
+    version: 1,
+    timingQualification: false,
+    launchId,
+    parentPid: 12,
+    launchEpochMs: 1000,
+    launchMonotonicNs: "0",
+    processId: 34,
+    hostIdentity: { processId: 34, paneId: "%1" },
+    startupDiagnosticPath: join(root, `${launchId}.jsonl`),
+  };
+  const state = { launchId, processId: 34, startupDiagnosticPath: parent.startupDiagnosticPath };
+  return { diagnostic, parent, state };
+}
+
+test("parent witness survives readiness failure and later active state overwrite", () => {
+  const root = mkdtempSync(join(tmpdir(), "startup-parent-test-"));
+  try {
+    const { diagnostic, parent, state } = parentFixture(root);
+    const path = retainStartupParentState(root, parent);
+    // No readiness result is required to retain the parent evidence.
+    const next = { ...parent, launchId: "20000000-0000-4000-8000-000000000001", processId: 99 };
+    retainStartupParentState(root, next);
+    writeFileSync(join(root, "state.json"), JSON.stringify(next));
+    const retained = JSON.parse(readFileSync(path, "utf8"));
+    assert.deepEqual(validateStartupParentWitness(diagnostic, retained, state).parentState, parent);
+    assert.throws(() => validateStartupParentWitness(diagnostic, next, state), /witness mismatch/u);
+    assert.throws(() => retainStartupParentState(root, parent), /EEXIST/u);
+    assert.equal(statSync(path).mode & 0o777, 0o600);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("parent witness rejects foreign launch, parent clock/PID and child identity", () => {
+  for (const mutation of [
+    { launchId: "20000000-0000-4000-8000-000000000001" },
+    { parentPid: 13 },
+    { launchEpochMs: 1001 },
+    { launchMonotonicNs: "1" },
+    { processId: 35 },
+    { hostIdentity: { processId: 35 } },
+    { startupDiagnosticPath: "/another/launch.jsonl" },
+    { timingQualification: true },
+  ]) {
+    const { diagnostic, parent, state } = parentFixture();
+    assert.throws(
+      () => validateStartupParentWitness(diagnostic, { ...parent, ...mutation }, state),
+      /witness mismatch/u,
+    );
+  }
+});
+
+test("failed trampoline prewarm aborts preparation before product can launch", () => {
+  const root = mkdtempSync(join(tmpdir(), "startup-prewarm-failure-"));
+  try {
+    let calls = 0;
+    assert.throws(
+      () =>
+        prepareStartupDiagnostic(join(root, "private"), {
+          execFile: (file, args, options) => {
+            calls += 1;
+            if (file === "/usr/bin/cc") return execFileSync(file, args, options);
+            assert.equal(args.at(-1), "/usr/bin/true");
+            throw new Error("prewarm timeout");
+          },
+        }),
+      /prewarm timeout/u,
+    );
+    assert.equal(calls, 2);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

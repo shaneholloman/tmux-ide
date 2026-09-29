@@ -9,7 +9,10 @@ import { fileURLToPath } from "node:url";
 import { referenceWorkspaceIntent } from "./lib/performance-reference-workspace.mjs";
 import { frameShowsTerminalFocus } from "./lib/packed-opentui-frame.mjs";
 import { referenceTarget } from "./lib/performance-reference-target.mjs";
-import { parseStartupLaunchDiagnostic } from "./lib/startup-launch-diagnostic.mjs";
+import {
+  parseStartupLaunchDiagnostic,
+  validateStartupParentWitness,
+} from "./lib/startup-launch-diagnostic.mjs";
 
 import {
   PERFORMANCE_STAGES,
@@ -360,10 +363,17 @@ async function measureStartup() {
             JSON.stringify({ ordinal, launchId: state.launchId, lifecycleMarks: marks }),
             { mode: 0o600, flag: "wx" },
           );
-          return parseStartupLaunchDiagnostic(readFileSync(expectedPath, "utf8"), {
+          const diagnostic = parseStartupLaunchDiagnostic(readFileSync(expectedPath, "utf8"), {
             launchId: state.launchId,
             lifecycleMarks: marks,
           });
+          const parentState = JSON.parse(
+            readFileSync(
+              join(options.startupDiagnosticRoot, `${state.launchId}.parent.json`),
+              "utf8",
+            ),
+          );
+          return validateStartupParentWitness(diagnostic, parentState, state);
         })()
       : null;
     rawSamples.push({
