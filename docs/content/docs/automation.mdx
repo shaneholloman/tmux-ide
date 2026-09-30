@@ -85,6 +85,11 @@ sender. Raw commands may have an unknown source. Server registrations and pane
 lifetimes keep evidence from separate tmux servers apart, even when their pane
 numbers match.
 
+With stock observation, typing through the tmux-ide viewer can also appear as
+“Send command · sender unknown.” This is a command observation, not evidence
+that another agent sent input. Exact viewer suppression requires native
+ownership evidence; stock client labels alone cannot establish the issuer.
+
 Experimental native observation uses a bounded metadata journal on a capable
 tmux server. It is disabled by default and must be selected explicitly. Replacing
 the tmux executable does not upgrade an already running server or enable this
