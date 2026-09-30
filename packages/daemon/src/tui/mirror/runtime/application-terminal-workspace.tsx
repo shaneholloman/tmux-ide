@@ -156,6 +156,7 @@ export function beginApplicationMouseIngress(
 }
 
 export interface ApplicationTerminalWorkspaceProps {
+  readonly interactionPaneName?: (endpoint: PaneInteractionEndpoint) => string | undefined;
   readonly nativePaneIdentities?: Accessor<ReadonlyMap<string, NativePaneIdentity>>;
   readonly interactionEndpoints?: Accessor<
     ReadonlyMap<string, Extract<InteractionPaneEndpoint, { kind: "pane" }>>
@@ -530,6 +531,8 @@ export function ApplicationTerminalWorkspace(props: ApplicationTerminalWorkspace
     epoch: number;
   } | null>(null);
   const paneName = (endpoint: PaneInteractionEndpoint) => {
+    const registeredName = props.interactionPaneName?.(endpoint);
+    if (registeredName) return registeredName;
     const current = props.interactionEndpoints?.().get(endpoint.semanticPaneId);
     return current && interactionPaneEndpointKey(current) === interactionPaneEndpointKey(endpoint)
       ? props.agentIndicators?.().get(endpoint.semanticPaneId)?.name

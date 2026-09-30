@@ -93,6 +93,8 @@ const displayLabel = z
 export const AutomationPanesResponseSchemaZ = z
   .object({
     version: z.literal(1),
+    // Resolved by the daemon from the invoking pane credential, never a title.
+    source: AutomationPaneEndpointSchemaZ.nullable().optional(),
     panes: z
       .array(
         z

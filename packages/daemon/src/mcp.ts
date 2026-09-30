@@ -11,7 +11,11 @@ import {
   AutomationInvocationError,
   type AutomationClient,
 } from "@tmux-ide/daemon-client/automation-client";
-import { localAutomationClient } from "./automation.ts";
+import {
+  localAutomationClient,
+  AutomationInvocationIntentSchemaZ,
+  resolveAutomationIntent,
+} from "./automation.ts";
 
 const result = (value: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(value) }],
@@ -53,12 +57,20 @@ export function createTmuxIdeMcpServer(client: AutomationClient): McpServer {
     "tmux_prepare",
     {
       description:
-        "Prepare a read or send and receive a generation-fenced operation handle. This does not send input. Save the handle before executing. A source claim requires this MCP process to hold that pane's valid credential; otherwise use source:null.",
-      inputSchema: z.object({ intent: AutomationOperationIntentSchemaZ }).strict(),
+        "Prepare a read or send and receive a generation-fenced operation handle. This does not send input. Save the handle before executing. Omit source to resolve this MCP process’s verified pane automatically, or use source:null for an unbound caller. Save the returned intent unchanged with the handle.",
+      inputSchema: z.object({ intent: AutomationInvocationIntentSchemaZ }).strict(),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
     },
     async ({ intent }, context) =>
-      call(() => client.reserve(intent, { signal: context.mcpReq.signal })),
+      call(async () => {
+        const resolved = await resolveAutomationIntent(intent, client, {
+          signal: context.mcpReq.signal,
+        });
+        return {
+          ...(await client.reserve(resolved, { signal: context.mcpReq.signal })),
+          intent: resolved,
+        };
+      }),
   );
   server.registerTool(
     "tmux_execute",

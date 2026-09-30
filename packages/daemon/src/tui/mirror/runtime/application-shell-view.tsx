@@ -608,6 +608,13 @@ export function ApplicationShellView(props: ApplicationShellViewProps): JSX.Elem
                       interactionObservation={props.interactionObservation}
                       paneInteractions={props.paneInteractions}
                       interactionEndpoints={interactionEndpoints}
+                      interactionPaneName={(endpoint) =>
+                        nameForCurrentEndpoint(
+                          props.machineSidebar?.groups().flatMap((group) => group.agents ?? []) ??
+                            [],
+                          endpoint,
+                        )
+                      }
                       nativePaneIdentities={nativePaneIdentities}
                       onSelectPane={props.onSelectPane}
                       onSelectWindowLink={props.onSelectWindowLink}

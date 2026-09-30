@@ -70,7 +70,7 @@ export function PaneInteraction(props: PaneInteractionProps) {
     () => props.event,
     () => props.theme,
   );
-  const detailsWidth = () => (props.onDetails && props.width >= 32 ? 9 : 0);
+  const detailsWidth = () => (props.onDetails && props.width >= 20 ? 9 : 0);
   return (
     <box width={props.width} height={1} flexShrink={0} flexDirection="row">
       <Badge

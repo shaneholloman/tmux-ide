@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { execFileSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import {
@@ -12,6 +13,7 @@ import {
   createAutomationClient,
   AutomationInvocationError,
   type AutomationClient,
+  type AutomationRequestOptions,
 } from "@tmux-ide/daemon-client/automation-client";
 import {
   canonicalDaemonUrl,
@@ -130,6 +132,30 @@ export async function readAutomationRequest(
   }
 }
 
+/** Omission requests discovery; explicit null deliberately keeps the caller unbound. */
+export const AutomationInvocationIntentSchemaZ = z.discriminatedUnion("kind", [
+  AutomationOperationIntentSchemaZ.options[0].extend({
+    source: AutomationOperationIntentSchemaZ.options[0].shape.source.optional(),
+  }),
+  AutomationOperationIntentSchemaZ.options[1].extend({
+    source: AutomationOperationIntentSchemaZ.options[1].shape.source.optional(),
+  }),
+]);
+export async function resolveAutomationIntent(
+  input: unknown,
+  client: AutomationClient,
+  options: AutomationRequestOptions = {},
+) {
+  const intent = AutomationInvocationIntentSchemaZ.parse(input);
+  return AutomationOperationIntentSchemaZ.parse({
+    ...intent,
+    source:
+      intent.source === undefined
+        ? ((await client.discover(options)).source ?? null)
+        : intent.source,
+  });
+}
+
 /** The CLI is a thin adapter; it never falls back to raw tmux after an uncertain effect. */
 export async function runAutomationCli(
   args: readonly string[],
@@ -204,13 +230,13 @@ export async function runAutomationCli(
       }
       return;
     }
-    const intent = AutomationOperationIntentSchemaZ.parse(input);
+    const intent = await resolveAutomationIntent(input, client);
     if (command !== "reserve" && intent.kind !== command)
       throw new IdeError("Automation command does not match intent kind", {
         code: "INVALID_REQUEST",
       });
     const reservation = await client.reserve(intent);
-    if (command === "reserve") output(reservation);
+    if (command === "reserve") output({ ...reservation, intent });
     else output(await client.execute(reservation.handle, intent));
   } catch (error) {
     if (error instanceof AutomationInvocationError) throw new AutomationCliError(error);

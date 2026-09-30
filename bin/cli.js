@@ -9845,6 +9845,8 @@ var init_automation_operations = __esm({
     ))();
     AutomationPanesResponseSchemaZ = /* @__PURE__ */ (() => z73.object({
       version: z73.literal(1),
+      // Resolved by the daemon from the invoking pane credential, never a title.
+      source: AutomationPaneEndpointSchemaZ.nullable().optional(),
       panes: z73.array(
         z73.object({
           endpoint: AutomationPaneEndpointSchemaZ,
@@ -11906,7 +11908,7 @@ var require_package = __commonJS({
   "package.json"(exports, module) {
     module.exports = {
       name: "tmux-ide",
-      version: "2.9.0-beta.46",
+      version: "2.9.0-beta.47",
       description: "A visual, agent-aware IDE for any tmux session, with optional workspace presets",
       type: "module",
       bin: {
@@ -76442,6 +76444,8 @@ function mountAutomationRoutes(app, options) {
     `${base2}/panes`,
     route(async (c) => {
       const panes = [];
+      const credential = c.req.header(PANE_SOURCE_CREDENTIAL_HEADER);
+      let source = null;
       for (const scope of await options.owners.refresh()) {
         if (!scope.generation) continue;
         await options.owners.withOwner(
@@ -76456,6 +76460,18 @@ function mountAutomationRoutes(app, options) {
                 pane.semanticPaneId
               );
               if (!endpoint) continue;
+              if (credential) {
+                const binding = owner.resolveInteractionSource(
+                  credential,
+                  endpoint.workspaceName,
+                  endpoint.semanticPaneId
+                );
+                if (binding && same4(binding.endpoint, endpoint)) {
+                  if (source && !same4(source, endpoint))
+                    throw new AutomationRequestError("invalid-source");
+                  source = endpoint;
+                }
+              }
               if (panes.length >= 4096) throw new AutomationRequestError("capacity");
               panes.push({
                 endpoint,
@@ -76466,7 +76482,8 @@ function mountAutomationRoutes(app, options) {
           }
         );
       }
-      return c.json(AutomationPanesResponseSchemaZ.parse({ version: 1, panes }));
+      if (credential && !source) throw new AutomationRequestError("invalid-source");
+      return c.json(AutomationPanesResponseSchemaZ.parse({ version: 1, panes, source }));
     })
   );
   app.post(
@@ -91498,11 +91515,14 @@ var init_automation_client = __esm({
 // packages/daemon/src/automation.ts
 var automation_exports = {};
 __export(automation_exports, {
+  AutomationInvocationIntentSchemaZ: () => AutomationInvocationIntentSchemaZ,
   invokingPaneCredential: () => invokingPaneCredential,
   localAutomationClient: () => localAutomationClient,
   readAutomationRequest: () => readAutomationRequest,
+  resolveAutomationIntent: () => resolveAutomationIntent,
   runAutomationCli: () => runAutomationCli
 });
+import { z as z109 } from "zod";
 import { execFileSync as execFileSync22 } from "node:child_process";
 import { parseArgs } from "node:util";
 function invokingPaneCredential(env = process.env) {
@@ -91564,6 +91584,13 @@ async function readAutomationRequest(input) {
   } catch {
     throw new IdeError("Expected a JSON automation request on stdin", { code: "INVALID_REQUEST" });
   }
+}
+async function resolveAutomationIntent(input, client, options = {}) {
+  const intent = AutomationInvocationIntentSchemaZ.parse(input);
+  return AutomationOperationIntentSchemaZ.parse({
+    ...intent,
+    source: intent.source === void 0 ? (await client.discover(options)).source ?? null : intent.source
+  });
 }
 async function runAutomationCli(args, dependencies = {}) {
   const { positionals: positionals2, values: values2 } = parseArgs({
@@ -91630,20 +91657,20 @@ async function runAutomationCli(args, dependencies = {}) {
       }
       return;
     }
-    const intent = AutomationOperationIntentSchemaZ.parse(input);
+    const intent = await resolveAutomationIntent(input, client);
     if (command3 !== "reserve" && intent.kind !== command3)
       throw new IdeError("Automation command does not match intent kind", {
         code: "INVALID_REQUEST"
       });
     const reservation = await client.reserve(intent);
-    if (command3 === "reserve") output(reservation);
+    if (command3 === "reserve") output({ ...reservation, intent });
     else output(await client.execute(reservation.handle, intent));
   } catch (error) {
     if (error instanceof AutomationInvocationError) throw new AutomationCliError(error);
     throw error;
   }
 }
-var AutomationCliError;
+var AutomationCliError, AutomationInvocationIntentSchemaZ;
 var init_automation2 = __esm({
   "packages/daemon/src/automation.ts"() {
     "use strict";
@@ -91662,6 +91689,14 @@ var init_automation2 = __esm({
         return { ...super.toJSON(), handle: this.handle };
       }
     };
+    AutomationInvocationIntentSchemaZ = z109.discriminatedUnion("kind", [
+      AutomationOperationIntentSchemaZ.options[0].extend({
+        source: AutomationOperationIntentSchemaZ.options[0].shape.source.optional()
+      }),
+      AutomationOperationIntentSchemaZ.options[1].extend({
+        source: AutomationOperationIntentSchemaZ.options[1].shape.source.optional()
+      })
+    ]);
   }
 });
 
@@ -91673,7 +91708,7 @@ __export(mcp_exports, {
 });
 import { McpServer } from "@modelcontextprotocol/server";
 import { serveStdio, StdioServerTransport } from "@modelcontextprotocol/server/stdio";
-import { z as z109 } from "zod";
+import { z as z110 } from "zod";
 async function call(work) {
   try {
     return result(await work());
@@ -91696,7 +91731,7 @@ function createTmuxIdeMcpServer(client) {
     "tmux_panes",
     {
       description: "Discover current panes across this daemon's tmux servers. Use returned endpoint objects unchanged; names and native pane numbers are not unique identities.",
-      inputSchema: z109.object({}).strict(),
+      inputSchema: z110.object({}).strict(),
       annotations: { readOnlyHint: true, idempotentHint: true }
     },
     async (_args, context) => call(() => client.discover({ signal: context.mcpReq.signal }))
@@ -91704,17 +91739,25 @@ function createTmuxIdeMcpServer(client) {
   server.registerTool(
     "tmux_prepare",
     {
-      description: "Prepare a read or send and receive a generation-fenced operation handle. This does not send input. Save the handle before executing. A source claim requires this MCP process to hold that pane's valid credential; otherwise use source:null.",
-      inputSchema: z109.object({ intent: AutomationOperationIntentSchemaZ }).strict(),
+      description: "Prepare a read or send and receive a generation-fenced operation handle. This does not send input. Save the handle before executing. Omit source to resolve this MCP process\u2019s verified pane automatically, or use source:null for an unbound caller. Save the returned intent unchanged with the handle.",
+      inputSchema: z110.object({ intent: AutomationInvocationIntentSchemaZ }).strict(),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false }
     },
-    async ({ intent }, context) => call(() => client.reserve(intent, { signal: context.mcpReq.signal }))
+    async ({ intent }, context) => call(async () => {
+      const resolved2 = await resolveAutomationIntent(intent, client, {
+        signal: context.mcpReq.signal
+      });
+      return {
+        ...await client.reserve(resolved2, { signal: context.mcpReq.signal }),
+        intent: resolved2
+      };
+    })
   );
   server.registerTool(
     "tmux_execute",
     {
       description: "Execute a prepared read or send using its exact handle and unchanged intent. Sends may run terminal commands. On uncertainty, check status or retry this same handle; never prepare another operation. Read text is returned once; replay returns metadata only. A completed send is command completion, not proof the recipient consumed it.",
-      inputSchema: z109.object({
+      inputSchema: z110.object({
         handle: AutomationOperationHandleSchemaZ,
         intent: AutomationOperationIntentSchemaZ
       }).strict(),
@@ -91726,7 +91769,7 @@ function createTmuxIdeMcpServer(client) {
     "tmux_operation_status",
     {
       description: "Look up a prepared operation without repeating its effect. Status contains no sent or captured text. Outcome-unknown includes expired retention and must not be interpreted as not executed.",
-      inputSchema: z109.object({ handle: AutomationOperationHandleSchemaZ }).strict(),
+      inputSchema: z110.object({ handle: AutomationOperationHandleSchemaZ }).strict(),
       annotations: { readOnlyHint: true, idempotentHint: true }
     },
     async ({ handle }, context) => call(() => client.status(handle, { signal: context.mcpReq.signal }))
@@ -91735,9 +91778,9 @@ function createTmuxIdeMcpServer(client) {
     "tmux_interactions",
     {
       description: "Read at most one batch of scoped interaction metadata, optionally waiting for new events. Carry the returned cursor into the next call. Gaps explicitly mean missing history; these events contain no terminal contents.",
-      inputSchema: z109.object({
+      inputSchema: z110.object({
         resume: TmuxInteractionCursorSchemaZ,
-        waitMs: z109.number().int().min(1).max(3e4).default(1e3)
+        waitMs: z110.number().int().min(1).max(3e4).default(1e3)
       }).strict(),
       annotations: { readOnlyHint: true, idempotentHint: true }
     },

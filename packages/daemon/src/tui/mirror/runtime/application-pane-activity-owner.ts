@@ -1,3 +1,4 @@
+import { receiptIsHeaderWorthy } from "../ui/pane-interaction-presentation.ts";
 import { applicationMachineAuthorityManager } from "./application-machine-authority.ts";
 import { canonicalDaemonUrl } from "../../../lib/canonical-daemon.ts";
 import type {
@@ -164,7 +165,12 @@ export function createApplicationPaneActivityOwner(
           endpoint: Extract<InteractionPaneEndpoint, { kind: "pane" }>,
           nativeIdentity?: NativePaneIdentity | null,
         ) => {
-          const value = interactionForPane(snapshot, endpoint, nativeIdentity);
+          const value = interactionForPane(
+            snapshot,
+            endpoint,
+            nativeIdentity,
+            receiptIsHeaderWorthy,
+          );
           return value && interactionPresenceIsFresh(value, Date.now()) ? value : undefined;
         },
       }),
@@ -181,7 +187,7 @@ export function createApplicationPaneActivityOwner(
     const deadlines = [
       ...current.map(([, value]) => Date.parse(value.at) + INTERACTION_PRESENCE_MS),
       ...feed.activity
-        .filter((entry) => entry.type === "interaction.evidence")
+        .filter((entry) => entry.type === "interaction.evidence" && receiptIsHeaderWorthy(entry))
         .map((entry) => Date.parse(interactionActivityAt(entry)) + INTERACTION_PRESENCE_MS),
     ].filter((deadline) => deadline >= now && deadline <= now + INTERACTION_PRESENCE_MS);
     if (deadlines.length)
@@ -237,7 +243,7 @@ export function createApplicationPaneActivityOwner(
             receipt.operationKind === "workspace.pane.read" ||
             receipt.operationKind === "workspace.pane.send"
           )
-            feed = reduceInteractionReceipt(feed, receipt);
+            feed = reduceInteractionReceipt(feed, receipt, receiptIsHeaderWorthy);
         }
         entry.attempts = 0;
         publish();

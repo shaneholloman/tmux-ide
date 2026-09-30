@@ -354,3 +354,16 @@ describe("daemon automation routes", () => {
     expect(f.records[0]!.submit).not.toHaveBeenCalled();
   });
 });
+
+it("discovers the verified invoking source across servers and rejects stale credentials", async () => {
+  const f = fixture();
+  const unknown = await (await f.request("/panes")).json();
+  expect(unknown.source).toBeNull();
+  const source = f.records[1]!;
+  const response = await f.request("/panes", undefined, "owner", "secret1");
+  expect(response.status).toBe(200);
+  expect((await response.json()).source).toEqual(source.endpoint);
+  const stale = await f.request("/panes", undefined, "owner", "stale");
+  expect(stale.status).toBe(409);
+  expect(await stale.json()).toEqual({ error: { code: "invalid-source" } });
+});

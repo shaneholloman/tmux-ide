@@ -2251,7 +2251,7 @@ it("interaction details own terminal keys and retire with the renderer generatio
   const event: PaneInteractionProjection = {
     paneId: "pane.a",
     endpoint: endpoint("pane.a"),
-    sourceEndpoint: null,
+    sourceEndpoint: endpoint("pane.reader"),
     destinationEndpoint: endpoint("pane.a"),
     effect: { kind: "input-enqueued" },
     operationKey: "input",
@@ -2260,7 +2260,7 @@ it("interaction details own terminal keys and retire with the renderer generatio
     phase: "observed",
     origin: "external",
     direction: "incoming",
-    sourcePaneId: null,
+    sourcePaneId: "pane.reader",
     destinationPaneId: "pane.a",
     at: new Date().toISOString(),
     sequence: 1,
@@ -2277,6 +2277,9 @@ it("interaction details own terminal keys and retire with the renderer generatio
         focusedPane="pane.a"
         theme={theme}
         palette={createTerminalPaletteProjection(theme)}
+        interactionPaneName={(source) =>
+          source.semanticPaneId === "pane.reader" ? "Codex" : undefined
+        }
         interactionEndpoints={() => new Map([["pane.a", endpoint("pane.a")]])}
         paneInteractions={() => new Map([[interactionPaneEndpointKey(endpoint("pane.a")), event]])}
         onSelectPane={() => {}}
@@ -2289,6 +2292,7 @@ it("interaction details own terminal keys and retire with the renderer generatio
     { width: 80, height: 24 },
   );
   await setup.renderOnce();
+  expect(setup.captureCharFrame()).toContain("Input from Codex");
   const rows = setup.captureCharFrame().split("\n");
   const y = rows.findIndex((line) => line.includes("Details"));
   expect(y).toBeGreaterThanOrEqual(0);

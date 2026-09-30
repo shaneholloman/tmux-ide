@@ -379,6 +379,7 @@ export function paneInteractionRelationshipLabel(
 export function reduceInteractionReceipt(
   previous: InteractionFeedState,
   raw: InteractionJournalEntry,
+  project: (entry: InteractionJournalEntry) => boolean = () => true,
 ): InteractionFeedState {
   const receipt = InteractionJournalEntrySchemaZ.parse(raw);
   const ownerKey = receiptOwnerKey(receipt);
@@ -427,6 +428,7 @@ export function reduceInteractionReceipt(
   const destination = evidence?.endpoints.destination;
   const operationKind = interactionActivityOperationKind(receipt);
   if (
+    !project(receipt) ||
     interactionIsViewerActivity(receipt) ||
     (receipt.type === "interaction.receipt" && receipt.target.kind !== "pane") ||
     (operationKind !== "workspace.pane.send" && operationKind !== "workspace.pane.read") ||
@@ -468,6 +470,7 @@ export function interactionForPane(
   state: InteractionFeedState,
   endpoint: ResolvedInteractionEndpoint,
   nativeIdentity?: NativePaneIdentity | null,
+  project: (entry: InteractionJournalEntry) => boolean = () => true,
 ): PaneInteractionProjection | null {
   const semantic = state.panes[interactionPaneEndpointKey(endpoint)] ?? null;
   if (!nativeIdentity) return semantic;
@@ -481,7 +484,12 @@ export function interactionForPane(
   // At most INTERACTION_ACTIVITY_LIMIT entries. Current aliases are never written back
   // into retained history; a linked physical pane can appear in several sessions.
   for (const entry of state.activity) {
-    if (entry.type !== "interaction.evidence" || interactionIsViewerActivity(entry)) continue;
+    if (
+      entry.type !== "interaction.evidence" ||
+      interactionIsViewerActivity(entry) ||
+      !project(entry)
+    )
+      continue;
     const evidence = entry.evidence;
     const destination = evidence.endpoints.destination;
     if (destination.kind !== "native-pane" || interactionNativePaneEndpointKey(destination) !== key)

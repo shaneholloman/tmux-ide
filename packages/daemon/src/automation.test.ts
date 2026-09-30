@@ -147,3 +147,41 @@ describe("automation CLI adapter", () => {
     await expect(readAutomationRequest(malformed())).rejects.toThrow("Expected a JSON");
   });
 });
+
+describe("automatic source identity", () => {
+  it("resolves omitted source and returns the exact intent to persist with a reservation", async () => {
+    const client = fakeClient();
+    const source = { ...target, kind: "pane" as const, semanticPaneId: "pane.codex" };
+    client.discover.mockResolvedValue({ version: 1, panes: [], source } as never);
+    const output = vi.fn();
+    const request = {
+      kind: intent.kind,
+      target: intent.target,
+      text: intent.text,
+      enter: intent.enter,
+    };
+    await runAutomationCli(["reserve"], { client, input: input(request), output });
+    const resolved = { ...request, source };
+    expect(client.reserve).toHaveBeenCalledExactlyOnceWith(resolved);
+    expect(output).toHaveBeenCalledWith({ version: 1, handle, intent: resolved });
+    expect(client.execute).not.toHaveBeenCalled();
+  });
+  it("preserves explicit null without discovery", async () => {
+    const client = fakeClient();
+    await runAutomationCli(["send"], { client, input: input(intent), output: () => {} });
+    expect(client.discover).not.toHaveBeenCalled();
+  });
+  it("does not reserve or execute when identity discovery fails", async () => {
+    const client = fakeClient();
+    client.discover.mockRejectedValue(new AutomationInvocationError("invalid-source", null));
+    const request = {
+      kind: intent.kind,
+      target: intent.target,
+      text: intent.text,
+      enter: intent.enter,
+    };
+    await expect(runAutomationCli(["send"], { client, input: input(request) })).rejects.toThrow();
+    expect(client.reserve).not.toHaveBeenCalled();
+    expect(client.execute).not.toHaveBeenCalled();
+  });
+});

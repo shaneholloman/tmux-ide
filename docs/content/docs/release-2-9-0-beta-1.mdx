@@ -1,15 +1,24 @@
 ---
 title: OpenTUI 2.9 beta
-description: The current 2.9.0-beta.46 package and earlier OpenTUI beta highlights
+description: The current 2.9.0-beta.47 package and earlier OpenTUI beta highlights
 ---
 
-The current package is `2.9.0-beta.46`. It ships an OpenTUI client around ordinary tmux
+The current package is `2.9.0-beta.47`. It ships an OpenTUI client around ordinary tmux
 sessions. tmux owns PTYs, processes, topology, and persistence. Each machine has
 its own daemon, which publishes workspace state and pane streams. The local TUI
 connects through SSH tunnels and owns presentation and input.
 
 The highlights below retain the beta versions in which they were introduced;
 they are not a complete changelog for the current package.
+
+## Introduced in beta.47
+
+Pane headers and Home indicators show brief, attributed interactions while ordinary
+viewer input and unknown command observations stay in activity history. CLI and
+MCP callers can omit `source` to resolve their invoking pane automatically; save
+the resolved intent returned with the reservation for execution and retries.
+Reader names resolve across sessions. External desktop clients without a verified
+tmux pane remain unidentified; external-client registration is not included.
 
 ## Introduced in beta.46
 

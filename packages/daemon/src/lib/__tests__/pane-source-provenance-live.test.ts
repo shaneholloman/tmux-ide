@@ -346,7 +346,9 @@ describe.skipIf(!hasTmux).sequential("authenticated pane provenance, full daemon
     const replacement = run(["split-window", "-d", "-P", "-F", "#{pane_id}", "-t", latePane]);
     run(["kill-pane", "-t", latePane]);
     run(["set-option", "-p", "-t", replacement, "@tmux_ide_pane_id", "pane.late"]);
-    const updated = (await client.discover()).panes.find(
+    await expect(client.discover()).rejects.toMatchObject({ code: "invalid-source" });
+    const inspector = createAutomationClient({ baseUrl: handle.apiBaseUrl, ownerToken });
+    const updated = (await inspector.discover()).panes.find(
       (pane) => pane.endpoint.semanticPaneId === "pane.late",
     )!.endpoint;
     expect(updated.paneLifetimeId).not.toBe(source.paneLifetimeId);

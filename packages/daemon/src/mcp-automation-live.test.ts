@@ -1,3 +1,8 @@
+import {
+  paneInteractionPresentation,
+  receiptPaneInteraction,
+  receiptIsHeaderWorthy,
+} from "./tui/mirror/ui/pane-interaction-presentation.ts";
 import { createServer, type ServerResponse } from "node:http";
 import { PassThrough } from "node:stream";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -15,6 +20,7 @@ import {
   TmuxServerInteractionEventSchemaZ,
   AutomationPanesResponseSchemaZ,
   AutomationReserveResponseSchemaZ,
+  AutomationOperationIntentSchemaZ,
   AutomationExecuteResponseSchemaZ,
   AutomationStatusResponseSchemaZ,
   type AutomationOperationIntent,
@@ -272,9 +278,9 @@ for line in sys.stdin.buffer:
           text,
           enter: true,
         };
-        const prepared = AutomationReserveResponseSchemaZ.parse(
-          toolValue(await callTool("tmux_prepare", { intent })),
-        );
+        const prepared = AutomationReserveResponseSchemaZ.extend({
+          intent: AutomationOperationIntentSchemaZ,
+        }).parse(toolValue(await callTool("tmux_prepare", { intent })));
         preparedHandles.push(JSON.stringify(prepared.handle));
         disrupt = mode === "drop" ? "drop" : "hold";
         committedResponse = null;
@@ -363,9 +369,10 @@ for line in sys.stdin.buffer:
       await vi.waitFor(() => expect(activeStreams).toBe(0));
       expect(openedStreams).toBe(2);
       const intent: AutomationOperationIntent = { kind: "read", target, source };
-      const prepared = AutomationReserveResponseSchemaZ.parse(
-        toolValue(await callTool("tmux_prepare", { intent })),
-      );
+      const prepared = AutomationReserveResponseSchemaZ.extend({
+        intent: AutomationOperationIntentSchemaZ,
+      }).parse(toolValue(await callTool("tmux_prepare", { intent: { kind: "read", target } })));
+      expect(prepared.intent).toEqual(intent);
       preparedHandles.push(JSON.stringify(prepared.handle));
       const first = AutomationExecuteResponseSchemaZ.parse(
         toolValue(await callTool("tmux_execute", { handle: prepared.handle, intent })),
@@ -388,6 +395,16 @@ for line in sys.stdin.buffer:
         operationKind: "workspace.pane.read",
         evidence: { endpoints: { source, destination: target } },
       });
+      expect(receiptIsHeaderWorthy(readReceipt!)).toBe(true);
+      const display = receiptPaneInteraction(readReceipt!, target)!;
+      expect(
+        paneInteractionPresentation(display, (endpoint) =>
+          endpoint.semanticPaneId === source.semanticPaneId &&
+          endpoint.serverScope.serverId === source.serverScope.serverId
+            ? "Codex"
+            : "Tests",
+        ).label,
+      ).toBe("Read by Codex");
       const readStatus = toolValue(
         await callTool("tmux_operation_status", { handle: prepared.handle }),
       );

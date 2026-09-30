@@ -132,9 +132,13 @@ export function paneInteractionPresentation(
   // caller consumed captured output. Keep that limit visible on every surface.
   if (event.effect.kind === "unknown" && event.phase === "observed") {
     return {
-      label: read ? "Read command · reader unknown" : "Send command · sender unknown",
+      label: source
+        ? `${read ? "Read" : "Send"} command from ${source}`
+        : read
+          ? "Read command · reader unknown"
+          : "Send command · sender unknown",
       compactLabel: read ? "Read command" : "Send command",
-      source: "Unknown",
+      source: source ?? "Unknown",
       target,
       pending,
       failed,
@@ -254,4 +258,33 @@ export function nameForCurrentEndpoint(
     (row) => row.interactionEndpoint && interactionPaneEndpointKey(row.interactionEndpoint) === key,
   );
   return matches.length === 1 ? matches[0]!.name : undefined;
+}
+
+/** Chrome is reserved for completed, attributed interactions between distinct panes.
+ * Unknown commands remain in Activity; hiding them is not sender attribution. */
+export function paneInteractionIsHeaderWorthy(event: PaneInteractionEvent): boolean {
+  const source = event.sourceEndpoint;
+  const target = paneInteractionDisplayDestination(event);
+  return (
+    event.phase === "observed" &&
+    event.effect.kind !== "no-input" &&
+    (event.effect.kind !== "unknown" || event.origin !== "external") &&
+    event.origin !== "tui" &&
+    source !== null &&
+    (!target || interactionPaneEndpointKey(source) !== interactionPaneEndpointKey(target))
+  );
+}
+export function receiptIsHeaderWorthy(receipt: InteractionJournalEntry): boolean {
+  const source = receipt.evidence?.endpoints.source;
+  const target = receipt.evidence?.endpoints.destination;
+  return (
+    (receipt.type === "interaction.evidence" ||
+      (receipt.phase === "observed" && receipt.origin !== "tui")) &&
+    (receipt.evidence?.effect.kind !== "unknown" ||
+      (receipt.type === "interaction.receipt" && receipt.origin !== "external")) &&
+    receipt.evidence?.effect.kind !== "no-input" &&
+    source?.kind === "pane" &&
+    (target?.kind !== "pane" ||
+      interactionPaneEndpointKey(source) !== interactionPaneEndpointKey(target))
+  );
 }

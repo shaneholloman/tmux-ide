@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import {
   paneInteractionPresentation,
+  paneInteractionIsHeaderWorthy,
   interactionCoveragePresentation,
   type PaneInteractionEvent,
 } from "./pane-interaction-presentation.ts";
@@ -134,4 +135,39 @@ it("separates current observation coverage from event claims", () => {
       effects: ["input-enqueued"],
     }).detail,
   ).toContain("does not identify its caller");
+});
+
+it("reserves chrome for completed attributed cross-pane effects", () => {
+  const completed = { ...event, phase: "observed" as const, origin: "cli" as const };
+  expect(paneInteractionIsHeaderWorthy(completed)).toBe(true);
+  expect(paneInteractionIsHeaderWorthy(event)).toBe(false);
+  expect(paneInteractionIsHeaderWorthy({ ...completed, sourceEndpoint: null })).toBe(false);
+  expect(
+    paneInteractionIsHeaderWorthy({
+      ...completed,
+      origin: "external",
+      effect: { kind: "unknown" },
+    }),
+  ).toBe(false);
+  expect(paneInteractionIsHeaderWorthy({ ...completed, origin: "tui" })).toBe(false);
+  expect(
+    paneInteractionIsHeaderWorthy({
+      ...completed,
+      sourceEndpoint: completed.destinationEndpoint as typeof completed.sourceEndpoint,
+    }),
+  ).toBe(false);
+});
+
+it("names an authored send without claiming application delivery", () => {
+  const send = {
+    ...event,
+    phase: "observed" as const,
+    origin: "cli" as const,
+    operationKind: "workspace.pane.send" as const,
+    effect: { kind: "unknown" as const },
+  };
+  expect(paneInteractionIsHeaderWorthy(send)).toBe(true);
+  const value = paneInteractionPresentation(send, name);
+  expect(value.label).toBe("Send command from Codex");
+  expect(value.explanation).toContain("not confirmed");
 });

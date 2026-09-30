@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2.9.0-beta.47
+
+- Keep pane headers and Home indicators quiet while you type: unknown tmux command observations remain in activity history instead of displacing named interactions.
+- Show one brief, attributed interaction between panes; repeated reads reuse the indicator and viewer or same-pane activity stays out of chrome.
+- Resolve the invoking pane automatically for CLI and MCP reads/sends when `source` is omitted. Reservations return the resolved intent for safe, unchanged execution and retries; explicit `source: null` keeps the caller unidentified.
+- Resolve reader names across sessions using scoped fleet identities, and reject stale source credentials instead of guessing an identity.
+- Fix a stale bundled-tmux test mock uncovered by the full check.
+
+External desktop clients without a verified tmux pane still remain unidentified; external-client registration is not included. Native observation remains opt-in, and the beta.46 platform qualification limits still apply.
+
 ## 2.9.0-beta.46
 
 - Add a shared automation API for scoped pane discovery, reads, sends, operation status and interaction history, with CLI and stdio MCP adapters and a packageable SDK.

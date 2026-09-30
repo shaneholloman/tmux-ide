@@ -115,16 +115,17 @@ describe("pane title hierarchy polish", () => {
       let opened = 0;
       const { setup, theme, title } = await header(mode, {
         selected: true,
+        paneName: () => "Codex",
         activity: "idle",
         width: 80,
         onMenuIntent: () => opened++,
         interaction: {
           paneId: "pane.polish",
           direction: "incoming",
-          sourcePaneId: null,
+          sourcePaneId: "pane.reader",
           destinationPaneId: "pane.polish",
           endpoint: endpoint("pane.polish"),
-          sourceEndpoint: null,
+          sourceEndpoint: endpoint("pane.reader"),
           destinationEndpoint: endpoint("pane.polish"),
           effect: { kind: "input-enqueued" },
           operationKey: "test",
@@ -139,13 +140,13 @@ describe("pane title hierarchy polish", () => {
       });
       try {
         const spans = setup.captureSpans().lines[0]!.spans;
-        const receipt = spans.find((span) => span.text.includes("Input observed"))!;
+        const receipt = spans.find((span) => span.text.includes("Input from Codex"))!;
         const menu = spans.find((span) => span.text.includes("⋯"))!;
         expect(colorKey(title().bg)).toBe(colorKey(theme.roles.selection.selection));
         expect(colorKey(receipt.bg)).toBe(colorKey(theme.roles.surfaces.panel));
         expect(colorKey(menu.bg)).toBe(colorKey(theme.roles.surfaces.panelRaised));
         expect(colorKey(menu.fg)).toBe(colorKey(theme.roles.text.primary));
-        expect(setup.captureCharFrame()).toContain("Input observed");
+        expect(setup.captureCharFrame()).toContain("Input from Codex");
         await setup.mockMouse.click(78, 0, MouseButtons.LEFT);
         expect(opened).toBe(1);
       } finally {
@@ -403,17 +404,25 @@ describe("receipt presence lifetime", () => {
         schemaVersion: 1,
         interactionId: "10000000-0000-4000-8000-000000000001",
         revision: 0,
-        actor: { kind: "unknown", reason: "stock-hook" },
-        endpoints: { source: null, destination: endpoint("pane.alpha") },
-        observation: { kind: "stock-hook", command: "send-keys" },
-        effect: { kind: "unknown" },
+        actor: {
+          kind: "cooperative",
+          bindingId: "00000000-0000-4000-8000-000000000001",
+          agentRunId: null,
+        },
+        endpoints: { source: endpoint("pane.reader"), destination: endpoint("pane.alpha") },
+        observation: {
+          kind: "cooperative-completion",
+          operationId: "10000000-0000-4000-8000-000000000001",
+          verification: "daemon-input-enqueue",
+        },
+        effect: { kind: "input-enqueued" },
         occurredAt: null,
         timeBasis: "unknown",
         receivedAt: new Date().toISOString(),
       },
       sequence: 1,
       operationId: "10000000-0000-4000-8000-000000000001",
-      origin: "external",
+      origin: "sdk",
       workspaceName: "alpha",
       sourceSemanticPaneId: null,
       target: { kind: "pane", semanticPaneId: "pane.alpha" },
@@ -435,12 +444,20 @@ describe("receipt presence lifetime", () => {
     receipt = {
       ...receipt,
       sequence: 2,
-      evidence: { ...receipt.evidence!, interactionId: "10000000-0000-4000-8000-000000000002" },
+      evidence: {
+        ...receipt.evidence!,
+        interactionId: "10000000-0000-4000-8000-000000000002",
+        observation: {
+          kind: "cooperative-completion",
+          operationId: "10000000-0000-4000-8000-000000000002",
+          verification: "daemon-input-enqueue",
+        },
+      },
       operationId: "10000000-0000-4000-8000-000000000002",
       at: new Date().toISOString(),
     };
     notify();
-    expect(visible().size).toBe(1);
+    expect(visible().size).toBe(2);
     setHost([]);
     expect(visible().size).toBe(0);
     expect(closed).toBe(1);
@@ -453,10 +470,10 @@ describe("pane activity labels", () => {
     const [interaction, setInteraction] = createSignal<PaneTitleBarProps["interaction"]>({
       paneId: "pane.alpha",
       direction: "incoming",
-      sourcePaneId: null,
+      sourcePaneId: "pane.reader",
       destinationPaneId: "pane.alpha",
       endpoint: endpoint("pane.alpha"),
-      sourceEndpoint: null,
+      sourceEndpoint: endpoint("pane.reader"),
       destinationEndpoint: endpoint("pane.alpha"),
       effect: { kind: "input-enqueued" },
       operationKey: "test",
@@ -480,6 +497,7 @@ describe("pane activity labels", () => {
           terminalFocused={false}
           keyboardFocused={false}
           interaction={interaction()}
+          paneName={() => "Codex"}
           menuAnchor={{ x: 79, y: 0 }}
           onSelectIntent={() => {}}
           onMenuIntent={() => {}}
@@ -489,18 +507,26 @@ describe("pane activity labels", () => {
     );
     try {
       await setup.renderOnce();
-      expect(setup.captureCharFrame()).toContain("Pane read");
-      const badge = setup.renderer.root.findDescendantById("ui-badge:Pane read · reader unknown");
+      expect(setup.captureCharFrame()).toContain("Read by Codex");
+      const badge = setup.renderer.root.findDescendantById("ui-badge:Read by Codex");
       expect(badge).toBeDefined();
       setInteraction({ ...interaction()!, sequence: 2, operationId: "next-read" });
       await setup.renderOnce();
-      expect(setup.renderer.root.findDescendantById("ui-badge:Pane read · reader unknown")).toBe(
-        badge,
-      );
+      expect(setup.renderer.root.findDescendantById("ui-badge:Read by Codex")).toBe(badge);
       setInteraction({ ...interaction()!, operationKind: "workspace.pane.send", sequence: 3 });
       await setup.renderOnce();
-      expect(setup.captureCharFrame()).toContain("Input observed");
-      expect(setup.captureCharFrame()).not.toContain("Pane read");
+      expect(setup.captureCharFrame()).toContain("Input from Codex");
+      expect(setup.captureCharFrame()).not.toContain("Read by Codex");
+      setInteraction({
+        ...interaction()!,
+        sourceEndpoint: null,
+        effect: { kind: "unknown" },
+        sequence: 4,
+      });
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).not.toContain("Send command");
+      expect(setup.captureCharFrame()).not.toContain("Details");
+      expect(setup.captureCharFrame()).toContain("Shell");
       setInteraction({ ...interaction()!, phase: "accepted", sequence: 4 });
       await setup.renderOnce();
       expect(() =>
@@ -510,7 +536,7 @@ describe("pane activity labels", () => {
         }),
       ).not.toThrow();
       await setup.renderOnce();
-      expect(setup.captureCharFrame()).not.toContain("Pane read");
+      expect(setup.captureCharFrame()).not.toContain("Read by Codex");
       expect(setup.captureCharFrame()).toContain("Shell");
     } finally {
       setup.renderer.destroy();
@@ -528,15 +554,16 @@ describe("pane activity labels", () => {
           selected={false}
           terminalFocused={false}
           keyboardFocused={false}
+          paneName={() => "Codex"}
           zoomed
           activity="failed"
           interaction={{
             paneId: "pane.alpha",
             direction: "incoming",
-            sourcePaneId: null,
+            sourcePaneId: "pane.reader",
             destinationPaneId: "pane.alpha",
             endpoint: endpoint("pane.alpha"),
-            sourceEndpoint: null,
+            sourceEndpoint: endpoint("pane.reader"),
             destinationEndpoint: endpoint("pane.alpha"),
             effect: { kind: "input-enqueued" },
             operationKey: "test",
@@ -557,7 +584,7 @@ describe("pane activity labels", () => {
     );
     await setup.renderOnce();
     const rows = setup.captureCharFrame().split("\n");
-    expect(rows[0]).toContain("Input observed");
+    expect(rows[0]).toContain("Input from Codex");
     expect(rows[0]).toContain("Failed");
     expect(rows[0]).toContain("Expanded");
     expect(rows[1]!.trim()).toBe("");

@@ -169,6 +169,8 @@ export function mountAutomationRoutes(app: Hono, options: AutomationRoutesOption
     `${base}/panes`,
     route(async (c) => {
       const panes: AutomationPanesResponse["panes"] = [];
+      const credential = c.req.header(PANE_SOURCE_CREDENTIAL_HEADER);
+      let source: Endpoint | null = null;
       for (const scope of await options.owners.refresh()) {
         if (!scope.generation) continue;
         await options.owners.withOwner(
@@ -183,6 +185,18 @@ export function mountAutomationRoutes(app: Hono, options: AutomationRoutesOption
                 pane.semanticPaneId,
               );
               if (!endpoint) continue;
+              if (credential) {
+                const binding = owner.resolveInteractionSource(
+                  credential,
+                  endpoint.workspaceName,
+                  endpoint.semanticPaneId,
+                );
+                if (binding && same(binding.endpoint, endpoint)) {
+                  if (source && !same(source, endpoint))
+                    throw new AutomationRequestError("invalid-source");
+                  source = endpoint;
+                }
+              }
               if (panes.length >= 4096) throw new AutomationRequestError("capacity");
               panes.push({
                 endpoint,
@@ -193,7 +207,8 @@ export function mountAutomationRoutes(app: Hono, options: AutomationRoutesOption
           },
         );
       }
-      return c.json(AutomationPanesResponseSchemaZ.parse({ version: 1, panes }));
+      if (credential && !source) throw new AutomationRequestError("invalid-source");
+      return c.json(AutomationPanesResponseSchemaZ.parse({ version: 1, panes, source }));
     }),
   );
   app.post(

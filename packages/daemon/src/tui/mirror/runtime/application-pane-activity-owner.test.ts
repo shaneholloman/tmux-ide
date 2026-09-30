@@ -37,18 +37,21 @@ function receipt(scope: ApplicationInteractionSource, sequence: number) {
     target: { kind: "pane", semanticPaneId: "pane.alpha" },
     operationKind: "workspace.pane.read",
     summary: { operationKind: "workspace.pane.read", observedOnly: true },
-    proof: null,
+    proof: { operationKind: "workspace.pane.read", observed: true, semanticPaneId: "pane.alpha" },
     at,
     resourceRevision: null,
-    phase: "accepted",
+    phase: "observed",
     evidence: {
       schemaVersion: 1,
       interactionId: operationId,
       revision: 0,
-      endpoints: { source: null, destination: endpoint(scope) },
-      actor: { kind: "unknown", reason: "unbound-source" },
-      observation: { kind: "admission", operationId },
-      effect: { kind: "unknown" },
+      endpoints: {
+        source: { ...endpoint(scope), semanticPaneId: "pane.reader" },
+        destination: endpoint(scope),
+      },
+      actor: { kind: "cooperative", bindingId: uuid, agentRunId: null },
+      observation: { kind: "cooperative-completion", operationId, verification: "daemon-snapshot" },
+      effect: { kind: "snapshot-produced" },
       occurredAt: null,
       receivedAt: at,
       timeBasis: "unknown",
@@ -135,7 +138,7 @@ it("keeps equal sequence and operation IDs from two owners independent and retir
     f.calls[0]!.emit([1]);
     f.calls[1]!.emit([1]);
     expect(f.activity.activity()).toHaveLength(2);
-    expect(f.activity().size).toBe(2);
+    expect(f.activity().size).toBe(4);
     f.setSources([sources[1]!]);
     await Promise.resolve();
     expect(f.activity.activity()).toHaveLength(1);
@@ -257,8 +260,11 @@ it("joins physical activity only through current birth metadata and expires alia
       schemaVersion: 1,
       interactionId: uuid,
       revision: 0,
-      endpoints: { source: null, destination: physical },
-      actor: { kind: "unknown", reason: "unavailable" },
+      endpoints: {
+        source: { ...endpoint(scope), semanticPaneId: "pane.reader" },
+        destination: physical,
+      },
+      actor: { kind: "cooperative", bindingId: uuid, agentRunId: null },
       observation: {
         kind: "native-journal",
         serverEpoch: uuid,
@@ -321,6 +327,7 @@ it("keeps verified viewer operations out of Home activity and pane badges", asyn
       sequence: 1,
       evidence: {
         ...base,
+        endpoints: { ...base.endpoints, source: null },
         actor: {
           kind: "native",
           issuerId: uuid,
@@ -478,6 +485,44 @@ it("suspended scopes are credential-free, do not replace an active alias, and ne
     expect(f.activity.activity()).toEqual([]);
     f.calls[0]!.emit([99]);
     expect(f.activity.activity()).toEqual([]);
+  } finally {
+    f.dispose();
+  }
+});
+
+it("keeps unknown commands in history without replacing a named read in chrome", async () => {
+  const f = rig();
+  try {
+    await Promise.resolve();
+    f.calls[0]!.emit([1]);
+    const original = f.activity().get(interactionPaneEndpointKey(endpoint(source())));
+    expect(original?.sourceEndpoint?.semanticPaneId).toBe("pane.reader");
+    const base = receipt(source(), 2);
+    const unknown = {
+      ...base,
+      evidence: {
+        ...base.evidence!,
+        endpoints: { ...base.evidence!.endpoints, source: null },
+        actor: { kind: "unknown" as const, reason: "stock-hook" as const },
+        observation: { kind: "stock-hook" as const, command: "capture-pane" as const },
+        effect: { kind: "unknown" as const },
+      },
+    };
+    await f.calls[0]!.options.onBatch(
+      {
+        version: 1,
+        type: "batch",
+        server: source().server,
+        after: 1,
+        cursor: 2,
+        gap: null,
+        receipts: [unknown],
+      },
+      new AbortController().signal,
+    );
+    expect(f.activity().get(interactionPaneEndpointKey(endpoint(source())))).toEqual(original);
+    expect(f.activity.activity()).toHaveLength(2);
+    expect(f.activity.activity()[0]!.evidence?.actor.kind).toBe("unknown");
   } finally {
     f.dispose();
   }

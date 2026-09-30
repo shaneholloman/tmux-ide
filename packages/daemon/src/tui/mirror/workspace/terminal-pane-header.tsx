@@ -4,7 +4,10 @@ import { PaneModeControl } from "../ui/pane-mode-control.tsx";
 import { paneInteractionPresence, type PaneInteractionProjection } from "@tmux-ide/core";
 import { statusPresentation } from "../ui/status-presentation.ts";
 import { PaneInteraction } from "../ui/pane-interaction.tsx";
-import { paneInteractionPresentation } from "../ui/pane-interaction-presentation.ts";
+import {
+  paneInteractionPresentation,
+  paneInteractionIsHeaderWorthy,
+} from "../ui/pane-interaction-presentation.ts";
 import type { AgentActivity } from "@tmux-ide/contracts";
 import { createMemo, createSignal, Show } from "solid-js";
 
@@ -90,7 +93,10 @@ export function PaneTitleBar(props: PaneTitleBarProps) {
     statusPresentation({ scrollback: props.scrollback, expanded: props.zoomed });
   const status = () => presentation()?.tone;
   const statusLabel = () => (presentation()?.action ? undefined : presentation()?.label);
-  const presence = () => (props.interaction ? paneInteractionPresence(props.interaction) : null);
+  const presence = () =>
+    props.interaction && paneInteractionIsHeaderWorthy(props.interaction)
+      ? paneInteractionPresence(props.interaction)
+      : null;
   const activityLabel = () =>
     props.interaction ? paneInteractionPresentation(props.interaction, props.paneName).label : "";
   const activityWidth = () => {

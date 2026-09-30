@@ -4,7 +4,8 @@ description: Scoped pane reads and sends through the CLI, MCP server, and SDK
 ---
 
 The CLI and MCP interfaces are available starting in `2.9.0-beta.46`.
-They require a matching running daemon. The CLI, MCP server, and SDK use the
+Automatic source resolution and the resolved intent in reservation responses
+require `2.9.0-beta.47` or newer. They require a matching running daemon. The CLI, MCP server, and SDK use the
 same operation API and do not fall back to raw tmux when a request fails.
 
 ## Discover the target
@@ -18,7 +19,10 @@ endpoint unchanged into your request. It identifies the machine, tmux server
 generation, workspace, and pane lifetime. Pane numbers and titles alone are
 not unique across servers. Rediscover after a server or pane is replaced.
 
-A read intent is `{ "kind": "read", "source": null, "target": endpoint }`.
+A read intent is `{ "kind": "read", "target": endpoint }`. The CLI and MCP
+resolve an omitted source from the invoking pane’s credential. Use `source: null`
+to deliberately leave the caller unidentified. Discovery also returns `source`
+when the daemon can verify that credential.
 A send intent also includes `"text"` and `"enter"`, with `"kind": "send"`.
 `enter: true` presses Enter after the text and can execute a shell command.
 Input is limited to 16 KiB of UTF-8 text and cannot contain NUL.
@@ -29,13 +33,12 @@ Save your intent as `intent.json`, then reserve an operation before executing it
 
 ```bash
 tmux-ide automation reserve --json < intent.json > reservation.json
-jq -n --slurpfile r reservation.json --slurpfile i intent.json \
-  '{version:1,handle:$r[0].handle,intent:$i[0]}' > execution.json
+jq '{version:1,handle,intent}' reservation.json > execution.json
 tmux-ide automation execute --json < execution.json
 ```
 
 Reservation does not send input or capture a pane. Keep the returned handle
-and the unchanged intent until you know the result. On a timeout or lost
+and the returned, resolved intent until you know the result. On a timeout or lost
 response, check the handle:
 
 ```bash
@@ -56,6 +59,12 @@ Check the byte counts and `truncated` flag. Status and replay responses retain
 metadata only; a replay reports `replay-unavailable` and does not capture again.
 
 ## Attribute a source
+
+Omit `source` in CLI requests and MCP `tmux_prepare` calls to resolve the
+invoking pane automatically. Save the resolved `intent` returned with the
+reservation and pass it unchanged to execution. Explicit `source: null` disables
+this resolution. An invalid credential fails discovery; it never silently
+changes an operation’s identity.
 
 Use `source: null` when the caller has no verified pane identity. To claim a
 source, supply its discovered endpoint and a valid credential for that exact
@@ -85,9 +94,14 @@ sender. Raw commands may have an unknown source. Server registrations and pane
 lifetimes keep evidence from separate tmux servers apart, even when their pane
 numbers match.
 
-With stock observation, typing through the tmux-ide viewer can also appear as
-“Send command · sender unknown.” This is a command observation, not evidence
-that another agent sent input. Exact viewer suppression requires native
+With stock observation, typing through the tmux-ide viewer can appear in activity
+details as “Send command · sender unknown.” This is a command observation, not evidence
+that another agent sent input. Pane headers and Home’s transient indicators show only completed interactions
+with a bound source, excluding viewer and same-pane activity. Unknown command
+observations remain in history and do not replace a named interaction. Repeated
+reads update one short-lived indicator.
+
+Exact viewer suppression requires native
 ownership evidence; stock client labels alone cannot establish the issuer.
 
 Experimental native observation uses a bounded metadata journal on a capable
@@ -106,6 +120,10 @@ History is bounded and can be lost when a server restarts or a reader falls
 behind. Keep the server-scoped cursor and handle reported gaps or unavailable
 coverage explicitly. A lost observation must not trigger a resend of an
 uncertain operation.
+
+An external desktop agent without a tmux pane currently remains unidentified.
+A CLI/MCP adapter label does not prove which agent invoked it; external-client
+registration is not yet available.
 
 ## MCP
 
