@@ -1,10 +1,10 @@
 ---
 title: CLI reference
-description: The supported tmux-ide commands and flags in 2.9.0-beta.45
+description: The supported tmux-ide commands and flags in 2.9.0-beta.46
 ---
 
 This page follows the public surface printed by `tmux-ide --help` in
-`2.9.0-beta.45`. `--json` is available on the scripting commands that explicitly
+`2.9.0-beta.46`. `--json` is available on the scripting commands that explicitly
 list it below; interactive commands do not emit JSON.
 
 ## Open tmux-ide
@@ -117,10 +117,10 @@ settings. Repair preserves unrelated hooks and an explicit `disableAllHooks`
 preference. Permission/input notifications report blocked; idle notifications do
 not override a completed turn.
 
-## Agent automation (development)
+## Agent automation
 
-The following commands require a development build and matching daemon; they
-are not included in the published `2.9.0-beta.45` package.
+The following commands are available starting in `2.9.0-beta.46` and require
+a matching running daemon.
 
 | Command                                                     | What it does                                        |
 | ----------------------------------------------------------- | --------------------------------------------------- |

@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2.9.0-beta.46
+
+- Add a shared automation API for scoped pane discovery, reads, sends, operation status and interaction history, with CLI and stdio MCP adapters and a packageable SDK.
+- Preserve server generations and pane lifetimes across multi-server activity, and correlate cooperative operations with observed evidence without duplicate interactions.
+- Keep unknown actors, incomplete observation coverage and uncertain outcomes explicit; retries reuse operation handles rather than blindly resending input.
+- Add opt-in native interaction observation with bounded metadata and batched drains. Native observation remains off by default and does not replace running tmux servers.
+- Bundle matching terminal descriptions with native tmux and select them for managed launches, fixing attachment failures on machines without the original build host's terminfo database.
+
+This beta prioritizes Apple Silicon and Linux ARM qualification. Intel Mac performance qualification remains incomplete; Linux Intel metadata-tail latency exceeded the original 50 ms target (about 55–58 ms). Spark's terminal-resource functional assertions passed, but its full fixture retains a process-exit observation failure; exact container cleanup was confirmed. Stock viewer input can appear as an unknown command observation, without identifying it as another agent's action.
+
 ## 2.9.0-beta.45
 
 - Unify agent and interaction status presentation across pane headers, Home and the sidebar, with explicit unknown and unavailable states.

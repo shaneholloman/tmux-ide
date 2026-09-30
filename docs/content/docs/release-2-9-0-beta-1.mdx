@@ -1,15 +1,28 @@
 ---
 title: OpenTUI 2.9 beta
-description: The current 2.9.0-beta.45 package and earlier OpenTUI beta highlights
+description: The current 2.9.0-beta.46 package and earlier OpenTUI beta highlights
 ---
 
-The current package is `2.9.0-beta.45`. It ships an OpenTUI client around ordinary tmux
+The current package is `2.9.0-beta.46`. It ships an OpenTUI client around ordinary tmux
 sessions. tmux owns PTYs, processes, topology, and persistence. Each machine has
 its own daemon, which publishes workspace state and pane streams. The local TUI
 connects through SSH tunnels and owns presentation and input.
 
 The highlights below retain the beta versions in which they were introduced;
 they are not a complete changelog for the current package.
+
+## Introduced in beta.46
+
+[Agent automation](/docs/automation) adds scoped CLI and MCP pane reads and sends,
+operation handles, and interaction history. Native attribution is experimental,
+explicitly opt-in, and off by default. Existing tmux servers are never replaced
+automatically. Bundled tmux now includes its matching terminal descriptions.
+
+This beta prioritizes Apple Silicon and Linux ARM validation. Intel Mac performance
+qualification remains incomplete; Linux Intel metadata-tail latency missed the
+original 50 ms target (about 55–58 ms). Spark resource tests passed their terminal
+assertions but retained a process-exit observation failure; container cleanup was
+confirmed. These limits do not represent new typing-latency claims.
 
 ## Introduced in beta.29
 
