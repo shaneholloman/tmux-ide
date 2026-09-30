@@ -31,7 +31,8 @@ import {
   withBundledTmuxResources,
 } from "../packages/daemon/src/lib/bundled-tmux.ts";
 import { fenceNativeTmuxCommand } from "../packages/daemon/src/lib/tmux-server-generation-runner.ts";
-import { developmentProcessIdentity } from "../packages/daemon/src/lib/development-state.ts";
+import { sparkExecutionIdentity, sparkProcessWitness } from "./lib/spark-process-witness.ts";
+import { waitForTerminfoProcessExit } from "./lib/terminfo-exit-proof.ts";
 import { createMacProcessIdentity } from "./lib/owned-ssh-fixture.mjs";
 import { stageTerminfoCatalog } from "./lib/tmux-terminfo-bundle.mjs";
 const pause = () => new Promise((resolve) => setTimeout(resolve, 20));
@@ -53,6 +54,7 @@ const source = realpathSync(sourceArgument),
   root = resolve(outputArgument);
 assert(!existsSync(root), "Evidence root must be fresh");
 mkdirSync(root, { mode: 0o700 });
+const execution = process.platform === "linux" ? sparkExecutionIdentity() : null;
 let disposeWitness: (() => Promise<unknown>) | undefined;
 const witness =
   process.platform === "darwin"
@@ -62,7 +64,12 @@ const witness =
           disposeWitness = allocation.disposeFiles;
         },
       })
-    : { identify: developmentProcessIdentity };
+    : {
+        identify: (pid: number) => {
+          assert(execution);
+          return sparkProcessWitness(pid, execution);
+        },
+      };
 const sourceManifest = JSON.parse(readFileSync(join(source, "manifest.json"), "utf8"));
 const term = `xterm-tia-${randomUUID().replaceAll("-", "")}`;
 const report: { term: string; sourceExecutableSha256: string; cases: unknown[]; ok: boolean } = {
@@ -157,8 +164,8 @@ try {
         } catch {
           killCommandFailed = true;
         }
-        await until(async () => (await witness.identify(Number(pid))) === null);
-        await until(async () => (await witness.identify(Number(panePid))) === null);
+        await waitForTerminfoProcessExit(witness.identify, Number(pid));
+        await waitForTerminfoProcessExit(witness.identify, Number(panePid));
         paneGone = true;
         if (existsSync(socket)) {
           const stale = lstatSync(socket);
