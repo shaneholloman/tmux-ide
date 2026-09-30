@@ -1,7 +1,7 @@
 import { accessSync, constants, realpathSync, statSync } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
 import { resolveRuntimeNamespace } from "./runtime-namespace.ts";
-import { resolveBundledTmux } from "./bundled-tmux.ts";
+import { resolveBundledTmux, bundledTmuxResourceEnvironment } from "./bundled-tmux.ts";
 
 export function resolveTmuxExecutable(): string {
   if (resolveRuntimeNamespace().development) return resolveBundledTmux()!;
@@ -40,7 +40,10 @@ const SAFE_LOCALE_VALUE = /^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$/u;
  * startup hooks, dynamic-loader variables, Node options, and project secrets
  * cannot redirect authority or inject code into this daemon-owned execution.
  */
-export function tmuxClientEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function tmuxClientEnvironment(
+  source: NodeJS.ProcessEnv,
+  executable?: string,
+): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {
     TERM: SAFE_TERMINAL_VALUE.test(source.TERM ?? "") ? source.TERM : "xterm-256color",
     // A pinned runner may be the first tmux client and therefore create the
@@ -52,5 +55,5 @@ export function tmuxClientEnvironment(source: NodeJS.ProcessEnv): NodeJS.Process
     const value = source[name];
     if (value && SAFE_LOCALE_VALUE.test(value)) environment[name] = value;
   }
-  return environment;
+  return { ...environment, ...bundledTmuxResourceEnvironment(executable) };
 }

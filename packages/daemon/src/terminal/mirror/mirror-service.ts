@@ -463,7 +463,9 @@ export class MirrorService {
           if (!isAbsolute(executable) || !statSync(executable).isFile())
             throw new Error("Invalid pinned tmux executable");
         }
-        const environment = Object.freeze(tmuxClientEnvironment(process.env));
+        const environment = Object.freeze(
+          tmuxClientEnvironment(process.env, executable ?? this.opts.executable),
+        );
         const channelOptions: SessionChannelOptions = {
           session,
           ownedViewer,

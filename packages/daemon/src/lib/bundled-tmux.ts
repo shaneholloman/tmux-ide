@@ -2,7 +2,17 @@ import { resolveRuntimeNamespace } from "./runtime-namespace.ts";
 import { readDevelopmentBuild } from "./development-build.ts";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { accessSync, chmodSync, constants, existsSync, readFileSync, realpathSync } from "node:fs";
+import {
+  accessSync,
+  chmodSync,
+  constants,
+  existsSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  readdirSync,
+  lstatSync,
+} from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -37,6 +47,48 @@ export function validateBundledTmux(
       throw new Error("Bundled tmux file escapes its distribution");
     const actual = createHash("sha256").update(readFileSync(path)).digest("hex");
     if (actual !== expected) throw new Error(`Bundled tmux checksum mismatch: ${name}`);
+  }
+  if (manifest.terminfo !== undefined) {
+    const catalog = manifest.terminfo;
+    const entries = Object.keys(manifest.files).filter((name) =>
+      name.startsWith("share/terminfo/"),
+    );
+    if (
+      catalog.directory !== "share/terminfo" ||
+      !Number.isSafeInteger(catalog.entries) ||
+      catalog.entries < 1 ||
+      catalog.entries > 8192 ||
+      entries.length !== catalog.entries ||
+      entries.some(
+        (name) =>
+          !/^share\/terminfo\/(?:[A-Za-z0-9]|[0-9a-fA-F]{2})\/[A-Za-z0-9][A-Za-z0-9+_.-]{0,127}$/u.test(
+            name,
+          ),
+      ) ||
+      !["xterm-256color", "screen-256color", "tmux-256color"].every((name) =>
+        entries.some((entry) => entry.endsWith(`/${name}`)),
+      )
+    ) {
+      throw new Error("Invalid bundled terminfo catalog");
+    }
+    const directory = join(root, "share/terminfo");
+    const actual: string[] = [];
+    if (!lstatSync(directory).isDirectory() || lstatSync(directory).isSymbolicLink())
+      throw new Error("Invalid bundled terminfo directory");
+    for (const bucket of readdirSync(directory)) {
+      const bucketPath = join(directory, bucket),
+        bucketStat = lstatSync(bucketPath);
+      if (!bucketStat.isDirectory() || bucketStat.isSymbolicLink())
+        throw new Error("Invalid bundled terminfo bucket");
+      for (const name of readdirSync(bucketPath)) {
+        const entry = lstatSync(join(bucketPath, name));
+        if (!entry.isFile() || entry.isSymbolicLink())
+          throw new Error("Invalid bundled terminfo entry");
+        actual.push(`share/terminfo/${bucket}/${name}`);
+      }
+    }
+    if (actual.sort().join("\n") !== entries.sort().join("\n"))
+      throw new Error("Unlisted bundled terminfo entry");
   }
   const executable = realpathSync(join(root, "tmux"));
   // npm normalizes non-bin payloads to 0644. Restore execution only after the
@@ -116,4 +168,64 @@ export function isMacOSVersionCompatible(current: string, minimum: string): bool
     if (difference !== 0) return difference > 0;
   }
   return true;
+}
+
+const resourceEnvironments = new Map<
+  string,
+  { identity: string; environment: Readonly<NodeJS.ProcessEnv> }
+>();
+/** Data authority follows the selected executable. Legacy/external tmux keeps its existing behavior. */
+export function bundledTmuxResourceEnvironment(
+  executable: string | undefined,
+): Readonly<NodeJS.ProcessEnv> {
+  if (!executable || !isAbsolute(executable) || !existsSync(executable)) return {};
+  const canonical = realpathSync(executable);
+  const root = dirname(canonical),
+    manifestPath = join(root, "manifest.json");
+  if (canonical !== join(root, "tmux") || !existsSync(manifestPath)) return {};
+  const identity = [canonical, manifestPath]
+    .map((path) => {
+      const st = statSync(path);
+      return `${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`;
+    })
+    .join("|");
+  const cached = resourceEnvironments.get(canonical);
+  if (cached?.identity === identity) return cached.environment;
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  } catch {
+    return {};
+  }
+  if (
+    !manifest ||
+    typeof manifest !== "object" ||
+    manifest.terminfo === undefined ||
+    !["tmux-ide-native-grid-v1", "tmux-ide-native-grid-v2"].includes(manifest.extension)
+  )
+    return {};
+  // Immutable bundle owners validate once; commands/resizes reuse the sealed environment.
+  // In-place catalog edits after owner admission are unsupported; this is not per-command tamper detection.
+  if (validateBundledTmux(root) !== canonical)
+    throw new Error("Bundled terminfo executable mismatch");
+  const directory = realpathSync(join(root, "share/terminfo"));
+  if (!directory.startsWith(`${root}${sep}`))
+    throw new Error("Bundled terminfo directory escapes bundle");
+  const environment = Object.freeze({ TERMINFO_DIRS: `${directory}:` });
+  resourceEnvironments.set(canonical, { identity, environment });
+  return environment;
+}
+
+/** Preserve pre-existing trusted search configuration; only add this selected bundle's catalog. */
+export function withBundledTmuxResources(
+  executable: string | undefined,
+  environment: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  const resources = bundledTmuxResourceEnvironment(executable);
+  if (!resources.TERMINFO_DIRS || environment.TERMINFO_DIRS?.startsWith(resources.TERMINFO_DIRS))
+    return environment;
+  return {
+    ...environment,
+    TERMINFO_DIRS: resources.TERMINFO_DIRS + (environment.TERMINFO_DIRS ?? ""),
+  };
 }

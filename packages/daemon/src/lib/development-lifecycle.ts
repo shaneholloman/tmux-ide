@@ -1,3 +1,4 @@
+import { bundledTmuxResourceEnvironment } from "./bundled-tmux.ts";
 import {
   requireDevelopmentNotSuspended,
   readDevelopmentSuspension,
@@ -94,6 +95,9 @@ export function developmentOwnerEnvironment(
   return {
     ...developmentChildEnvironment(namespace, cleanManagerEnvironment()),
     ...developmentBuildLaunch(build).environment,
+    ...bundledTmuxResourceEnvironment(
+      join(build.assets, "tmux", `${process.platform}-${process.arch}`, "tmux"),
+    ),
     TMUX_IDE_NATIVE_OBSERVATION:
       developmentNativeObservationMode(undefined, build) === "enabled" ? "1" : "0",
     TMUX_IDE_CWD: instance.worktree,

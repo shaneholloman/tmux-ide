@@ -1,3 +1,4 @@
+import { withBundledTmuxResources } from "../../lib/bundled-tmux.ts";
 /**
  * The MirrorService's tmux control-mode channel (m43 card 1).
  *
@@ -1025,7 +1026,7 @@ export class MirrorControlChannel implements MirrorChannelIo {
     }
     const proc = spawn(this.opts.executable ?? "tmux", args, {
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, TMUX: "" },
+      env: withBundledTmuxResources(this.opts.executable, { ...process.env, TMUX: "" }),
     });
     this.proc = proc;
     // A control client whose session is killed exits while we may still be

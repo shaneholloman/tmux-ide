@@ -1,3 +1,4 @@
+import { withBundledTmuxResources } from "../../lib/bundled-tmux.ts";
 import { accessSync, constants, realpathSync, statSync } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -285,7 +286,10 @@ export class PtyTmuxAttachmentLauncher implements TmuxAttachmentClientTransport 
       throw new TypeError("trusted cwd must be an absolute daemon-owned path");
     }
     this.#trustedCwd = options.trustedCwd;
-    this.#environment = terminalEnvironment(options.environment ?? process.env);
+    this.#environment = withBundledTmuxResources(
+      this.#tmuxExecutable,
+      terminalEnvironment(options.environment ?? process.env),
+    );
     if (options.proofRunner && options.proofCommandExecutor) {
       throw new TypeError("proof runner and proof command executor are mutually exclusive");
     }

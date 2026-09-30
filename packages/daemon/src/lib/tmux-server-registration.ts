@@ -65,7 +65,7 @@ export function createTmuxServerProbe(
   executable: string,
 ): (selector: TmuxServerRegistration["selector"]) => Promise<TmuxServerObservation | null> {
   const executablePath = realpathSync(executable);
-  const env = tmuxClientEnvironment(process.env);
+  const env = tmuxClientEnvironment(process.env, executablePath);
   return async (selector) => {
     const args = selector.kind === "path" ? ["-S", selector.path] : ["-L", selector.name];
     const read = async (selection: readonly string[]) =>

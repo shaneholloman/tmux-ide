@@ -53,6 +53,15 @@ pkg-config and the platform's libevent, ncurses and utf8proc development
 dependencies. It does not modify the source checkout or replace system tmux.
 An ordinary system tmux binary is not a substitute for this patched bundle.
 
+The bundle also needs ncurses terminal descriptions (terminfo). On macOS, keep
+the catalog from the same ncurses installation as the linked library. Debian
+and Ubuntu build environments need both `ncurses-base` and `ncurses-term`.
+The builder includes these resources in the bundle manifest, so managed clients
+can find them after the bundle is moved to another machine. Older bundles
+without the catalog retain their existing host-dependent behavior; rebuild
+them for portable terminal attachment. Use the managed app entry point below
+to select the bundle and its terminal resources together.
+
 Compare the two status documents: instance IDs, worktree paths, daemon identities
 and tmux sockets must differ. Each command selects the current worktree and name;
 use the same `--name demo` throughout this example. The default private store is

@@ -17,6 +17,7 @@ import {
 import { tmpdir, availableParallelism } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { stageTerminfoCatalog, terminfoBuildInputs } from "./lib/tmux-terminfo-bundle.mjs";
 import { readTmuxNativePatches } from "./lib/tmux-native-patches.mjs";
 import {
   parseLddDependencies,
@@ -188,10 +189,17 @@ try {
   }
   if (text(executable, ["-V"]) !== `tmux ${provenance.version}`)
     throw new Error("Bundled tmux version mismatch");
+  const catalogInput = terminfoBuildInputs(process.platform, [...libraries.keys()], text);
+  const catalog = stageTerminfoCatalog(catalogInput.roots, join(stage, "share/terminfo"));
+  for (const license of catalogInput.licenses) {
+    copyFileSync(license.source, join(stage, license.name));
+    licenseFiles.push(license.name);
+  }
   const files = [
     "tmux",
     ...[...libraries.values()].map((path) => `lib/${basename(path)}`),
     ...licenseFiles,
+    ...catalog.files,
   ];
   const minimumVersions =
     process.platform !== "darwin"
@@ -342,6 +350,12 @@ try {
           systemLibc: text("getconf", ["GNU_LIBC_VERSION"]),
         }),
     ...(nativeGridProbe ? { nativeGridProbe } : {}),
+    terminfo: {
+      directory: catalog.directory,
+      entries: catalog.entries,
+      bytes: catalog.bytes,
+      provenance: catalogInput.provenance,
+    },
     platform: process.platform,
     arch: process.arch,
     files: Object.fromEntries(files.map((name) => [name, hash(join(stage, name))])),
@@ -359,7 +373,10 @@ try {
   try {
     mkdirSync(join(next, "lib"));
     mkdirSync(join(next, "licenses"));
-    for (const name of files) copyFileSync(join(stage, name), join(next, name));
+    for (const name of files) {
+      mkdirSync(dirname(join(next, name)), { recursive: true });
+      copyFileSync(join(stage, name), join(next, name));
+    }
     copyFileSync(join(root, "native/tmux/COPYING"), join(next, "COPYING"));
     writeFileSync(join(next, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
     if (text(join(next, "tmux"), ["-V"]) !== `tmux ${provenance.version}`)

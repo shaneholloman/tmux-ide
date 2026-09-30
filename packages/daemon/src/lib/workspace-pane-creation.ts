@@ -308,7 +308,7 @@ export function createPinnedWorkspaceTmuxRunner(
   const socketArgv = socketIdentity
     ? ["-S", socketIdentity.path]
     : ["-L", authority.socketSelector.kind === "name" ? authority.socketSelector.name : ""];
-  const environment = Object.freeze(tmuxClientEnvironment(process.env));
+  const environment = Object.freeze(tmuxClientEnvironment(process.env, executablePath));
   const namedFence =
     authority.socketSelector.kind === "name"
       ? createNamedSocketFence(authority, executablePath, environment)
@@ -364,7 +364,7 @@ export function createPinnedWorkspaceTmuxAsyncRunner(
   const socketArgv = socketIdentity
     ? ["-S", socketIdentity.path]
     : ["-L", authority.socketSelector.kind === "name" ? authority.socketSelector.name : ""];
-  const environment = Object.freeze(tmuxClientEnvironment(process.env));
+  const environment = Object.freeze(tmuxClientEnvironment(process.env, executablePath));
   const namedFence =
     authority.socketSelector.kind === "name"
       ? createNamedSocketFence(authority, executablePath, environment)

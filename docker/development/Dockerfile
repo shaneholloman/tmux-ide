@@ -5,7 +5,7 @@ ARG DEBIAN_SNAPSHOT=20260910T000000Z
 RUN rm -f /etc/apt/sources.list.d/debian.sources && \
     printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/%s bookworm main\ndeb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/%s bookworm-security main\n' "$DEBIAN_SNAPSHOT" "$DEBIAN_SNAPSHOT" > /etc/apt/sources.list && \
     apt-get -o Acquire::Check-Valid-Until=false -o Acquire::http::Timeout=30 -o Acquire::Retries=1 update && \
-    apt-get install -y --no-install-recommends build-essential autoconf automake pkg-config libevent-dev libncurses-dev libutf8proc-dev bison patchelf git ca-certificates python3 tini procps && \
+    apt-get install -y --no-install-recommends build-essential autoconf automake pkg-config libevent-dev libncurses-dev ncurses-base ncurses-term libutf8proc-dev bison patchelf git ca-certificates python3 tini procps && \
     mkdir -p /opt/fixture && dpkg-query -W > /opt/fixture/debian-packages.txt && \
     rm -rf /var/lib/apt/lists/*
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
