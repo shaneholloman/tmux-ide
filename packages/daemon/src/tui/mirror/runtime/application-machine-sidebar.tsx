@@ -1,3 +1,5 @@
+import { groupApplicationTeamRows } from "./application-team-groups.ts";
+import type { PaneTeamMembership } from "@tmux-ide/contracts";
 import type { NativePaneIdentity } from "@tmux-ide/contracts";
 import type { PaneInteractionEndpoint } from "../ui/pane-interaction-presentation.ts";
 import type { InteractionPaneEndpoint } from "@tmux-ide/contracts";
@@ -31,6 +33,7 @@ import { Surface } from "../ui/surface.tsx";
 import { useKeyboardRoute } from "../ui/keyboard-router.tsx";
 
 export interface ApplicationMachineAgent {
+  readonly team?: PaneTeamMembership;
   readonly nativeIdentity: NativePaneIdentity | null;
   readonly interactionEndpoint: Extract<InteractionPaneEndpoint, { kind: "pane" }> | null;
   readonly daemonInstanceId?: string;
@@ -168,7 +171,7 @@ export function ApplicationMachineSidebar(props: {
   const preferenceKey = (group: ApplicationMachineGroup) => group.environmentId ?? group.id;
   const rows = createMemo<readonly Row[]>(() => [
     ...props.model.groups().flatMap((group) =>
-      (group.agents ?? []).map((agent) => ({
+      groupApplicationTeamRows(group.agents ?? []).map((agent) => ({
         key: JSON.stringify([
           group.id,
           "agent",
@@ -583,6 +586,7 @@ export function ApplicationMachineSidebar(props: {
                       theme={props.theme}
                       id={`machine:${row.key}`}
                       name={agent().name}
+                      team={agent().team}
                       context={[
                         row.group.label,
                         row.group.sessions.find(

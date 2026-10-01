@@ -1107,3 +1107,21 @@ describe("pane titles", () => {
     expect(isHostNameTitle("anything", "")).toBe(false);
   });
 });
+
+it("projects native team membership and preserves a manual member-name override", () => {
+  const session = liveSession();
+  const team = { id: "team.1234567890123456", name: "Claude team", source: "claude-code" as const };
+  const result = projectApplicationShellResource({
+    ...session,
+    panes: [
+      {
+        ...session.panes[0]!,
+        name: "My reviewer",
+        nameSource: "manual",
+        teamMemberName: "reader",
+        team,
+      },
+    ],
+  });
+  expect(result.workspace.sidebar.agents[0]).toMatchObject({ name: "My reviewer", team });
+});

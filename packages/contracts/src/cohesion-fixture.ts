@@ -1,3 +1,4 @@
+import { PaneTeamMembershipSchemaZ } from "./pane-team.ts";
 import { z } from "zod";
 import { CommandIdSchemaZ } from "./commands.ts";
 import {
@@ -42,6 +43,7 @@ const SessionSidebarItemSchemaZ = z
 
 const AgentSidebarItemSchemaZ = z
   .object({
+    team: PaneTeamMembershipSchemaZ.optional(),
     id: SemanticProductIdSchemaZ,
     name: LabelSchemaZ,
     harness: z.enum(["codex", "claude-code", "custom"]),

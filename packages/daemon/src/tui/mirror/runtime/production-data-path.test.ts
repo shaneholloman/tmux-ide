@@ -432,8 +432,19 @@ describe("production OpenTUI v2 data path", () => {
         /\b(?:createWorkspaceClient|createTerminalFastLane|openSshDaemonTransport|setInterval|setTimeout)\s*\(/u,
       );
     }
+    // Team grouping only rearranges existing observed rows; it owns no IO,
+    // subscription, clock, or terminal authority.
+    const teamPresentationHelpers = [
+      "packages/daemon/src/tui/mirror/runtime/application-team-groups.ts",
+    ];
+    for (const path of teamPresentationHelpers) {
+      expect(authorityDataPathFiles).toContain(path);
+      expect(productionGraph.sourceByFile.get(path)).not.toMatch(
+        /node:|\b(?:process|fetch|setInterval|setTimeout|createWorkspaceClient|createTerminalFastLane|createSignal|createEffect)\b/u,
+      );
+    }
     expect(authorityDataPathFiles.length).toBeLessThanOrEqual(
-      154 + learningModules.length + inputHelpers.length,
+      154 + learningModules.length + inputHelpers.length + teamPresentationHelpers.length,
     );
   });
 });

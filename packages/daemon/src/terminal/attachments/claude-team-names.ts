@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import type { PaneTeamMembership } from "@tmux-ide/contracts";
 /** Read-only compatibility adapter for Claude Code's runtime team metadata.
  * Names are presentation evidence, never agent identity or permission authority.
  */
@@ -75,19 +77,35 @@ function matchesProcess(command: string, member: ClaudeTeamMember): boolean {
   return true;
 }
 
-export function resolveClaudeTeamName(
+export function resolveClaudeTeamMember(
   pane: TeamPaneProcess,
   members: readonly ClaudeTeamMember[],
   processes: ProcEntry[],
-): string | null {
+): ClaudeTeamMember | null {
   // A native pane id alone cannot bind a team: different servers reuse %N.
   // Its live shell PID scopes the match to this host and this pane's subtree.
   const subtree = subtreeEntries(processes, pane.pid);
   const matches = members.filter(
     (m) => m.paneId === pane.runtimePaneId && subtree.some((p) => matchesProcess(p.command, m)),
   );
-  return matches.length === 1 ? matches[0]!.name : null;
+  return matches.length === 1 ? matches[0]! : null;
 }
+
+export function resolveClaudeTeamName(
+  pane: TeamPaneProcess,
+  members: readonly ClaudeTeamMember[],
+  processes: ProcEntry[],
+): string | null {
+  return resolveClaudeTeamMember(pane, members, processes)?.name ?? null;
+}
+
+export interface ClaudePaneTeam {
+  readonly name: string;
+  readonly team: PaneTeamMembership;
+}
+export type ClaudeTeamMembershipReader = (
+  panes: readonly TeamPaneProcess[],
+) => Promise<ReadonlyMap<string, ClaudePaneTeam>>;
 
 async function readMembers(directory: string): Promise<ClaudeTeamMember[]> {
   try {
@@ -126,14 +144,14 @@ export type ClaudeTeamNameReader = (
   panes: readonly TeamPaneProcess[],
 ) => Promise<ReadonlyMap<string, string>>;
 
-export function createClaudeTeamNameReader(
+export function createClaudeTeamMembershipReader(
   directory: string,
   deps: {
     readMembers?: () => Promise<ClaudeTeamMember[]>;
     readProcesses?: () => Promise<ProcEntry[]>;
     now?: () => number;
   } = {},
-): ClaudeTeamNameReader {
+): ClaudeTeamMembershipReader {
   const now = deps.now ?? Date.now;
   let snapshot: { at: number; members: ClaudeTeamMember[]; processes: ProcEntry[] } | null = null;
   let pending: Promise<void> | null = null;
@@ -156,11 +174,28 @@ export function createClaudeTeamNameReader(
       await pending;
     }
     const current = snapshot!;
-    const names = new Map<string, string>();
+    const names = new Map<string, ClaudePaneTeam>();
     for (const pane of panes) {
-      const name = resolveClaudeTeamName(pane, current.members, current.processes);
-      if (name) names.set(pane.runtimePaneId, name);
+      const member = resolveClaudeTeamMember(pane, current.members, current.processes);
+      if (member)
+        names.set(pane.runtimePaneId, {
+          name: member.name,
+          team: {
+            id: `team.${createHash("sha256").update(member.team).digest("hex").slice(0, 32)}`,
+            name: member.team.slice(0, 80),
+            source: "claude-code",
+          },
+        });
     }
     return names;
   };
+}
+
+/** Compatibility API for callers interested only in the shared display name. */
+export function createClaudeTeamNameReader(
+  directory: string,
+  deps: Parameters<typeof createClaudeTeamMembershipReader>[1] = {},
+): ClaudeTeamNameReader {
+  const read = createClaudeTeamMembershipReader(directory, deps);
+  return async (panes) => new Map([...(await read(panes))].map(([id, value]) => [id, value.name]));
 }

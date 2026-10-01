@@ -136,6 +136,7 @@ function toPresentationPane(
     agentStatusTextRaw: pane.agentStatusTextRaw,
     agentDisplayNameRaw: pane.agentDisplayNameRaw,
     teamMemberName: pane.teamMemberName,
+    team: pane.team,
     // Authority-only: the fleet never scrapes an unopened session. `null` (not
     // `undefined`) keeps `resolveAgentPresentation` on the ground-truth path
     // while its scrape verdict resolves to `unknown` without any capture.
@@ -163,6 +164,7 @@ function projectSession(
         `Agent ${index + 1}`,
       ),
       harness: harnessForPane(presentationPane),
+      ...(pane.team ? { team: pane.team } : {}),
       activity: presentation.activity,
       attention: presentation.attention,
       statusSource: presentation.statusSource,

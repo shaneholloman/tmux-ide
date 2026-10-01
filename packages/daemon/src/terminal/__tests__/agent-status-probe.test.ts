@@ -1,3 +1,4 @@
+import { manualPaneTeamStamp } from "../attachments/manual-pane-team.ts";
 import { describe, expect, it } from "vitest";
 import type { AgentManifest } from "../../tui/detect/manifest.ts";
 import type { ProcEntry } from "../../tui/detect/process-tree.ts";
@@ -610,4 +611,40 @@ it("refreshes team naming independently from status and removes absent members",
   expect((await probe.probe(input)).get("%3")?.teamMemberName).toBe("researcher");
   present = false;
   expect((await probe.probe(input)).get("%3")?.teamMemberName).toBeUndefined();
+});
+
+it("prefers explicit grouping, retains native member naming, and clears stale membership", async () => {
+  let stamp: string | undefined = manualPaneTeamStamp("Mixed crew", 4242);
+  let present = true;
+  const nativeTeam = {
+    id: "team.1234567890123456",
+    name: "Claude team",
+    source: "claude-code" as const,
+  };
+  const probe = createTmuxAgentStatusProbe({
+    run: async () =>
+      optionsLine("%3", { state: `working:${NOW}`, pid: "4242" }).replace(
+        AGENT_LINE_SENTINEL,
+        `${stamp ?? ""}${AGENT_FIELD_SEPARATOR}${AGENT_LINE_SENTINEL}`,
+      ),
+    readTeamMemberships: async () =>
+      new Map(present ? [["%3", { name: "reader", team: nativeTeam }]] : []),
+    manifests: MANIFESTS,
+  });
+  const input = {
+    sessionId: "$1",
+    panes: [{ runtimePaneId: "%3", currentCommand: "claude", title: "Busy" }],
+    nowSec: NOW,
+  };
+  expect((await probe.probe(input)).get("%3")).toMatchObject({
+    teamMemberName: "reader",
+    team: { name: "Mixed crew", source: "manual" },
+    agentStateRaw: `working:${NOW}`,
+  });
+  stamp = undefined;
+  expect((await probe.probe(input)).get("%3")?.team).toEqual(nativeTeam);
+  present = false;
+  const gone = (await probe.probe(input)).get("%3");
+  expect(gone?.team).toBeUndefined();
+  expect(gone?.teamMemberName).toBeUndefined();
 });

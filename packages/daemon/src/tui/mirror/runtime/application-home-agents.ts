@@ -1,3 +1,4 @@
+import type { PaneTeamMembership } from "@tmux-ide/contracts";
 import type { NativePaneIdentity } from "@tmux-ide/contracts";
 import type {
   AgentActivity,
@@ -10,6 +11,7 @@ import type { ApplicationHomeCatalogSession } from "./application-home-catalog.t
 import { terminalAgentStatusLabel } from "./application-terminal-workspace-policy.ts";
 
 export interface HomeAgentRow {
+  readonly team?: PaneTeamMembership;
   readonly nativeIdentity: NativePaneIdentity | null;
   readonly interactionEndpoint: Extract<InteractionPaneEndpoint, { kind: "pane" }> | null;
   readonly key: string;
@@ -97,6 +99,7 @@ export function projectHomeAgentRows(
           resource.attachability.semanticPaneId === agent.paneId,
       )?.windowResourceId ?? null,
     name: agent.name,
+    ...(agent.team ? { team: agent.team } : {}),
     harness: agent.harness,
     activity: agent.activity,
     attention: agent.attention,

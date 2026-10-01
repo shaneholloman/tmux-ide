@@ -1,3 +1,5 @@
+import { readManualPaneTeam } from "../terminal/attachments/manual-pane-team.ts";
+import type { PaneTeamMembership } from "@tmux-ide/contracts";
 import { decodeTmuxArgument } from "../terminal/protocol/session-descriptor-discovery.ts";
 import type { NativePaneIdentity } from "@tmux-ide/contracts";
 import { nativePaneIdentity } from "../lib/native-pane-identity.ts";
@@ -224,6 +226,7 @@ export function readAdoptedSessionNames(runTmux: TmuxRunner = _tmuxRunner): stri
 
 /** One live pane, with the raw agent-authority options gathered for the fleet. */
 export interface FleetPaneFacts {
+  readonly team?: PaneTeamMembership;
   readonly title?: string;
   readonly name?: string | null;
   readonly nameSource?: string | null;
@@ -279,6 +282,7 @@ const FLEET_PANE_FORMAT = [
   "#{qa:pane_title}",
   "#{qa:@ide_name}",
   "#{qa:@tmux_ide_name_source}",
+  "#{@tmux_ide_team}",
   FLEET_LINE_SENTINEL,
 ].join(FLEET_FIELD_SEPARATOR);
 
@@ -325,7 +329,7 @@ export function readAdoptedFleet(
     const fields = line.split(FLEET_FIELD_SEPARATOR);
     // session, pane, semantic pane, incarnation pid, active, command, path, state,
     // statusText, displayName, hint, birth ID, quoted title/name/source, sentinel
-    if (fields.length !== 16 || fields[15] !== FLEET_LINE_SENTINEL) continue;
+    if (![16, 17].includes(fields.length) || fields.at(-1) !== FLEET_LINE_SENTINEL) continue;
     const sessionName = fields[0]!;
     if (!adoptedSet.has(sessionName)) continue;
     const runtimePaneId = fields[1]!;
@@ -338,6 +342,7 @@ export function readAdoptedFleet(
       panesBySession.set(sessionName, panes);
     }
     panes.push({
+      team: fields.length === 17 ? readManualPaneTeam(fields[15], incarnation) : undefined,
       nameSource: emptyToNull(decodeTmuxArgument(fields[14]!)),
       title: decodeTmuxArgument(fields[12]!),
       name: emptyToNull(decodeTmuxArgument(fields[13]!)),

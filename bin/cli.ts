@@ -234,6 +234,7 @@ ${bold("Usage:")}
                               ${dim("Rebuild the fleet from the last snapshot after a tmux crash")}
                               ${dim("(--resume-agents revives claude conversations via claude --resume)")}
   ${cyan("tmux-ide attach")}             ${dim("Reattach to a running session")}
+  ${cyan("tmux-ide team assign")} %PANE TEAM ${dim("Group a pane; unassign removes membership")}
   ${cyan("tmux-ide team")} [--json]      ${dim("TUI over all tmux sessions (--json prints fleet state)")}
   ${cyan("tmux-ide app")} [session]      ${dim("Unified app: fleet home + live session mirror (bare = home)")}
   ${cyan("tmux-ide app --ssh <host>")}   ${dim("Open an existing remote daemon through your SSH configuration")}
@@ -694,9 +695,10 @@ try {
     });
   if (
     (values["socket-name"] !== undefined || values["socket-path"] !== undefined) &&
-    command !== "servers"
+    command !== "servers" &&
+    !(command === "team" && ["assign", "unassign"].includes(positionals[1] ?? ""))
   )
-    throw new IdeError("Socket selector flags require tmux-ide servers add", {
+    throw new IdeError("Socket selector flags require servers add or team assign/unassign", {
       code: "USAGE",
       exitCode: 2,
     });
@@ -1079,6 +1081,29 @@ try {
     }
 
     case "team": {
+      if (positionals[1] === "assign" || positionals[1] === "unassign") {
+        const assign = positionals[1] === "assign";
+        if (positionals.length !== (assign ? 4 : 3))
+          throw new IdeError(
+            "Usage: tmux-ide team assign %PANE TEAM | team unassign %PANE [--socket-path PATH | --socket-name NAME]",
+            { code: "USAGE", exitCode: 2 },
+          );
+        const { assignPaneTeam } = await import("../packages/daemon/src/pane-team.ts");
+        const result = assignPaneTeam({
+          paneId: positionals[2]!,
+          name: assign ? positionals[3]! : null,
+          socketPath: values["socket-path"],
+          socketName: values["socket-name"],
+        });
+        console.log(
+          json
+            ? JSON.stringify(result)
+            : assign
+              ? `Assigned ${result.paneId} to ${result.team}`
+              : `Removed explicit team from ${result.paneId}`,
+        );
+        break;
+      }
       // `--json` is the scriptable control surface: print the fleet state and
       // exit without spawning the (bun/OpenTUI) TUI.
       if (json) {

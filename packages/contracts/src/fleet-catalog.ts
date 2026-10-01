@@ -1,3 +1,4 @@
+import { PaneTeamMembershipSchemaZ } from "./pane-team.ts";
 import {
   InteractionPaneEndpointSchemaZ,
   NativePaneIdentitySchemaZ,
@@ -121,6 +122,7 @@ export type FleetAgentHarness = z.infer<typeof FleetAgentHarnessSchemaZ>;
 export const FleetCatalogAgentEntryV1SchemaZ = z
   .object({
     agentId: FleetAgentIdSchemaZ,
+    team: PaneTeamMembershipSchemaZ.optional(),
     name: FleetLabelSchemaZ,
     harness: FleetAgentHarnessSchemaZ,
     activity: AgentActivitySchemaZ,

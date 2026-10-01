@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   createClaudeTeamNameReader,
+  createClaudeTeamMembershipReader,
   parseClaudeTeamMembers,
   resolveClaudeTeamName,
 } from "./claude-team-names.ts";
@@ -122,4 +123,20 @@ describe("Claude team names", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+});
+
+it("returns native membership without guessing a lead or changing the member name", async () => {
+  const read = createClaudeTeamMembershipReader("unused", {
+    readMembers: async () => members,
+    readProcesses: async () => processes,
+  });
+  const result = await read([
+    { runtimePaneId: "%1", pid: 10 },
+    { runtimePaneId: "%0", pid: 20 },
+  ]);
+  expect(result.get("%1")).toMatchObject({
+    name: "researcher",
+    team: { name: "session-one", source: "claude-code" },
+  });
+  expect(result.get("%0")).toBeUndefined();
 });

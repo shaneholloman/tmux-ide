@@ -5,7 +5,7 @@ import {
   type PaneInteractionEvent,
 } from "./pane-interaction-presentation.ts";
 /* @jsxImportSource @opentui/solid */
-import type { AgentActivity } from "@tmux-ide/contracts";
+import type { AgentActivity, PaneTeamMembership } from "@tmux-ide/contracts";
 import { Show } from "solid-js";
 import type { SemanticThemeSnapshot } from "../theme.ts";
 import { clipTerminal } from "../terminal-text.ts";
@@ -19,6 +19,7 @@ export function AgentRow(props: {
   theme: SemanticThemeSnapshot;
   id: string;
   name: string;
+  team?: PaneTeamMembership;
   context: string;
   activity: AgentActivity;
   interaction?: PaneInteractionEvent;
@@ -83,7 +84,7 @@ export function AgentRow(props: {
         theme={props.theme}
         id={props.id}
         width={props.width}
-        label={props.name}
+        label={props.compact && props.team ? `${props.team.name} / ${props.name}` : props.name}
         marker={
           receipt()
             ? receiptMarker()
@@ -113,7 +114,10 @@ export function AgentRow(props: {
           width={props.width}
           fg={props.selected ? palette().foreground : props.theme.roles.text.muted}
         >
-          {clipTerminal(`  ${props.context}`, props.width)}
+          {clipTerminal(
+            `  ${[props.team?.name, props.context].filter(Boolean).join(" · ")}`,
+            props.width,
+          )}
         </text>
       </Show>
     </box>

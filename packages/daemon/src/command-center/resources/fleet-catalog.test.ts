@@ -350,3 +350,10 @@ it("uses the same team name for unopened sessions, including wrapped Claude exec
   expect(resource.sessions[0]!.agents[0]!.name).toBe("researcher");
   expect(resource.sessions[0]!.agents[0]!.harness).toBe("claude-code");
 });
+
+it("includes explicitly grouped support terminals without inventing a Claude harness", () => {
+  const team = { id: "team.1234567890123456", name: "Release crew", source: "manual" as const };
+  const result = projectFleetCatalog([session({ panes: [pane({ team })] })], DAEMON, NOW_SEC);
+  expect(result.sessions[0]!.agents[0]).toMatchObject({ team, harness: "custom" });
+  expect(FleetCatalogResourceV1SchemaZ.safeParse(result).success).toBe(true);
+});

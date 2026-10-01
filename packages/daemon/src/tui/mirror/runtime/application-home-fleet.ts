@@ -1,3 +1,4 @@
+import { groupApplicationTeamRows } from "./application-team-groups.ts";
 import { createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import type {
   ApplicationMachineAgent,
@@ -84,6 +85,7 @@ export function projectHomeFleet(
     ? rows.filter((row) =>
         [
           row.name,
+          row.team?.name,
           row.harness,
           row.projectName,
           row.sessionName,
@@ -100,7 +102,7 @@ export function projectHomeFleet(
           ? "loading"
           : "unavailable"
       : "live",
-    rows: matching,
+    rows: groupApplicationTeamRows(matching),
     observedSessions,
     totalSessions,
     loadingSessions,

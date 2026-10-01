@@ -336,6 +336,7 @@ export function HomeAgentRoster(props: HomeAgentRosterProps) {
                     theme={props.theme}
                     id={`home-agent:${key}`}
                     name={row().name}
+                    team={row().team}
                     context={[row().machineLabel, row().serverLabel, row().sessionName]
                       .filter(Boolean)
                       .join(" · ")}

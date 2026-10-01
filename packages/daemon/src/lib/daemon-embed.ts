@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { createClaudeTeamNameReader } from "../terminal/attachments/claude-team-names.ts";
+import { createClaudeTeamMembershipReader } from "../terminal/attachments/claude-team-names.ts";
 import { PaneSourceDiscovery } from "./pane-source-discovery.ts";
 import { createBackgroundNativeCapture } from "./background-native-capture.ts";
 import { createOwnedViewerAdapterFactory } from "./owned-viewer-factory.ts";
@@ -1131,7 +1131,7 @@ async function startEmbeddedDaemonGeneration(
     // observe one daemon-generation authority rather than whichever server a
     // caller's ambient TMUX/PATH happens to select.
     const tmuxAuthority = resolveWorkspacePaneTmuxAuthority();
-    const readTeamNames = createClaudeTeamNameReader(
+    const readTeamMemberships = createClaudeTeamMembershipReader(
       join(resolveRuntimeNamespace().claudeDir, "teams"),
     );
     const catalogTmuxRunner = createPinnedWorkspaceTmuxRunner(tmuxAuthority);
@@ -1628,7 +1628,7 @@ async function startEmbeddedDaemonGeneration(
         agentStatusProbeFactory: ({ run }) =>
           createTmuxAgentStatusProbe({
             run,
-            readTeamNames,
+            readTeamMemberships,
             captureNative: (pane, signal) =>
               backgroundCapture?.(
                 {
@@ -1923,7 +1923,7 @@ async function startEmbeddedDaemonGeneration(
             () => observationSelector?.nativeServerEpoch ?? null,
           );
           if (!fleet) return null;
-          const names = await readTeamNames(
+          const names = await readTeamMemberships(
             fleet.flatMap((session) =>
               session.panes.map((pane) => ({
                 runtimePaneId: pane.runtimePaneId,
@@ -1935,7 +1935,9 @@ async function startEmbeddedDaemonGeneration(
             ...session,
             panes: session.panes.map((pane) => {
               const name = names.get(pane.runtimePaneId);
-              return name ? { ...pane, teamMemberName: name } : pane;
+              return name
+                ? { ...pane, teamMemberName: name.name, team: pane.team ?? name.team }
+                : pane;
             }),
           }));
         },

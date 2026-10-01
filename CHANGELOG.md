@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2.9.0-beta.49
+
+- Carry verified native Claude teammate names and team membership into Home and the sidebar through a read-only adapter.
+- Add `team assign %PANE "Team name"` and `team unassign %PANE` for mixed-harness groups, with explicit tmux socket selection.
+- Keep team members together in Home and the sidebar, share their team context labels, and include team names in Home search.
+- Preserve manual pane names and explicit group assignments over discovered defaults. Grouped support terminals remain custom terminals.
+- Keep memberships scoped to a machine/server and invalidate explicit assignments when the pane process is replaced.
+
+Claude retains orchestration ownership. Logical leads and in-process teammates are not guessed into separate panes. Cross-machine team groups and a graphical team-management dialog are not included. Existing beta.46 platform qualification limits remain applicable.
+
 ## 2.9.0-beta.48
 
 - Use cohesive agent names across pane headers, the sidebar, Home and agent details, while preserving explicit manual aliases.

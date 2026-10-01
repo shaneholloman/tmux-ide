@@ -1,3 +1,4 @@
+import type { PaneTeamMembership } from "@tmux-ide/contracts";
 import { resolvePaneDisplayName } from "../../terminal/protocol/pane-display-name.ts";
 import type { NativePaneIdentity } from "@tmux-ide/contracts";
 import { hostname } from "node:os";
@@ -72,6 +73,7 @@ export interface ApplicationShellPanePresentationFacts {
   /** Raw `@agent_display_name`; sanitized + freshness-gated in the pure layer. */
   readonly agentDisplayNameRaw?: string | null;
   readonly teamMemberName?: string;
+  readonly team?: PaneTeamMembership;
   /**
    * Screen-scrape fallback verdict the discovery layer resolved for panes
    * WITHOUT fresh authority. `null` means authority was fresh (scrape skipped);
@@ -431,7 +433,7 @@ export function resolvedAgentLabel(
 const AGENT_STATE_STAMP = /^(?:working|blocked|done|idle):\d+$/u;
 
 export function isAgentPane(pane: ApplicationShellPanePresentationFacts): boolean {
-  if (pane.teamMemberName) return true;
+  if (pane.teamMemberName || pane.team) return true;
   // A well-formed @agent_state stamp IS the agent contract: any pane that
   // self-reports is an agent pane, even when its command is a bare shell and
   // no @ide_type/role metadata exists. Staleness only affects the status, not
@@ -630,6 +632,7 @@ function projectApplicationShellResourceV1Core(
         // labels such as `Terminal` with the canonical harness name.
         name: resolvedAgentLabel(pane, presentation, index),
         harness: harnessForPane(pane),
+        ...(pane.team ? { team: pane.team } : {}),
         activity: presentation.activity,
         paneId,
         attention: presentation.attention,

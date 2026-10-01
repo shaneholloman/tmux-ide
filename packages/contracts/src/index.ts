@@ -106,3 +106,5 @@ export * from "./tmux-server-interaction-events.ts";
 export * from "./automation-operations.ts";
 export * from "./native-interaction-journal.ts";
 export * from "./native-operation-identity.ts";
+
+export * from "./pane-team.ts";

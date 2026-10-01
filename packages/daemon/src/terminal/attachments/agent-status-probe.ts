@@ -1,3 +1,6 @@
+import { readManualPaneTeam } from "./manual-pane-team.ts";
+import type { PaneTeamMembership } from "@tmux-ide/contracts";
+import type { ClaudeTeamMembershipReader } from "./claude-team-names.ts";
 import type { ClaudeTeamNameReader } from "./claude-team-names.ts";
 import type { NativePaneIdentity } from "@tmux-ide/contracts";
 /**
@@ -44,6 +47,7 @@ import {
 /** The per-pane facts the pure projector consumes (see `ApplicationShellPanePresentationFacts`). */
 export interface AgentStatusPaneFacts {
   readonly teamMemberName?: string;
+  readonly team?: PaneTeamMembership;
   /** Stable manifest id resolved from the pane hint, command, or process tree. */
   readonly agentKind: string | null;
   /** Raw `@agent_state` (`"<state>:<epoch>"`), or null when unset. */
@@ -95,6 +99,7 @@ const AGENT_OPTIONS_FORMAT = [
   "#{@agent_display_name}",
   "#{@agent_hint}",
   "#{pane_pid}",
+  "#{@tmux_ide_team}",
   AGENT_LINE_SENTINEL,
 ].join(AGENT_FIELD_SEPARATOR);
 
@@ -119,6 +124,7 @@ export const SCRAPE_CAPTURE_BUDGET = 4;
 const SCRAPE_CACHE_MAX_ENTRIES = 1024;
 
 interface RawPaneOptions {
+  readonly team?: PaneTeamMembership;
   readonly stateRaw: string | null;
   readonly statusTextRaw: string | null;
   readonly displayNameRaw: string | null;
@@ -153,12 +159,13 @@ function parseAgentOptions(stdout: string): ReadonlyMap<string, RawPaneOptions> 
     if (line.length === 0) continue;
     const fields = line.split(AGENT_FIELD_SEPARATOR);
     // paneId, state, statusText, displayName, hint, pid, sentinel
-    if (fields.length !== 7 || fields[6] !== AGENT_LINE_SENTINEL) continue;
+    if (![7, 8].includes(fields.length) || fields.at(-1) !== AGENT_LINE_SENTINEL) continue;
     const runtimePaneId = fields[0]!;
     if (!RUNTIME_PANE_ID.test(runtimePaneId)) continue;
     const pidText = fields[5]!;
     const pid = /^[0-9]+$/u.test(pidText) ? Number(pidText) : null;
     result.set(runtimePaneId, {
+      team: fields.length === 8 ? readManualPaneTeam(fields[6], pid) : undefined,
       stateRaw: emptyToNull(fields[1]!),
       statusTextRaw: emptyToNull(fields[2]!),
       displayNameRaw: emptyToNull(fields[3]!),
@@ -171,6 +178,7 @@ function parseAgentOptions(stdout: string): ReadonlyMap<string, RawPaneOptions> 
 
 export interface TmuxAgentStatusProbeDeps {
   readonly readTeamNames?: ClaudeTeamNameReader;
+  readonly readTeamMemberships?: ClaudeTeamMembershipReader;
   /** null proves no native dispatch; failures must never retry through stock capture. */
   readonly captureNative?: (
     pane: AgentStatusProbePane,
@@ -305,6 +313,7 @@ export function createTmuxAgentStatusProbe(deps: TmuxAgentStatusProbeDeps): Agen
       agentKind: string | null,
     ): void => {
       facts.set(pane.runtimePaneId, {
+        ...(raw?.team ? { team: raw.team } : {}),
         agentKind,
         agentStateRaw: raw?.stateRaw ?? null,
         agentStatusTextRaw: raw?.statusTextRaw ?? null,
@@ -430,6 +439,25 @@ export function createTmuxAgentStatusProbe(deps: TmuxAgentStatusProbeDeps): Agen
         scrapedAtSec: input.nowSec,
       });
       emit(pane, raw, verdict, manifest.id);
+    }
+
+    if (deps.readTeamMemberships) {
+      const memberships = await deps.readTeamMemberships(
+        input.panes.flatMap((pane) => {
+          const pid = options.get(pane.runtimePaneId)?.pid;
+          return pid ? [{ runtimePaneId: pane.runtimePaneId, pid }] : [];
+        }),
+      );
+      throwIfAborted(signal);
+      for (const [paneId, member] of memberships) {
+        const fact = facts.get(paneId);
+        if (fact)
+          facts.set(paneId, {
+            ...fact,
+            teamMemberName: member.name,
+            team: fact.team ?? member.team,
+          });
+      }
     }
 
     if (deps.readTeamNames) {
