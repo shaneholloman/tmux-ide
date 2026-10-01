@@ -21,6 +21,7 @@ const BASE_COMMANDS: readonly ApplicationPaletteCommand[] = [
   "home",
   "terminals",
   "new-window",
+  "new-agent",
   "split-right",
   "split-down",
   "close-pane",

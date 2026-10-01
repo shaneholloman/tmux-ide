@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2.9.0-beta.48
+
+- Use cohesive agent names across pane headers, the sidebar, Home and agent details, while preserving explicit manual aliases.
+- Recognize native Claude split-pane teammate names through read-only team metadata matched to the live pane process. Removed or unknown metadata falls back to normal pane naming.
+- Add Commands → New agent… to create independently named Claude Code or Codex agents in the selected local or remote workspace.
+- Keep agent names separate from changing activity and status labels.
+
+Claude team naming does not create native teammates or implement cross-harness team orchestration. In-process teammates share their lead's terminal. Existing beta.46 platform qualification limits remain applicable.
+
 ## 2.9.0-beta.47
 
 - Keep pane headers and Home indicators quiet while you type: unknown tmux command observations remain in activity history instead of displacing named interactions.

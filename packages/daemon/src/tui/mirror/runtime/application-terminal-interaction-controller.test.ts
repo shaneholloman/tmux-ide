@@ -312,6 +312,21 @@ describe("application terminal interaction controller", () => {
       createOperationId: () => "operation-a",
     });
 
+    await expect(controller.newAgent("Architect", "claude")).resolves.toBe("Created Architect");
+    expect(dispatch).toHaveBeenLastCalledWith({
+      kind: "owner-action",
+      name: "workspace.pane.create",
+      operationId: "operation-a",
+      input: {
+        workspaceName: "workspace.alpha",
+        kind: "agent",
+        displayTitle: "Architect",
+        harnessProfileId: "claude",
+        role: "implementer",
+        placement: { kind: "window" },
+      },
+    });
+    dispatch.mockClear();
     await expect(controller.newWindow()).resolves.toBe("created terminal window");
     await expect(controller.splitPane("right")).resolves.toBe("split pane right");
     await expect(controller.renamePane("pane.main", "Monitor")).resolves.toBe(

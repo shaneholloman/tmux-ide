@@ -44,6 +44,9 @@ function paneLine(
     displayName,
     hint,
     "",
+    "",
+    "",
+    "",
     SENTINEL,
   ].join(SEP);
 }
@@ -62,7 +65,9 @@ function pinRunner(sessions: string, panes: string): () => void {
 function appWith(options: {
   ownerToken: string | null;
   registry?: { list(): { sessionName: string }[] };
-  readFleet?: () => ReturnType<typeof readAdoptedFleet>;
+  readFleet?: () =>
+    | ReturnType<typeof readAdoptedFleet>
+    | Promise<ReturnType<typeof readAdoptedFleet>>;
 }): Hono {
   const app = new Hono();
   mountFleetResourceRoute(app, {
@@ -273,8 +278,8 @@ it.each([false, true])(
   (race) => {
     let epoch: string | null = DAEMON.instanceId;
     const raw = paneLine("alpha", "%1", true, "claude", "/tmp", "", "", "").replace(
-      `${SEP}${SEP}${SENTINEL}`,
-      `${SEP}7${SEP}${SENTINEL}`,
+      `${SEP}${SEP}${SEP}${SEP}${SEP}${SENTINEL}`,
+      `${SEP}7${SEP}${SEP}${SEP}${SEP}${SENTINEL}`,
     );
     const result = readAdoptedFleet(
       { list: () => [] },
@@ -294,3 +299,24 @@ it.each([false, true])(
     );
   },
 );
+
+it("awaits async team enrichment and preserves unavailable errors", async () => {
+  const app = appWith({ ownerToken: OWNER, readFleet: async () => [] });
+  const res = await app.request("/api/resources/fleet-catalog", {
+    headers: { Authorization: `Bearer ${OWNER}` },
+  });
+  expect(res.status).toBe(200);
+  const failed = appWith({
+    ownerToken: OWNER,
+    readFleet: async () => {
+      throw new Error("read failed");
+    },
+  });
+  expect(
+    (
+      await failed.request("/api/resources/fleet-catalog", {
+        headers: { Authorization: `Bearer ${OWNER}` },
+      })
+    ).status,
+  ).toBe(503);
+});

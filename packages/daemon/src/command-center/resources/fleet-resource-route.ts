@@ -14,7 +14,9 @@ export interface FleetResourceRouteOptions {
   /** Source of truth for which sessions the app created (`appCreated`). */
   readonly registry: Pick<WorkspaceRegistry, "list">;
   /** Daemon-generation-pinned tmux fleet read. Defaults only for legacy/test callers. */
-  readonly readFleet?: () => ReturnType<typeof readAdoptedFleet>;
+  readonly readFleet?: () =>
+    | ReturnType<typeof readAdoptedFleet>
+    | Promise<ReturnType<typeof readAdoptedFleet>>;
 }
 
 /**
@@ -36,7 +38,7 @@ export function mountFleetResourceRoute(app: Hono, options: FleetResourceRouteOp
     mismatchMessage: "Fleet catalog access requires owner authority",
   });
 
-  app.get("/api/resources/fleet-catalog", (c) => {
+  app.get("/api/resources/fleet-catalog", async (c) => {
     const gate = authorize(c);
     if (gate) return gate;
 
@@ -45,7 +47,7 @@ export function mountFleetResourceRoute(app: Hono, options: FleetResourceRouteOp
     // with a successful empty snapshot. Never expose raw socket/process errors.
     let sessions: ReturnType<typeof readAdoptedFleet>;
     try {
-      sessions = options.readFleet ? options.readFleet() : readAdoptedFleet(options.registry);
+      sessions = options.readFleet ? await options.readFleet() : readAdoptedFleet(options.registry);
     } catch {
       sessions = null;
     }

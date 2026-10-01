@@ -18,6 +18,7 @@ export interface TrustedMirrorPaneInventory {
   readonly active: boolean;
   readonly role: string | null;
   readonly name: string | null;
+  readonly nameSource?: string | null;
   readonly type: string | null;
   readonly missionStamp: string | null;
   readonly dir: string;

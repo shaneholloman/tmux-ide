@@ -236,3 +236,9 @@ describe("SessionDescriptorDiscovery", () => {
     expect(scheduled).toHaveLength(2);
   });
 });
+
+it("reads explicit name provenance without confusing it with a pane identity", () => {
+  const result = parseSessionPaneDescriptors([`${line("%3")}\tmanual`]);
+  expect(result[0]).toMatchObject({ runtimePaneId: "%3", name: "Shell", nameSource: "manual" });
+  expect(parseSessionPaneDescriptors([`${line("%3")}\tuntrusted`])[0]?.nameSource).toBeNull();
+});

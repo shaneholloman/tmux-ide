@@ -1,3 +1,5 @@
+import { join } from "node:path";
+import { createClaudeTeamNameReader } from "../terminal/attachments/claude-team-names.ts";
 import { PaneSourceDiscovery } from "./pane-source-discovery.ts";
 import { createBackgroundNativeCapture } from "./background-native-capture.ts";
 import { createOwnedViewerAdapterFactory } from "./owned-viewer-factory.ts";
@@ -842,7 +844,9 @@ async function startHttpServer({
     readonly sessionName: string;
     readonly paneCount: number;
   }[];
-  catalogFleet: () => ReturnType<typeof readAdoptedFleet>;
+  catalogFleet: () =>
+    | ReturnType<typeof readAdoptedFleet>
+    | Promise<ReturnType<typeof readAdoptedFleet>>;
   fleetPreviewCapture: (
     liveSessionId: string,
     signal?: AbortSignal,
@@ -1127,6 +1131,9 @@ async function startEmbeddedDaemonGeneration(
     // observe one daemon-generation authority rather than whichever server a
     // caller's ambient TMUX/PATH happens to select.
     const tmuxAuthority = resolveWorkspacePaneTmuxAuthority();
+    const readTeamNames = createClaudeTeamNameReader(
+      join(resolveRuntimeNamespace().claudeDir, "teams"),
+    );
     const catalogTmuxRunner = createPinnedWorkspaceTmuxRunner(tmuxAuthority);
     const initialTmuxProof = captureTmuxServerProof(catalogTmuxRunner);
     const initialNativeIdentityParts = initialTmuxProof
@@ -1621,6 +1628,7 @@ async function startEmbeddedDaemonGeneration(
         agentStatusProbeFactory: ({ run }) =>
           createTmuxAgentStatusProbe({
             run,
+            readTeamNames,
             captureNative: (pane, signal) =>
               backgroundCapture?.(
                 {
@@ -1900,8 +1908,8 @@ async function startEmbeddedDaemonGeneration(
         peekTerminalAttachmentRuntime,
         paneStreamRuntime,
         catalogLiveSessions: () => discoverLiveSessionSummaries(catalogTmuxRunner),
-        catalogFleet: () =>
-          readAdoptedFleet(
+        catalogFleet: async () => {
+          const fleet = readAdoptedFleet(
             workspaceRegistry,
             nativeGenerationTmuxRunner,
             (sessionName, pane) =>
@@ -1913,7 +1921,24 @@ async function startEmbeddedDaemonGeneration(
                   ) ?? null)
                 : null,
             () => observationSelector?.nativeServerEpoch ?? null,
-          ),
+          );
+          if (!fleet) return null;
+          const names = await readTeamNames(
+            fleet.flatMap((session) =>
+              session.panes.map((pane) => ({
+                runtimePaneId: pane.runtimePaneId,
+                pid: pane.incarnation,
+              })),
+            ),
+          );
+          return fleet.map((session) => ({
+            ...session,
+            panes: session.panes.map((pane) => {
+              const name = names.get(pane.runtimePaneId);
+              return name ? { ...pane, teamMemberName: name } : pane;
+            }),
+          }));
+        },
         fleetPreviewCapture: createFleetPreviewCapture(fleetFactsTmuxRunner, {
           serverEpoch: () => observationSelector?.nativeServerEpoch ?? null,
           capture: (request, signal) =>

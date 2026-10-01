@@ -1,3 +1,4 @@
+import { decodeTmuxArgument } from "../terminal/protocol/session-descriptor-discovery.ts";
 import type { NativePaneIdentity } from "@tmux-ide/contracts";
 import { nativePaneIdentity } from "../lib/native-pane-identity.ts";
 import type { InteractionPaneEndpoint } from "@tmux-ide/contracts";
@@ -223,6 +224,9 @@ export function readAdoptedSessionNames(runTmux: TmuxRunner = _tmuxRunner): stri
 
 /** One live pane, with the raw agent-authority options gathered for the fleet. */
 export interface FleetPaneFacts {
+  readonly title?: string;
+  readonly name?: string | null;
+  readonly nameSource?: string | null;
   readonly nativeIdentity?: NativePaneIdentity | null;
   readonly nativePaneBirthId?: string | null;
   readonly interactionEndpoint?: Extract<InteractionPaneEndpoint, { kind: "pane" }> | null;
@@ -237,6 +241,7 @@ export interface FleetPaneFacts {
   readonly agentStateRaw: string | null;
   readonly agentStatusTextRaw: string | null;
   readonly agentDisplayNameRaw: string | null;
+  readonly teamMemberName?: string;
   /** Durable `@agent_hint` agent identity, or null when the pane has none. */
   readonly agentHintRaw: string | null;
 }
@@ -271,6 +276,9 @@ const FLEET_PANE_FORMAT = [
   "#{@agent_display_name}",
   "#{@agent_hint}",
   "#{pane_birth_id}",
+  "#{qa:pane_title}",
+  "#{qa:@ide_name}",
+  "#{qa:@tmux_ide_name_source}",
   FLEET_LINE_SENTINEL,
 ].join(FLEET_FIELD_SEPARATOR);
 
@@ -316,8 +324,8 @@ export function readAdoptedFleet(
     if (!line) continue;
     const fields = line.split(FLEET_FIELD_SEPARATOR);
     // session, pane, semantic pane, incarnation pid, active, command, path, state,
-    // statusText, displayName, hint, sentinel
-    if (fields.length !== 13 || fields[12] !== FLEET_LINE_SENTINEL) continue;
+    // statusText, displayName, hint, birth ID, quoted title/name/source, sentinel
+    if (fields.length !== 16 || fields[15] !== FLEET_LINE_SENTINEL) continue;
     const sessionName = fields[0]!;
     if (!adoptedSet.has(sessionName)) continue;
     const runtimePaneId = fields[1]!;
@@ -330,6 +338,9 @@ export function readAdoptedFleet(
       panesBySession.set(sessionName, panes);
     }
     panes.push({
+      nameSource: emptyToNull(decodeTmuxArgument(fields[14]!)),
+      title: decodeTmuxArgument(fields[12]!),
+      name: emptyToNull(decodeTmuxArgument(fields[13]!)),
       runtimePaneId,
       semanticPaneId: emptyToNull(fields[2]!),
       incarnation,

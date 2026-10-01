@@ -1,3 +1,5 @@
+import { ApplicationNewAgentDialog } from "./application-new-agent-dialog.tsx";
+import type { createApplicationNewAgentOwner } from "./application-new-agent-owner.ts";
 import {
   interactionForCurrentPane,
   nameForCurrentEndpoint,
@@ -103,6 +105,7 @@ export interface ApplicationShellViewProps {
   readonly catalogPhase?: Accessor<"loading" | "live" | "unavailable">;
   readonly catalogNote?: Accessor<string | null>;
   readonly paletteOpen: Accessor<boolean>;
+  readonly newAgentOwner?: ReturnType<typeof createApplicationNewAgentOwner>;
   readonly paneRenameDialog?: Accessor<ApplicationPaneRenameDraft | null>;
   readonly paletteSelection?: Accessor<number>;
   readonly paletteReferencePage?: Accessor<"shortcuts" | "changes" | "help" | undefined>;
@@ -245,6 +248,7 @@ export function ApplicationShellView(props: ApplicationShellViewProps): JSX.Elem
                   agent.paneId,
                   {
                     name: agent.name,
+                    nameResolved: true,
                     activity: agent.activity,
                     attention: agent.attention,
                   },
@@ -379,6 +383,22 @@ export function ApplicationShellView(props: ApplicationShellViewProps): JSX.Elem
                       props.onOpenSurface(command, "mouse");
                   }}
                   onClose={() => props.onSetPaletteOpen(false, "mouse")}
+                />
+              ),
+            });
+          const agentDraft = props.newAgentOwner?.draft();
+          if (agentDraft && props.newAgentOwner)
+            layers.push({
+              id: "new-agent",
+              render: ({ active, zIndex }) => (
+                <ApplicationNewAgentDialog
+                  draft={agentDraft}
+                  owner={props.newAgentOwner!}
+                  width={props.dimensions().width}
+                  height={props.dimensions().height}
+                  theme={appearance.theme}
+                  active={active}
+                  zIndex={zIndex}
                 />
               ),
             });
@@ -589,6 +609,7 @@ export function ApplicationShellView(props: ApplicationShellViewProps): JSX.Elem
                         props.surface() === "terminals" &&
                         !props.paletteOpen() &&
                         !props.paneRenameDialog?.() &&
+                        !props.newAgentOwner?.draft() &&
                         !props.appearanceOwner?.pickerOpen()
                       }
                       width={shell.content.width}
@@ -662,7 +683,8 @@ export function ApplicationShellView(props: ApplicationShellViewProps): JSX.Elem
                   props.onSelectPane(id.slice("pane:".length));
               }}
               onIntent={({ id }) => {
-                if (id === "pane-rename") props.onCancelPaneRename?.();
+                if (id === "new-agent") props.newAgentOwner?.cancel();
+                else if (id === "pane-rename") props.onCancelPaneRename?.();
                 else if (id === "palette") props.onSetPaletteOpen(false, "keyboard");
                 else if (id === "notification") props.onDismissNotification?.();
               }}

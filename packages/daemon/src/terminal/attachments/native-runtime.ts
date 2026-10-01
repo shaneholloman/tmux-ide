@@ -487,6 +487,7 @@ export interface NativeTerminalInventoryPaneSnapshot extends TrustedSemanticPane
   readonly active: boolean;
   readonly role: string | null;
   readonly name: string | null;
+  readonly nameSource?: string | null;
   readonly type: string | null;
   /** Durable `@tmux_ide_mission` creation stamp, or null when unset. */
   readonly missionStamp: string | null;
@@ -589,6 +590,7 @@ function projectTrustedMirrorInventory(
       active: pane.active,
       role: nullable(pane.role),
       name: nullable(pane.name),
+      ...(pane.nameSource ? { nameSource: nullable(pane.nameSource) } : {}),
       type: nullable(pane.type),
       missionStamp: nullable(pane.missionStamp),
       dir: boundedWireValue(pane.dir, 4_096),

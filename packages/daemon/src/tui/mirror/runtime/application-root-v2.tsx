@@ -393,7 +393,7 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
           componentKeyboardRoutes.dispose();
           sessionFocusOwner?.dispose();
         });
-        const { homeAgents, paneRename, paletteCommands, paletteCommandList, openAgent, tour } =
+        const { homeAgents, paneRename, newAgent, paletteCommands, openAgent, tour } =
           createApplicationHomeExperience({
             guidedTourPreparation,
             machines,
@@ -439,6 +439,7 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
         useKeyboard((event) => {
           noteHostInteraction();
           const name = event.name.toLowerCase();
+          if (newAgent.handleKey(event) || paneRename.handleKey(event)) return;
           if (paletteModalOpen() || machines.switching()) {
             componentKeyboardRoutes.route(event);
             return;
@@ -450,7 +451,6 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
           if (name === "f6" || name === "f7") paletteCommands.setOpen(false, "keyboard");
           if (handleFleetShortcut(event, machines)) return;
           if (appearance.handlePickerKey(event)) return;
-          if (paneRename.handleKey(event)) return;
           if (
             (shell().semantic?.focus.palette.open || shell().localPaletteOpen) &&
             event.ctrl &&
@@ -520,7 +520,7 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
             componentKeyboardRoutes.routePaste(event.bytes);
             return;
           }
-          if (paneRename.handlePaste(event.bytes)) return;
+          if (newAgent.handlePaste(event.bytes) || paneRename.handlePaste(event.bytes)) return;
           if (selectionOwner.blocksInput()) return;
           if (paletteCommands.handlePaste(event.bytes)) return;
           if (activeSurface() === "home" && componentKeyboardRoutes.routePaste(event.bytes)) return;
@@ -572,6 +572,7 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
               catalogPhase={homeCatalog.phase}
               catalogNote={homeCatalog.note}
               paletteOpen={() => shell().semantic?.focus.palette.open ?? shell().localPaletteOpen}
+              newAgentOwner={newAgent}
               paneRenameDialog={paneRename.draft}
               paletteSelection={paletteCommands.selection}
               paletteQuery={paletteCommands.query}
@@ -587,7 +588,7 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
               onPaletteViewport={paletteCommands.setViewport}
               onPaletteFavorite={machines.togglePaletteFavorite}
               paletteCloseArmed={paletteCommands.closeArmed}
-              paletteCommands={paletteCommandList}
+              paletteCommands={paletteCommands.commands}
               paneInteractions={paneInteractions}
               interactionObservation={paneInteractions.observationStatus}
               recentPaneActivity={paneInteractions.activity}

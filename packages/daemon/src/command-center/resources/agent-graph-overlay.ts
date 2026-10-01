@@ -18,6 +18,7 @@ import {
   isAgentPane,
   paneIdentities,
   resolveAgentPresentation,
+  resolvedAgentLabel,
   type ApplicationShellSessionFacts,
 } from "./application-shell.ts";
 
@@ -143,7 +144,7 @@ export function projectApplicationShellAgentGraphOverlay(
       status: nodeStatus(presentation.detectStatus),
       statusSource: presentation.statusSource,
       attention: presentation.attention,
-      label: nodeLabel(presentation.displayName ?? pane.name ?? pane.title),
+      label: nodeLabel(resolvedAgentLabel(pane, presentation, index)),
     });
     nodeWindowIds.add(windowId);
     if (pane.role === "lead") leadWindowIds.push(windowId);

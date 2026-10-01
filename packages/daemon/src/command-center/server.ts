@@ -219,7 +219,7 @@ export interface CreateAppOptions {
     readonly paneCount: number;
   }[];
   /** Injectable daemon-generation-pinned adopted fleet projection. */
-  catalogFleet?: () => FleetSessionFacts[] | null;
+  catalogFleet?: () => FleetSessionFacts[] | null | Promise<FleetSessionFacts[] | null>;
   fleetPreviewCapture?: (
     liveSessionId: string,
     signal?: AbortSignal,

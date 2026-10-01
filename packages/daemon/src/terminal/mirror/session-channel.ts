@@ -3530,6 +3530,7 @@ export class SessionChannel {
         active: descriptor.paneActive && descriptor.windowActive,
         role: descriptor.role,
         name: descriptor.name,
+        ...(descriptor.nameSource ? { nameSource: descriptor.nameSource } : {}),
         type: descriptor.type,
         missionStamp: descriptor.missionStamp,
         nativePaneBirthId: descriptor.nativePaneBirthId ?? null,

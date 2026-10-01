@@ -1,3 +1,4 @@
+import { resolvePaneDisplayName } from "../../terminal/protocol/pane-display-name.ts";
 import type { NativePaneIdentity } from "@tmux-ide/contracts";
 import { hostname } from "node:os";
 import { basename } from "node:path";
@@ -44,6 +45,7 @@ export interface ApplicationShellPanePresentationFacts {
   readonly active: boolean;
   readonly role: string | null;
   readonly name: string | null;
+  readonly nameSource?: string | null;
   readonly type: string | null;
   /** Stable detected agent kind; private discovery fact, never a wire identity. */
   readonly agentKind?: string | null;
@@ -69,6 +71,7 @@ export interface ApplicationShellPanePresentationFacts {
   readonly agentStatusTextRaw?: string | null;
   /** Raw `@agent_display_name`; sanitized + freshness-gated in the pure layer. */
   readonly agentDisplayNameRaw?: string | null;
+  readonly teamMemberName?: string;
   /**
    * Screen-scrape fallback verdict the discovery layer resolved for panes
    * WITHOUT fresh authority. `null` means authority was fresh (scrape skipped);
@@ -384,6 +387,7 @@ function deprecatedStandalonePaneIdentities(
 export function harnessForPane(
   pane: ApplicationShellPanePresentationFacts,
 ): "codex" | "claude-code" | "custom" {
+  if (pane.teamMemberName) return "claude-code";
   const detected = pane.agentKind?.toLowerCase();
   if (detected === "codex") return "codex";
   if (detected === "claude" || detected === "claude-code") return "claude-code";
@@ -393,42 +397,41 @@ export function harnessForPane(
   return "custom";
 }
 
-const GENERIC_PANE_LABELS = new Set(["shell", "terminal", "tmux"]);
-
-function isGenericPaneLabel(value: string | null | undefined): boolean {
-  const normalized = value?.trim().toLowerCase() ?? "";
-  return normalized.length === 0 || GENERIC_PANE_LABELS.has(normalized);
-}
-
 /**
  * A promoted configless pane can be stamped as `Terminal` before the native
  * inventory's process-tree pass resolves a wrapped/version-shaped agent
  * executable. Once that stronger identity exists, do not keep publishing the
  * provisional generic label into the sidebar and pane chrome.
  */
-function resolvedAgentLabel(
+export function resolvedAgentLabel(
   pane: ApplicationShellPanePresentationFacts,
   presentation: ResolvedAgentPresentation,
   index: number,
 ): string {
-  if (presentation.displayName !== undefined) {
-    return label(presentation.displayName, `Agent ${index + 1}`);
-  }
-  if (!isGenericPaneLabel(pane.name)) return label(pane.name, `Agent ${index + 1}`);
-
+  const resolved = resolvePaneDisplayName({
+    semanticPaneId: pane.semanticPaneId ?? `agent.${index}`,
+    configuredName: pane.name,
+    configuredNameSource: pane.nameSource,
+    agentDisplayName: presentation.displayName,
+    teamMemberName: pane.teamMemberName,
+    currentCommand: pane.currentCommand,
+    title: pane.title,
+    hostName: hostname(),
+  });
+  if (["manual", "agent", "title"].includes(resolved.source))
+    return label(resolved.name, `Agent ${index + 1}`);
   const harness = harnessForPane(pane);
   if (harness === "codex") return "Codex";
   if (harness === "claude-code") return "Claude Code";
-
-  if (!isGenericPaneLabel(pane.title) && !isHostNameTitle(pane.title, hostname())) {
-    return label(pane.title, `Agent ${index + 1}`);
-  }
-  return `Agent ${index + 1}`;
+  return resolved.source === "process"
+    ? label(resolved.name, `Agent ${index + 1}`)
+    : `Agent ${index + 1}`;
 }
 
 const AGENT_STATE_STAMP = /^(?:working|blocked|done|idle):\d+$/u;
 
 export function isAgentPane(pane: ApplicationShellPanePresentationFacts): boolean {
+  if (pane.teamMemberName) return true;
   // A well-formed @agent_state stamp IS the agent contract: any pane that
   // self-reports is an agent pane, even when its command is a bare shell and
   // no @ide_type/role metadata exists. Staleness only affects the status, not

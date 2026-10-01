@@ -1,3 +1,4 @@
+import { createApplicationNewAgentOwner } from "./application-new-agent-owner.ts";
 import type { ApplicationPaletteCommand } from "./application-palette-input.ts";
 import { createEffect, createSignal, onCleanup, untrack, type Accessor } from "solid-js";
 
@@ -223,7 +224,7 @@ export function createApplicationHomeNavigationOwner(options: {
   readonly startGeneration: ReturnType<typeof createApplicationGenerationStarter>;
   readonly interaction: Pick<
     ReturnType<typeof createApplicationTerminalInteractionController>,
-    "selectPane" | "renamePane" | "newWindow" | "splitPane" | "closePane"
+    "selectPane" | "renamePane" | "newWindow" | "newAgent" | "splitPane" | "closePane"
   >;
   readonly openSessions?: () => void;
   readonly openAppearance?: () => void;
@@ -241,6 +242,17 @@ export function createApplicationHomeNavigationOwner(options: {
     sessionOwner: () => options.sessionOwner()!,
     selectPane: options.interaction.selectPane,
   });
+  const newAgent = createApplicationNewAgentOwner({
+    targetKey: () =>
+      JSON.stringify([
+        applicationGenerationNavigationKey(options.sessionOwner()?.snapshot() ?? null),
+        options.sessionOwner()?.snapshot()?.connection?.workspaceName,
+        options.sessionOwner()?.sessionName(),
+      ]),
+    workspace: () => options.sessionOwner()?.snapshot()?.connection?.workspaceName ?? null,
+    create: (draft) => options.interaction.newAgent(draft.name, draft.harness),
+    setNote: options.setNote,
+  });
   const paneRename = createApplicationPaneRenameOwner(
     options.interaction.renamePane,
     options.setNote,
@@ -251,6 +263,7 @@ export function createApplicationHomeNavigationOwner(options: {
     inputActive: () =>
       options.activeSurface() === "home" &&
       !paneRename.draft() &&
+      !newAgent.draft() &&
       !options.appearanceOpen?.() &&
       !options.shell().semantic?.focus.palette.open &&
       !options.shell().localPaletteOpen &&
@@ -314,13 +327,16 @@ export function createApplicationHomeNavigationOwner(options: {
       )
         return null;
       if (options.sessionOwner()?.snapshot()?.status !== "live") return "Open a live session first";
-      return command !== "new-window" && !options.focusedPane() ? "Select a live pane first" : null;
+      return command !== "new-window" && command !== "new-agent" && !options.focusedPane()
+        ? "Select a live pane first"
+        : null;
     },
     activeSurface: options.activeSurface,
     binding: options.binding,
     commandSource: applicationPaletteCommandSource,
     setSurface: options.setSurface,
     setNote: options.setNote,
+    openNewAgent: newAgent.begin,
     openAppearance: options.openAppearance,
     toggleSidebar: options.toggleSidebar,
     openSessions: options.openSessions,
@@ -337,6 +353,7 @@ export function createApplicationHomeNavigationOwner(options: {
   return {
     homeAgents: options.fleetHome ? { ...homeAgents, presentation: options.fleetHome } : homeAgents,
     paneRename,
+    newAgent,
     paletteCommands,
     paletteCommandList,
     openAgent,

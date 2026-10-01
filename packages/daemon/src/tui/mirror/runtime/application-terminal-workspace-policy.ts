@@ -8,6 +8,8 @@ import { nativePaneResizeCells } from "./pane-resize-geometry.ts";
 import type { OpenTuiPaneFrame } from "./terminal-layout-projection.ts";
 
 export interface ApplicationTerminalAgentIndicator {
+  /** Name came from the shared daemon resolver, including team metadata. */
+  readonly nameResolved?: boolean;
   readonly name: string;
   readonly activity: AgentActivity;
   readonly attention: boolean;
@@ -99,11 +101,14 @@ export function terminalPaneDisplayTitle(
   displayNameSource?: "manual" | "agent" | "process" | "title" | "generated" | null,
 ): string {
   const presentedName = displayName?.trim() || paneId;
-  return indicator
-    ? displayNameSource === "manual" && presentedName !== indicator.name.trim()
-      ? `${presentedName} · ${indicator.name.trim()}`
-      : indicator.name.trim() || presentedName
-    : presentedName;
+  if (indicator?.nameResolved && indicator.name.trim()) return indicator.name.trim();
+  if (
+    displayNameSource === "manual" ||
+    displayNameSource === "agent" ||
+    displayNameSource === "title"
+  )
+    return presentedName;
+  return indicator?.name.trim() || presentedName;
 }
 
 export function terminalWindowTitle(

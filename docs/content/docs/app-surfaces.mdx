@@ -53,6 +53,31 @@ Terminals is a visual client for the selected tmux session:
 The UI retains terminal content through quiet periods, resize, theme switching,
 daemon replacement, and viewer reattachment. tmux remains the source of truth.
 
+### Named agents
+
+In a live workspace, open **Commands → New agent…**, enter a display name such as
+“Architect” or “Reviewer”, and choose Claude Code or Codex. Tab switches the
+harness; Enter creates the agent in a new window using the workspace directory.
+The harness must be installed on the selected machine. Select a remote workspace
+first to create the agent there.
+
+Explicit manual pane names are retained. For native Claude split-pane teams,
+tmux-ide reads the local runtime team metadata and matches each member against
+the Claude process running inside that pane. Matched teammate names take
+precedence over automatic names and changing activity titles. Otherwise,
+meaningful native pane titles appear ahead of generic process labels.
+
+The same naming rules feed pane headers, the sidebar, Home and agent details.
+Team metadata is refreshed on inventory reads with a two-second cache; deleted
+or unrecognized metadata falls back to ordinary pane naming. In-process Claude
+teammates share their lead's terminal and are not shown as separate tmux panes.
+Unknown Claude metadata formats also fall back to native pane titles. Names are display
+labels; identity and routing still use the exact machine, server and pane binding.
+
+Creating a named agent starts an independent session. It does not register a
+member in Claude's native team, and renaming a pane does not change a Claude
+teammate's messaging address.
+
 ### Scrolling
 
 The mouse wheel acts on the pane under the pointer. At live output, applications

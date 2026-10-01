@@ -277,7 +277,8 @@ describe("production OpenTUI v2 data path", () => {
     // Home activity receives its daemon identity to avoid cross-machine attribution.
     // Three composition lines prepare the lazy tour before renderer creation;
     // loading and persistence remain in the dedicated guided-tour owners.
-    expect(applicationRootSource.trim().split(/\r?\n/u).length).toBeLessThanOrEqual(693);
+    // Named-agent dialog ownership adds one composition prop; its state and IO stay outside the root.
+    expect(applicationRootSource.trim().split(/\r?\n/u).length).toBeLessThanOrEqual(694);
     // Component leaves are reviewable presentation modules, not authority/data-path
     // owners. Their import boundary is enforced by production-design-system-contract;
     // retain the original budget for the runtime and authority graph itself.
@@ -419,9 +420,12 @@ describe("production OpenTUI v2 data path", () => {
     }
     // Sidebar key routing and scoped host Shift capture reuse existing owners.
     // Neither may introduce daemon, transport, replica, or scheduling authority.
-    const inputHelpers = ["application-sidebar-shortcuts", "host-shift-capture"].map(
-      (name) => `packages/daemon/src/tui/mirror/runtime/${name}.ts`,
-    );
+    const inputHelpers = [
+      "application-sidebar-shortcuts.ts",
+      "host-shift-capture.ts",
+      "application-new-agent-owner.ts",
+      "application-new-agent-dialog.tsx",
+    ].map((name) => `packages/daemon/src/tui/mirror/runtime/${name}`);
     for (const path of inputHelpers) {
       expect(authorityDataPathFiles).toContain(path);
       expect(productionGraph.sourceByFile.get(path)).not.toMatch(

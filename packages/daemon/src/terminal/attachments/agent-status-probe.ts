@@ -1,3 +1,4 @@
+import type { ClaudeTeamNameReader } from "./claude-team-names.ts";
 import type { NativePaneIdentity } from "@tmux-ide/contracts";
 /**
  * Agent-status probe for the application-shell inventory — the IO half of the
@@ -42,6 +43,7 @@ import {
 
 /** The per-pane facts the pure projector consumes (see `ApplicationShellPanePresentationFacts`). */
 export interface AgentStatusPaneFacts {
+  readonly teamMemberName?: string;
   /** Stable manifest id resolved from the pane hint, command, or process tree. */
   readonly agentKind: string | null;
   /** Raw `@agent_state` (`"<state>:<epoch>"`), or null when unset. */
@@ -168,6 +170,7 @@ function parseAgentOptions(stdout: string): ReadonlyMap<string, RawPaneOptions> 
 }
 
 export interface TmuxAgentStatusProbeDeps {
+  readonly readTeamNames?: ClaudeTeamNameReader;
   /** null proves no native dispatch; failures must never retry through stock capture. */
   readonly captureNative?: (
     pane: AgentStatusProbePane,
@@ -427,6 +430,20 @@ export function createTmuxAgentStatusProbe(deps: TmuxAgentStatusProbeDeps): Agen
         scrapedAtSec: input.nowSec,
       });
       emit(pane, raw, verdict, manifest.id);
+    }
+
+    if (deps.readTeamNames) {
+      const names = await deps.readTeamNames(
+        input.panes.flatMap((pane) => {
+          const pid = options.get(pane.runtimePaneId)?.pid;
+          return pid ? [{ runtimePaneId: pane.runtimePaneId, pid }] : [];
+        }),
+      );
+      throwIfAborted(signal);
+      for (const [paneId, name] of names) {
+        const fact = facts.get(paneId);
+        if (fact) facts.set(paneId, { ...fact, teamMemberName: name });
+      }
     }
 
     // Bound the cache: pane ids are server-unique and never re-probed after a

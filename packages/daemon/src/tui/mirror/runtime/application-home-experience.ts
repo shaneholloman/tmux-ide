@@ -73,6 +73,7 @@ export function createApplicationHomeExperience(
       blocked: () =>
         options.paletteModalOpen() ||
         !!navigation.paneRename.draft() ||
+        !!navigation.newAgent.draft() ||
         paletteOpen() ||
         appearance.pickerOpen() ||
         machines.switching() ||

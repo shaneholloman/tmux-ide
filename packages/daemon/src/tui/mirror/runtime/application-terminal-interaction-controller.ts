@@ -114,6 +114,7 @@ export interface ApplicationTerminalInteractionController {
   cyclePane(): void;
   cycleWindow(): void;
   newWindow(): Promise<string>;
+  newAgent(name: string, harness: "claude" | "codex"): Promise<string>;
   zoomPane(semanticPaneId?: string): Promise<string>;
   splitPane(direction: "right" | "down"): Promise<string>;
   renamePane(semanticPaneId: string, name: string): Promise<string>;
@@ -1437,6 +1438,32 @@ export function createApplicationTerminalInteractionController(
       } catch (error) {
         return `split unavailable: ${error instanceof Error ? error.message : String(error)}`;
       }
+    },
+    async newAgent(name, harness) {
+      const active = options.generation();
+      const workspaceName = active?.connection?.workspaceName;
+      if (active?.status !== "live" || !active.client || !workspaceName)
+        throw new Error("Open a live workspace first");
+      const response = await active.client.dispatch({
+        kind: "owner-action",
+        name: "workspace.pane.create",
+        input: {
+          workspaceName,
+          kind: "agent",
+          displayTitle: name,
+          harnessProfileId: harness,
+          role: "implementer",
+          placement: { kind: "window" },
+        },
+        operationId: createOperationId(),
+      });
+      if (
+        options.generation() !== active ||
+        response.kind !== "owner-action" ||
+        response.result === null
+      )
+        throw new Error("Agent creation was not confirmed");
+      return `Created ${name}`;
     },
     async newWindow() {
       const active = options.generation();

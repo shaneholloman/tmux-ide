@@ -48,6 +48,7 @@ export type ApplicationPaletteCommand =
   | "terminals"
   | "appearance"
   | "zoom-pane"
+  | "new-agent"
   | "new-window"
   | "split-right"
   | "split-down"
@@ -68,6 +69,12 @@ export function applicationCommandDescription(command: ApplicationPaletteCommand
   detail: string;
   shortcut?: string;
 } {
+  if (command === "new-agent")
+    return {
+      id: command,
+      label: "New agent…",
+      detail: "Named Claude or Codex agent in this workspace",
+    };
   if (command === "help")
     return { id: command, label: "Using tmux-ide", detail: "Help and getting started" };
   if (command === "hide-sidebar" || command === "show-sidebar")

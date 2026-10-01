@@ -591,3 +591,23 @@ it("falls back only for predispatch native unavailability and never on capture f
   );
   expect(stockCalls).toBe(1);
 });
+
+it("refreshes team naming independently from status and removes absent members", async () => {
+  let present = true;
+  const probe = createTmuxAgentStatusProbe({
+    run: async () => optionsLine("%3", { state: `working:${NOW}`, pid: "4242" }),
+    readTeamNames: async (panes) => {
+      expect(panes).toEqual([{ runtimePaneId: "%3", pid: 4242 }]);
+      return new Map(present ? [["%3", "researcher"]] : []);
+    },
+    manifests: MANIFESTS,
+  });
+  const input = {
+    sessionId: "$1",
+    panes: [{ runtimePaneId: "%3", currentCommand: "claude", title: "Working" }],
+    nowSec: NOW,
+  };
+  expect((await probe.probe(input)).get("%3")?.teamMemberName).toBe("researcher");
+  present = false;
+  expect((await probe.probe(input)).get("%3")?.teamMemberName).toBeUndefined();
+});

@@ -323,3 +323,30 @@ describe("projectFleetCatalog", () => {
     expect(FleetCatalogResourceV1SchemaZ.safeParse(resource).success).toBe(true);
   });
 });
+
+it("keeps teammate names and explicit aliases aligned with pane presentation", () => {
+  const facts = pane({ currentCommand: "claude", title: "Architect", name: "claude" });
+  const catalog = (p: FleetPaneFacts) =>
+    projectFleetCatalog([session({ panes: [p] })], DAEMON, NOW_SEC).sessions[0]!.agents[0]!;
+  expect(catalog(facts).name).toBe("Architect");
+  const alias = catalog({
+    ...facts,
+    name: "Lead reviewer",
+    nameSource: "manual",
+    agentStateRaw: `working:${NOW_SEC}`,
+    agentDisplayNameRaw: "Other",
+  });
+  expect(alias.name).toBe("Lead reviewer");
+  expect(alias.agentId).toBe(catalog(facts).agentId);
+});
+
+it("uses the same team name for unopened sessions, including wrapped Claude executables", () => {
+  const facts = [
+    session({
+      panes: [pane({ currentCommand: "2.1.285", title: "Working", teamMemberName: "researcher" })],
+    }),
+  ];
+  const resource = projectFleetCatalog(facts, DAEMON, NOW_SEC);
+  expect(resource.sessions[0]!.agents[0]!.name).toBe("researcher");
+  expect(resource.sessions[0]!.agents[0]!.harness).toBe("claude-code");
+});

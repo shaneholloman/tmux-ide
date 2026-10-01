@@ -213,7 +213,7 @@ describe("application-shell resource projector", () => {
     expect(() => projectApplicationShellV1(first)).not.toThrow();
     expect(first.workspace.sidebar.agents).toEqual([
       expect.objectContaining({ name: "Fable", harness: "claude-code", paneId: "pane.pm" }),
-      expect.objectContaining({ name: "Codex", harness: "codex" }),
+      expect.objectContaining({ name: "Implementer", harness: "codex" }),
     ]);
     const fallbackId = first.workspace.sidebar.agents[1]!.paneId!;
     expect(first.focus.appFocusedPaneId).toBe(fallbackId);
@@ -231,7 +231,7 @@ describe("application-shell resource projector", () => {
         },
         {
           id: fallbackId,
-          title: "Codex",
+          title: "Implementer",
           kind: "agent",
           active: true,
           interactionEndpoint: null,
@@ -834,7 +834,7 @@ describe("GET /api/project/:name/application-shell", () => {
     expect(legacy.headers.get("x-tmux-ide-compatibility")).toBe("application-shell-v1");
     const legacyBody = ApplicationShellResourceV1SchemaZ.parse(await legacy.json());
     expect(legacyBody.resource.workspace.sidebar.agents[0]).toEqual(
-      expect.objectContaining({ name: "Codex", paneId: "pane.implementer" }),
+      expect.objectContaining({ name: "Implementer", paneId: "pane.implementer" }),
     );
 
     for (const path of [
@@ -928,7 +928,7 @@ describe("GET /api/project/:name/application-shell", () => {
     expect(body.resource.terminalInventory.resources).toHaveLength(2);
     expect(body.resource.terminalInventory.resources[1]).toEqual(
       expect.objectContaining({
-        title: "Codex",
+        title: "Implementer",
         kind: "agent",
         interactionEndpoint: null,
         nativeIdentity: null,

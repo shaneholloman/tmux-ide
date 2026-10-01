@@ -918,6 +918,16 @@ async function runPackedGoldenJourney(installedCli, initialOwner) {
     if (literal.status !== 0) throw new Error(`Could not type packed input: ${literal.stderr}`);
     send(app, "Enter");
   };
+  const selectPaletteCommand = async (app, label) => {
+    send(app, "F5");
+    await observe(
+      "command palette opens",
+      5_000,
+      () => capture(app.targetPane).includes("Search"),
+      app.diagnostics,
+    );
+    typeCommand(app, label);
+  };
   const cleanQuit = async (app) => {
     send(app, "C-q");
     await observe("clean quit", 10_000, () => existsSync(app.statusPath), app.diagnostics);
@@ -1297,7 +1307,7 @@ async function runPackedGoldenJourney(installedCli, initialOwner) {
 
   // Close the focused agent through the shipped palette's two-step destructive
   // action. Its sidebar row must retire before a replacement can publish.
-  send(one, "F5", "Down", "Down", "Down", "Down", "Enter");
+  await selectPaletteCommand(one, "Close pane");
   await observe(
     "installed agent close confirmation armed",
     5_000,
@@ -1468,7 +1478,7 @@ async function runPackedGoldenJourney(installedCli, initialOwner) {
     one.diagnostics,
   );
 
-  send(one, "F5", "Down", "Down", "Enter");
+  await selectPaletteCommand(one, "Split pane right");
   await observe("split pane right", 10_000, () => paneCount("journey-beta") === 2, one.diagnostics);
   // Adoption above deliberately exercises unnamed ordinary tmux panes. For
   // this split-publication proof, assign distinct manual fixture labels: the
@@ -1572,7 +1582,7 @@ async function runPackedGoldenJourney(installedCli, initialOwner) {
 
   // Close is intentionally two activations: the first arms the destructive
   // palette row; only the second dispatches the daemon mutation.
-  send(one, "F5", "Down", "Down", "Down", "Down", "Enter");
+  await selectPaletteCommand(one, "Close pane");
   await observe(
     "close confirmation armed",
     5_000,

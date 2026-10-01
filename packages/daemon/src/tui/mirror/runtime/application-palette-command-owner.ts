@@ -20,6 +20,7 @@ export function createApplicationPaletteCommandOwner(options: {
   ) => CommandSource;
   readonly setSurface: (surface: "home" | "terminals") => void;
   readonly setNote: (note: string | null) => void;
+  readonly openNewAgent?: () => void;
   readonly openSessions?: () => void;
   readonly openAppearance?: () => void;
   readonly toggleSidebar?: () => void;
@@ -96,6 +97,11 @@ export function createApplicationPaletteCommandOwner(options: {
     if (unavailable) {
       setCloseArmed(false);
       options.setNote(unavailable);
+      return;
+    }
+    if (command === "new-agent") {
+      setOpen(false, source);
+      options.openNewAgent?.();
       return;
     }
     if (typeof command === "object" && command.fleet) {
