@@ -292,7 +292,7 @@ async function assertServerIntent(
   if (info.tmuxServerProofVersion !== 1 || !identity.tmuxServerProof || !proof)
     throw new DaemonBootstrapError(
       "incompatible",
-      "Cannot prove the requested tmux server for this daemon. Its server identity is unavailable or unsupported; the existing daemon was left running.",
+      `Cannot prove the requested tmux server for this daemon. Its server identity is unavailable or unsupported; the existing daemon was left running. Proof availability: capability=${info.tmuxServerProofVersion === 1}, daemon=${Boolean(identity.tmuxServerProof)}, client=${Boolean(proof)}.`,
       { reason: "tmux-server-unproven" },
     );
   if (
