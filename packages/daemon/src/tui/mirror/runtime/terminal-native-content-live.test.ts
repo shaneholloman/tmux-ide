@@ -283,7 +283,9 @@ process.stdin.on('data', data => process.stdout.write(data)); process.stdout.wri
         `${process.execPath} ${script}`,
       );
       tmux("set-option", "-t", session, "status", "off");
-      await vi.waitFor(() => expect(tmux("capture-pane", "-p", "-t", session)).toBe("READY"));
+      await vi.waitFor(() => expect(tmux("capture-pane", "-p", "-t", session)).toBe("READY"), {
+        timeout: 5_000,
+      });
       const shell =
         "\x1b[2J\x1b[H" +
         Array.from({ length: 30 }, (_, i) => `SHELL-LINE-${i}-abcdefghijklmnopqrstuv\r\n`).join(
@@ -437,7 +439,9 @@ process.stdin.on('data', data => process.stdout.write(data)); process.stdout.wri
           `${process.execPath} ${script}`,
         );
         tmux("set-option", "-t", session, "status", "off");
-        await vi.waitFor(() => expect(tmux("capture-pane", "-p", "-t", session)).toBe("READY"));
+        await vi.waitFor(() => expect(tmux("capture-pane", "-p", "-t", session)).toBe("READY"), {
+          timeout: 5_000,
+        });
         const rows = Array.from({ length: 12 }, (_, row) => `ROW${String(row).padStart(2, "0")}`);
         const paint =
           "\x1b[2J" +
@@ -567,7 +571,9 @@ process.stdin.on('data', data => appendFileSync(${JSON.stringify(received)}, dat
         `${process.execPath} ${script}`,
       );
       tmux("set-option", "-t", session, "status", "off");
-      await vi.waitFor(() => expect(tmux("capture-pane", "-p", "-t", session)).toBe("READY"));
+      await vi.waitFor(() => expect(tmux("capture-pane", "-p", "-t", session)).toBe("READY"), {
+        timeout: 5_000,
+      });
       const mirror = new MirrorService({
         createIo: (target, handlers) =>
           new MirrorControlChannel({
@@ -651,7 +657,9 @@ process.stdin.on('data', data => process.stdout.write(data)); process.stdout.wri
           `${process.execPath} ${script}`,
         );
         tmux("set-option", "-t", session, "status", "off");
-        await vi.waitFor(() => expect(tmux("capture-pane", "-p", "-t", session)).toBe("READY"));
+        await vi.waitFor(() => expect(tmux("capture-pane", "-p", "-t", session)).toBe("READY"), {
+          timeout: 5_000,
+        });
         const mirror = new MirrorService({
           createIo: (target, handlers) =>
             new MirrorControlChannel({
@@ -1254,7 +1262,9 @@ describe.skipIf(!available)("native nested redraw synchronization", () => {
     let revision = 0;
     const faults: string[] = [];
     try {
-      await vi.waitFor(() => expect(tmux("capture-pane", "-p", "-t", target)).toContain("BOTTOM"));
+      await vi.waitFor(() => expect(tmux("capture-pane", "-p", "-t", target)).toContain("BOTTOM"), {
+        timeout: 5_000,
+      });
       const described = await mirror.describeSession(session);
       owner = new SessionRuntimeTerminalReplicaOwner(
         "00000000-0000-4000-8000-000000000001",
@@ -1340,8 +1350,9 @@ describe.skipIf(!available)("native history authority", () => {
       tmux("set-option", "-t", session, "history-limit", mode === "large" ? "10000" : "12");
       tmux("new-window", "-d", "-t", session, "-n", "history", `${process.execPath} ${script}`);
       const target = `${session}:history`;
-      await vi.waitFor(() =>
-        expect(tmux("capture-pane", "-p", "-t", target)).toContain(`DONE-${batch}`),
+      await vi.waitFor(
+        () => expect(tmux("capture-pane", "-p", "-t", target)).toContain(`DONE-${batch}`),
+        { timeout: 5_000 },
       );
       const mirror = new MirrorService({
         createIo: (name, handlers) =>
@@ -1392,7 +1403,10 @@ describe.skipIf(!available)("native history authority", () => {
           Number(tmux("display-message", "-p", "-t", target, "#{history_size}")),
         ).toBeGreaterThan(0);
         if (mode === "clear") tmux("clear-history", "-t", target);
-        else tmux("send-keys", "-t", target, "-l", "more");
+        // One byte is one draw trigger even when tmux/PTY chunking changes.
+        // A multi-byte word can arrive as multiple data events and overshoot
+        // the expected batch while the assertion races further redraws.
+        else tmux("send-keys", "-t", target, "-l", "x");
         await vi.waitFor(
           () => {
             if (mode !== "clear") expect(text()).toContain(`DONE-${batch * 2}`);
@@ -1404,7 +1418,7 @@ describe.skipIf(!available)("native history authority", () => {
           { timeout: 2500 },
         );
         if (mode === "clear") {
-          tmux("send-keys", "-t", target, "-l", "more");
+          tmux("send-keys", "-t", target, "-l", "x");
           await vi.waitFor(() => expect(text()).toContain("DONE-80"));
           tmux("clear-history", "-t", target);
           await vi.waitFor(() => expect(snapshot!.history.length).toBe(0), { timeout: 2500 });
