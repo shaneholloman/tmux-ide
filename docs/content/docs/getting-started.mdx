@@ -60,12 +60,13 @@ Home lists the tmux sessions you already own. Select one with the mouse or
 keyboard, or name it directly:
 
 ```bash
-tmux new-session -s work
 tmux-ide app work
 ```
 
-If there are no sessions, press `N` on Home to create one. Closing tmux-ide does
-not kill the tmux session.
+If there are no sessions, press `N` on Home to create one. You do not need a
+system `tmux` command: tmux-ide uses its private bundled copy for new servers.
+If you already use tmux, its existing sessions are discovered too. Closing
+tmux-ide does not kill the tmux session.
 
 ## Controls
 
