@@ -14,7 +14,7 @@ import { randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { join } from "node:path";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import {
   PANE_STREAM_PROTOCOL_VERSION,
@@ -26,6 +26,8 @@ import { MirrorService } from "../mirror/mirror-service.ts";
 import { attachPaneStreamWebSocket } from "../../server/pane-stream-upgrade.ts";
 import { PaneStreamLeaseManager } from "./lease-manager.ts";
 import { PaneStreamAdmissionCoordinator } from "./pane-stream-websocket.ts";
+
+afterEach(() => vi.restoreAllMocks());
 
 const hasTmux = spawnSync("tmux", ["-V"], { stdio: "ignore" }).status === 0;
 const socketName = `zz-m43-psw-${process.pid}-${randomUUID().slice(0, 8)}`;
@@ -226,6 +228,24 @@ describe.skipIf(!hasTmux)("pane-stream wire live", () => {
     expect(textOf(clientS, floodPane)).toContain("SEED_F_42");
     expect(textOf(clientH, quietC)).toContain("SEED_C_42");
 
+    // Observe real outbound flow notifications while S's receive side is
+    // paused. A pre-drain ledger peak can disappear into the OS buffer and
+    // does not prove that the subscriber has actually been parked.
+    let pausedOnWire = false;
+    const originalSend = WebSocket.prototype.send;
+    vi.spyOn(WebSocket.prototype, "send").mockImplementation(function (
+      this: WebSocket,
+      ...args: Parameters<WebSocket["send"]>
+    ) {
+      const raw = args[0];
+      if (typeof raw === "string" && raw.includes('"flow"')) {
+        const frame = JSON.parse(raw) as Record<string, unknown>;
+        if (frame.type === "flow" && frame.pane === floodPane && frame.state === "paused")
+          pausedOnWire = true;
+      }
+      return originalSend.apply(this, args);
+    });
+
     // ── Stall S, then flood ────────────────────────────────────────────────
     clientS.ws.pause();
     // Drive until the live socket itself proves backpressure, then interrupt
@@ -239,11 +259,7 @@ describe.skipIf(!hasTmux)("pane-stream wire live", () => {
     try {
       await vi.waitFor(
         () => {
-          const snapshot = coordinator.flowSnapshot();
-          const stalled = Object.values(snapshot).some(
-            (panes) => (panes[floodPane]?.["ws-send-buffer"] ?? 0) > 256 << 10,
-          );
-          expect(stalled).toBe(true);
+          expect(pausedOnWire).toBe(true);
         },
         { timeout: 30_000 },
       );

@@ -1480,6 +1480,15 @@ async function runPackedGoldenJourney(installedCli, initialOwner) {
 
   await selectPaletteCommand(one, "Split pane right");
   await observe("split pane right", 10_000, () => paneCount("journey-beta") === 2, one.diagnostics);
+  // Native pane creation precedes the owner's metadata verification/commit.
+  // Do not rename its provisional pane until the UI has received success:
+  // doing so races inspectMatches and correctly causes the split to roll back.
+  await observe(
+    "split operation committed",
+    10_000,
+    () => capture(one.targetPane).includes("split pane right"),
+    one.diagnostics,
+  );
   // Adoption above deliberately exercises unnamed ordinary tmux panes. For
   // this split-publication proof, assign distinct manual fixture labels: the
   // optional @ide_name can otherwise remain generic "Terminal" while the
