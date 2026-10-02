@@ -1,5 +1,5 @@
 name: Set up supported tmux
-description: Build the pinned tmux 3.7c baseline for isolated Linux CI tests
+description: Build upstream tmux 3.7c for system-fallback CI tests (bundled capture has a separate gate)
 inputs:
   test-node-version:
     description: Node version to restore after building native prerequisites
@@ -20,9 +20,16 @@ runs:
         git -C "$RUNNER_TEMP/tmux-supported-source" remote add origin "$repository"
         git -C "$RUNNER_TEMP/tmux-supported-source" fetch --depth=1 origin "$commit"
         git -C "$RUNNER_TEMP/tmux-supported-source" checkout --detach FETCH_HEAD
-        node scripts/build-bundled-tmux.mjs --source "$RUNNER_TEMP/tmux-supported-source" --output "$RUNNER_TEMP/tmux-supported" --jobs 2
-        "$RUNNER_TEMP/tmux-supported/tmux" -V
-        echo "$RUNNER_TEMP/tmux-supported" >> "$GITHUB_PATH"
+        # System-fallback fixtures deliberately exercise upstream capture-pane.
+        # The OpenTUI package and isolated-installed jobs separately qualify
+        # the patched bundled tmux, including its native capture extensions.
+        cd "$RUNNER_TEMP/tmux-supported-source"
+        sh autogen.sh
+        ./configure --prefix="$RUNNER_TEMP/tmux-supported"
+        make -j2
+        make install
+        "$RUNNER_TEMP/tmux-supported/bin/tmux" -V
+        echo "$RUNNER_TEMP/tmux-supported/bin" >> "$GITHUB_PATH"
     - uses: actions/setup-node@v4
       with:
         node-version: ${{ inputs.test-node-version }}
