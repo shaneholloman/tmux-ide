@@ -945,9 +945,12 @@ describe.skipIf(!available)("native quiet alternate-screen capture after resize"
 });
 
 describe.skipIf(!available)("native normal-screen bottom row and cursor", () => {
-  it.each(["top", "bottom", "off"])(
-    "preserves nested content through native zoom and resize with %s borders",
-    async (border) => {
+  it.each([
+    ...["top", "bottom", "off"].map((border) => ({ border, injectFailure: false })),
+    ...(nativeCapabilities.physicalGrid ? [{ border: "off", injectFailure: true }] : []),
+  ])(
+    "preserves nested content through native zoom and resize with $border borders (recovery: $injectFailure)",
+    async ({ border, injectFailure }) => {
       const normal = join(directory, `normal-${border}.mjs`);
       const normalOutput =
         Array.from(
@@ -958,7 +961,7 @@ describe.skipIf(!available)("native normal-screen bottom row and cursor", () => 
         normal,
         `process.on('SIGWINCH', () => {}); process.stdout.write(${JSON.stringify(normalOutput)}); setInterval(() => {}, 10000);`,
       );
-      const session = `normal-${border}`;
+      const session = `normal-${border}-${injectFailure}`;
       tmux(
         "new-session",
         "-d",
@@ -973,14 +976,38 @@ describe.skipIf(!available)("native normal-screen bottom row and cursor", () => 
       tmux("set-option", "-w", "-t", session, "pane-border-status", border);
       tmux("split-window", "-v", "-t", session, `${process.execPath} ${normal}`);
       tmux("split-window", "-h", "-t", session, `${process.execPath} ${normal}`);
+      let injectedCaptureFailures = 0;
       const mirror = new MirrorService({
-        createIo: (target, handlers) =>
-          new MirrorControlChannel({
+        // Match the daemon's observer wiring so transient capture failures can
+        // complete the atomic resize recovery instead of stalling the fixture.
+        internalReadHookEmission: (pane, marker) => ({
+          bufferName: "resize-recovery-observer",
+          signalChannel: "resize-recovery-observer",
+          record: `${pane}|${marker}|workspace.pane.read|`,
+        }),
+        createIo: (target, handlers) => {
+          const io = new MirrorControlChannel({
             session: target,
             handlers,
             socketName: socket,
             configFile: "/dev/null",
-          }),
+          });
+          const commandList = io.commandListInline.bind(io);
+          io.commandListInline = (command, count, index, onReply) =>
+            commandList(command, count, index, (reply) => {
+              if (
+                injectFailure &&
+                injectedCaptureFailures === 0 &&
+                reply.ok &&
+                command.includes("capture-pane -p -R") &&
+                decodeNativeGridCapture(reply.lines.join("\n"))?.cols === 95
+              ) {
+                injectedCaptureFailures++;
+                onReply({ ok: false, lines: [] });
+              } else onReply(reply);
+            });
+          return io;
+        },
       });
       const owners: SessionRuntimeTerminalReplicaOwner[] = [];
       try {
@@ -1091,6 +1118,7 @@ describe.skipIf(!available)("native normal-screen bottom row and cursor", () => 
             );
           }
         }
+        if (injectFailure) expect(injectedCaptureFailures).toBe(1);
       } finally {
         for (const owner of owners) await owner.dispose();
         await mirror.dispose();
