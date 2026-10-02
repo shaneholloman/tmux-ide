@@ -635,6 +635,7 @@ if (workloadMode) {
       retainedHeapAfterBytes: retainedMemoryAfter.heapUsed,
       naturalHeapGrowthBytes: Math.max(0, measuredHeapBytes.at(-1)! - measuredHeapBytes[0]!),
       maxHeartbeatDelayMs,
+      p99HeartbeatDelayMs: Number(eventLoopDelay.percentile(99)) / 1_000_000,
       peakRssBytes,
       peakHeapBytes,
       rssSlopeBytesPerSample: theilSen(measuredRssBytes),

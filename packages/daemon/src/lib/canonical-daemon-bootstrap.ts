@@ -221,7 +221,7 @@ async function replaceOlderCanonicalDaemon(
       { reason: "identity-mismatch" },
     );
   }
-  assertServerIntent(deps, info, identity, intent);
+  await assertServerIntent(deps, info, identity, intent);
   const latest = deps.inspect();
   if (
     latest.status !== "valid" ||
@@ -252,14 +252,43 @@ async function replaceOlderCanonicalDaemon(
   );
 }
 
-function assertServerIntent(
+async function assertServerIntent(
   deps: CanonicalDaemonBootstrapDependencies,
   info: CanonicalDaemonInfo,
   identity: NonNullable<Awaited<ReturnType<typeof probeCanonicalDaemonIdentity>>>,
   intent: ReturnType<typeof resolveTmuxServerIntent>,
-): void {
+): Promise<void> {
   if (!intent) return;
-  const proof = deps.serverProof(intent);
+  // Cold election contenders can briefly exhaust the daemon's proof deadline.
+  // Retry only unavailable evidence, always against this exact daemon. Never
+  // reuse a cached proof or retry a positive server/daemon mismatch.
+  let proof = deps.serverProof(intent);
+  for (
+    let attempt = 0;
+    attempt < 2 && info.tmuxServerProofVersion === 1 && (!identity.tmuxServerProof || !proof);
+    attempt += 1
+  ) {
+    await deps.sleep(100);
+    const refreshed = await deps.identity(info, undefined, true);
+    if (refreshed) {
+      if (
+        refreshed.pid !== info.pid ||
+        refreshed.instanceId !== info.instanceId ||
+        refreshed.startedAt !== info.startedAt ||
+        refreshed.protocolVersion !== identity.protocolVersion ||
+        refreshed.productVersion !== identity.productVersion
+      )
+        throw new DaemonBootstrapError(
+          "incompatible",
+          "Canonical daemon changed identity while verifying the requested tmux server.",
+          { reason: "identity-mismatch" },
+        );
+      identity = refreshed;
+      proof = deps.serverProof(intent);
+    } else {
+      proof = null;
+    }
+  }
   if (info.tmuxServerProofVersion !== 1 || !identity.tmuxServerProof || !proof)
     throw new DaemonBootstrapError(
       "incompatible",
@@ -315,7 +344,7 @@ async function probeCanonical(
   ) {
     return { status: "incompatible", reason: "identity-mismatch" };
   }
-  assertServerIntent(deps, state.info, identity, intent);
+  await assertServerIntent(deps, state.info, identity, intent);
   if (
     state.info.protocolVersion !== DAEMON_WIRE_PROTOCOL_VERSION ||
     identity.protocolVersion !== state.info.protocolVersion ||
@@ -553,5 +582,5 @@ export async function assertCanonicalDaemonServerIntent(
       "Canonical daemon identity could not be verified for the requested tmux server.",
       { reason: "identity-mismatch" },
     );
-  assertServerIntent(deps, info, identity, intent);
+  await assertServerIntent(deps, info, identity, intent);
 }

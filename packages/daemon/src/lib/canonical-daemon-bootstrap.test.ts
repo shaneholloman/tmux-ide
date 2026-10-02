@@ -740,6 +740,56 @@ describe("canonical server intent admission", () => {
       expect(deps.spawnOwner).not.toHaveBeenCalled();
     },
   );
+  it.each(["daemon", "client"] as const)(
+    "retries a transient %s proof without replacing the owner",
+    async (side) => {
+      const deps = dependencies();
+      const identity = await deps.identity();
+      const identityProbe = vi.fn().mockResolvedValue(identity);
+      if (side === "daemon")
+        identityProbe.mockResolvedValueOnce({ ...identity, tmuxServerProof: null });
+      const serverProof = vi.fn().mockReturnValue({ version: 1, kind: "live", digest });
+      if (side === "client") serverProof.mockReturnValueOnce(null);
+      const sleep = vi.fn(async () => undefined);
+      await expect(
+        ensureCanonicalDaemon(
+          { entryPath: "/tmp/cli.js", tmuxServerIntent: intent },
+          { ...deps, identity: identityProbe, serverProof, sleep },
+        ),
+      ).resolves.toMatchObject({ source: "existing" });
+      expect(sleep).toHaveBeenCalledTimes(1);
+      expect(deps.spawnOwner).not.toHaveBeenCalled();
+      expect(deps.shutdownOlderOwner).not.toHaveBeenCalled();
+    },
+  );
+  it("refuses daemon replacement during a proof retry", async () => {
+    const deps = dependencies();
+    const identity = await deps.identity();
+    const identityProbe = vi
+      .fn()
+      .mockResolvedValueOnce({ ...identity, tmuxServerProof: null })
+      .mockResolvedValue({ ...identity, pid: identity.pid + 1 });
+    await expect(
+      ensureCanonicalDaemon(
+        { entryPath: "/tmp/cli.js", tmuxServerIntent: intent },
+        { ...deps, identity: identityProbe, sleep: async () => undefined },
+      ),
+    ).rejects.toMatchObject({ reason: "identity-mismatch" });
+    expect(deps.spawnOwner).not.toHaveBeenCalled();
+    expect(deps.shutdownOlderOwner).not.toHaveBeenCalled();
+  });
+  it("bounds retries when the server proof remains unavailable", async () => {
+    const deps = dependencies({ digest: null });
+    const sleep = vi.fn(async () => undefined);
+    await expect(
+      ensureCanonicalDaemon(
+        { entryPath: "/tmp/cli.js", tmuxServerIntent: intent },
+        { ...deps, sleep },
+      ),
+    ).rejects.toMatchObject({ reason: "tmux-server-unproven" });
+    expect(sleep).toHaveBeenCalledTimes(2);
+    expect(deps.spawnOwner).not.toHaveBeenCalled();
+  });
   it("keeps context-free reuse compatible with older metadata", async () => {
     const deps = dependencies({ capability: false, digest: null });
     await expect(
