@@ -11,18 +11,24 @@ const quote = (s) => "'" + s.replaceAll("'", "'\\''") + "'";
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "tmux-installer-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const platform = process.platform;
+  const arch = process.arch;
+  const target = `${platform}-${arch}`;
   const bin = path.join(root, "tools");
   const prefix = path.join(root, "install space ' quote");
   fs.mkdirSync(bin);
   function script(name, body) {
     fs.writeFileSync(path.join(bin, name), "#!/bin/sh\nset -eu\n" + body, { mode: 0o755 });
   }
-  script("uname", 'case "$1" in -s) echo Darwin ;; -m) echo arm64 ;; esac\n');
+  script(
+    "uname",
+    `case "$1" in -s) echo ${platform === "darwin" ? "Darwin" : "Linux"} ;; -m) echo ${arch === "arm64" ? "arm64" : "x86_64"} ;; esac\n`,
+  );
   const sha = createHash("sha256").update("archive").digest("hex");
   script(
     "curl",
     `url=''; out=''; while [ "$#" -gt 0 ]; do case "$1" in https:*) url=$1 ;; -o) shift; out=$1 ;; esac; shift; done
-case "$url" in *SHASUMS256.txt) printf '%s  node-v24.1.0-darwin-arm64.tar.gz\\n' '${sha}' > "$out" ;; *) printf '%s' "\${MOCK_ARCHIVE:-archive}" > "$out" ;; esac\n`,
+case "$url" in *SHASUMS256.txt) printf '%s  node-v24.1.0-${target}.tar.gz\\n' '${sha}' > "$out" ;; *) printf '%s' "\${MOCK_ARCHIVE:-archive}" > "$out" ;; esac\n`,
   );
   const npm = path.join(root, "npm.mjs");
   fs.writeFileSync(
@@ -31,11 +37,11 @@ case "$url" in *SHASUMS256.txt) printf '%s  node-v24.1.0-darwin-arm64.tar.gz\\n'
 if (process.env.MOCK_NPM_FAIL) process.exit(1);
 const prefix=process.argv[process.argv.indexOf('--prefix')+1];
 const root=path.join(prefix,'lib/node_modules/tmux-ide');
-for (const dir of ['bin','scripts','packages/daemon/dist/native/tmux/darwin-arm64']) fs.mkdirSync(path.join(root,dir),{recursive:true});
+for (const dir of ['bin','scripts','packages/daemon/dist/native/tmux/${target}']) fs.mkdirSync(path.join(root,dir),{recursive:true});
 fs.writeFileSync(path.join(root,'bin/cli.js'), "if(process.env.MOCK_TUI_FAIL && process.argv.includes('--tui-binary')) process.exit(1); console.log('tmux-ide v2.9.0');");
 fs.writeFileSync(path.join(root,'scripts/postinstall.js'), "require('node:fs').appendFileSync(process.env.HOME+'/postinstall', 'installed\\\\n');");
-fs.writeFileSync(path.join(root,'packages/daemon/dist/native/tmux/darwin-arm64/manifest.json'),JSON.stringify({minimumMacOS:'1.0',minimumGlibc:'1.0'}));
-if (!process.env.MOCK_MISSING_TMUX) fs.writeFileSync(path.join(root,'packages/daemon/dist/native/tmux/darwin-arm64/tmux'),'#!/bin/sh\\necho tmux 3.7c\\n');
+fs.writeFileSync(path.join(root,'packages/daemon/dist/native/tmux/${target}/manifest.json'),JSON.stringify({minimumMacOS:'1.0',minimumGlibc:'1.0'}));
+if (!process.env.MOCK_MISSING_TMUX) fs.writeFileSync(path.join(root,'packages/daemon/dist/native/tmux/${target}/tmux'),'#!/bin/sh\\necho tmux 3.7c\\n');
 `,
   );
   const node = process.execPath;
