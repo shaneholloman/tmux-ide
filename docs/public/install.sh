@@ -55,7 +55,9 @@ main() {
   # after the verified installation has moved to its permanent location.
   TMUX_IDE_RUNTIME_MODE=development npm install --global --prefix "$stage/npm" "tmux-ide@$version"
   cli="$stage/npm/lib/node_modules/tmux-ide/bin/cli.js"
-  node "$cli" --version
+  installed=$(node --input-type=module -e 'import fs from "node:fs"; console.log(JSON.parse(fs.readFileSync(process.argv[1], "utf8")).version)' "$stage/npm/lib/node_modules/tmux-ide/package.json")
+  [ "$(node "$cli" --version)" = "tmux-ide v$installed" ] || fail 'Installed CLI version does not match its package'
+  case "$version" in [0-9]*.*.*) [ "$installed" = "$version" ] || fail 'Installed package does not match the requested version' ;; esac
   native="$stage/npm/lib/node_modules/tmux-ide/packages/daemon/dist/native/tmux/$os-$arch/tmux"
   [ -f "$native" ] || fail "This version does not bundle tmux for $os-$arch; the existing installation is unchanged"
   node --input-type=module - "$(dirname "$native")/manifest.json" <<'JS'

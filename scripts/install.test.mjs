@@ -24,6 +24,7 @@ function fixture(t) {
     "uname",
     `case "$1" in -s) echo ${platform === "darwin" ? "Darwin" : "Linux"} ;; -m) echo ${arch === "arm64" ? "arm64" : "x86_64"} ;; esac\n`,
   );
+  script("tmux-ide", "echo stale-PATH-version; exit 99\n");
   const sha = createHash("sha256").update("archive").digest("hex");
   script(
     "curl",
@@ -38,7 +39,8 @@ if (process.env.MOCK_NPM_FAIL) process.exit(1);
 const prefix=process.argv[process.argv.indexOf('--prefix')+1];
 const root=path.join(prefix,'lib/node_modules/tmux-ide');
 for (const dir of ['bin','scripts','packages/daemon/dist/native/tmux/${target}']) fs.mkdirSync(path.join(root,dir),{recursive:true});
-fs.writeFileSync(path.join(root,'bin/cli.js'), "if(process.env.MOCK_TUI_FAIL && process.argv.includes('--tui-binary')) process.exit(1); console.log('tmux-ide v2.9.0');");
+fs.writeFileSync(path.join(root,'package.json'),JSON.stringify({version:'2.9.0'}));
+fs.writeFileSync(path.join(root,'bin/cli.js'), "if(process.env.MOCK_TUI_FAIL && process.argv.includes('--tui-binary')) process.exit(1); console.log(process.env.MOCK_BAD_VERSION ? 'tmux-ide v0.0.0' : 'tmux-ide v2.9.0');");
 fs.writeFileSync(path.join(root,'scripts/postinstall.js'), "require('node:fs').appendFileSync(process.env.HOME+'/postinstall', 'installed\\\\n');");
 fs.writeFileSync(path.join(root,'packages/daemon/dist/native/tmux/${target}/manifest.json'),JSON.stringify({minimumMacOS:'1.0',minimumGlibc:'1.0'}));
 if (!process.env.MOCK_MISSING_TMUX) fs.writeFileSync(path.join(root,'packages/daemon/dist/native/tmux/${target}/tmux'),'#!/bin/sh\\necho tmux 3.7c\\n');
@@ -84,6 +86,7 @@ test("fresh install and upgrade work with spaces and shell punctuation", (t) => 
 for (const [label, failure] of [
   ["checksum mismatch", { MOCK_ARCHIVE: "corrupt" }],
   ["npm failure", { MOCK_NPM_FAIL: "1" }],
+  ["mismatched CLI version", { MOCK_BAD_VERSION: "1" }],
   ["TUI download failure", { MOCK_TUI_FAIL: "1" }],
   ["missing platform bundle", { MOCK_MISSING_TMUX: "1" }],
 ])
