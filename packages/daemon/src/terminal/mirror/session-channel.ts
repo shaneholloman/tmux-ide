@@ -429,6 +429,17 @@ interface WindowRecord {
   modeKeys?: "emacs" | "vi";
 }
 
+type WindowLayout = ParsedLayout & { zoomed: boolean; unzoomed?: ParsedLayout };
+
+function layoutIdentitiesEqual(left: WindowLayout, right: WindowLayout): boolean {
+  const paneIds = (layout: ParsedLayout | undefined) => layout?.leaves.map((leaf) => leaf.id);
+  return (
+    left.zoomed === right.zoomed &&
+    JSON.stringify(paneIds(left)) === JSON.stringify(paneIds(right)) &&
+    JSON.stringify(paneIds(left.unzoomed)) === JSON.stringify(paneIds(right.unzoomed))
+  );
+}
+
 interface WindowSyncStage {
   readonly windows: Map<string, WindowRecord>;
   readonly layouts: Map<string, ParsedLayout & { zoomed: boolean; unzoomed?: ParsedLayout }>;
@@ -489,7 +500,9 @@ export class SessionChannel {
   private disposed = false;
   private readonly nativeGrid: NativeGridCaptureReader;
   private nativeClientProbePending = false;
+  // Native captures fence every geometry event; inventory fences identity only.
   private windowAuthorityOrdinal = 0;
+  private windowIdentityOrdinal = 0;
   private paneIncarnation = 0;
   private recoveryOrdinal = 0;
   private plainReseedActive: PlainReseedLease | null = null;
@@ -2885,6 +2898,7 @@ export class SessionChannel {
         /^tmux-ide-copy-keys\s+\$[0-9]+\s+@[0-9]+\s+[0-9]+\s+-\s*:\s*(emacs|vi)\s*$/u.test(rest))
     ) {
       this.windowAuthorityOrdinal += 1;
+      this.windowIdentityOrdinal += 1;
       this.scheduleSync();
       return;
     }
@@ -2895,6 +2909,7 @@ export class SessionChannel {
       STRUCTURAL_NOTIFICATIONS.has(name)
     ) {
       this.windowAuthorityOrdinal += 1;
+      if (name !== "layout-change") this.windowIdentityOrdinal += 1;
     }
     // Layout changes remain a second honest wake-up: a native resize can arrive
     // before the once-per-second subscription notification. The inventory
@@ -2951,9 +2966,13 @@ export class SessionChannel {
     }
     if (name === "layout-change") {
       const change = parseLayoutChange(rest);
-      if (!change) return;
+      if (!change) {
+        this.windowIdentityOrdinal += 1;
+        return;
+      }
       const parsed = parseLayout(change.visible);
       if (!parsed) {
+        this.windowIdentityOrdinal += 1;
         this.scheduleSync(); // never guess from a failed parse
         return;
       }
@@ -2962,6 +2981,15 @@ export class SessionChannel {
         zoomed: change.zoomed,
         unzoomed: parseLayout(change.layout) ?? undefined,
       };
+      const previousLayout =
+        this.pendingLayoutOutput.get(change.windowId)?.layout ??
+        this.layoutByWindow.get(change.windowId);
+      if (
+        !pendingLayout.unzoomed ||
+        !previousLayout ||
+        !layoutIdentitiesEqual(previousLayout, pendingLayout)
+      )
+        this.windowIdentityOrdinal += 1;
       // Resync on BOTH structural deltas: an unknown leaf (new pane) and a
       // known pane of this window missing from the leaves (a killed pane in a
       // surviving window emits only %layout-change — without this, its
@@ -3325,7 +3353,7 @@ export class SessionChannel {
     expectedRuntimeSessionId: string,
     attempt = 0,
   ): Promise<TrustedMirrorSessionInventory> {
-    const authorityOrdinal = this.windowAuthorityOrdinal;
+    const authorityOrdinal = this.windowIdentityOrdinal;
     const beforeLines = await this.io.request(
       `list-panes -s -t "${expectedRuntimeSessionId}" -F "${SESSION_PANE_DESCRIPTOR_FORMAT}"`,
     );
@@ -3418,8 +3446,8 @@ export class SessionChannel {
       confirmedWindowStage.repairedIdentity ||
       repairedPanes ||
       !coherent ||
-      !this.windowStagesEqual(windowStage, confirmedWindowStage) ||
-      authorityOrdinal !== this.windowAuthorityOrdinal
+      !this.windowStageIdentitiesEqual(windowStage, confirmedWindowStage) ||
+      authorityOrdinal !== this.windowIdentityOrdinal
     ) {
       if (attempt >= 1)
         throw new Error(`trusted inventory for ${this.opts.session} did not settle`);
@@ -3624,7 +3652,11 @@ export class SessionChannel {
     this.emitLayoutAuthority();
   }
 
-  private windowStagesEqual(left: WindowSyncStage, right: WindowSyncStage): boolean {
+  // Inventory establishes pane/window identity, not a frozen terminal size.
+  // Native resize notifications independently publish geometry. Requiring two
+  // identical sizes here makes continuous dragging exhaust the inventory retry
+  // and revoke otherwise unchanged window links, stalling layout publication.
+  private windowStageIdentitiesEqual(left: WindowSyncStage, right: WindowSyncStage): boolean {
     if (
       JSON.stringify(left.links) !== JSON.stringify(right.links) ||
       left.currentWindow !== right.currentWindow ||
@@ -3645,22 +3677,7 @@ export class SessionChannel {
         leftWindow.name !== rightWindow.name ||
         leftWindow.paneBorderStatus !== rightWindow.paneBorderStatus ||
         leftWindow.modeKeys !== rightWindow.modeKeys ||
-        leftLayout.zoomed !== rightLayout.zoomed ||
-        JSON.stringify(leftLayout.unzoomed) !== JSON.stringify(rightLayout.unzoomed) ||
-        leftLayout.width !== rightLayout.width ||
-        leftLayout.height !== rightLayout.height ||
-        leftLayout.leaves.length !== rightLayout.leaves.length ||
-        leftLayout.leaves.some((leaf, index) => {
-          const candidate = rightLayout.leaves[index];
-          return (
-            !candidate ||
-            leaf.id !== candidate.id ||
-            leaf.left !== candidate.left ||
-            leaf.top !== candidate.top ||
-            leaf.width !== candidate.width ||
-            leaf.height !== candidate.height
-          );
-        })
+        !layoutIdentitiesEqual(leftLayout, rightLayout)
       ) {
         return false;
       }

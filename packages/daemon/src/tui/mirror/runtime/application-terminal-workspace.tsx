@@ -1735,20 +1735,16 @@ export function ApplicationTerminalWorkspace(props: ApplicationTerminalWorkspace
         }
       : null;
   });
-  const guideCells = createMemo(() => {
+  // A single retained text surface moves with the divider. Recreating one
+  // renderable per cell on every layout tick adds churn during rapid drags.
+  const guideText = createMemo(() => {
     const active = guide();
-    if (!active?.active) return Object.freeze([]);
+    if (!active?.active) return "";
     const axis = resizePreview()?.axis;
-    if (!axis) return Object.freeze([]);
-    const cells: Array<{ x: number; y: number; marker: string }> = [];
-    for (let y = 0; y < active.rect.height; y += 1)
-      for (let x = 0; x < active.rect.width; x += 1)
-        cells.push({
-          x: active.rect.x + x,
-          y: active.rect.y + y + topOffset(),
-          marker: ACTIVE_RESIZE_GUIDE_CELL[axis],
-        });
-    return Object.freeze(cells);
+    if (!axis) return "";
+    return Array(active.rect.height)
+      .fill(ACTIVE_RESIZE_GUIDE_CELL[axis].repeat(active.rect.width))
+      .join("\n");
   });
 
   return (
@@ -2115,22 +2111,19 @@ export function ApplicationTerminalWorkspace(props: ApplicationTerminalWorkspace
         }
         onMouse={routePointer}
       />
-      <For each={guideCells()}>
-        {(cell) => (
-          <text
-            position="absolute"
-            left={cell.x}
-            top={cell.y}
-            width={1}
-            height={1}
-            zIndex={5}
-            selectable={false}
-            fg={props.theme.roles.text.primary}
-            content={cell.marker}
-            onMouse={routePointer}
-          />
-        )}
-      </For>
+      <text
+        id="terminal-resize-guide"
+        position="absolute"
+        left={guide()?.rect.x ?? 0}
+        top={(guide()?.rect.y ?? 0) + topOffset()}
+        width={guide()?.rect.width ?? 0}
+        height={guide()?.rect.height ?? 0}
+        zIndex={5}
+        selectable={false}
+        fg={props.theme.roles.text.primary}
+        content={guideText()}
+        onMouse={routePointer}
+      />
       <Show when={pointerSelecting()}>
         <box
           position="absolute"

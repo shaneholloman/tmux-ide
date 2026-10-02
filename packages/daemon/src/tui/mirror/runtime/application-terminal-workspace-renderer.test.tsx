@@ -1054,6 +1054,8 @@ describe("ApplicationTerminalWorkspace", () => {
       cells: 12,
     });
     // The pointer is ahead of tmux: highlight stays on the rendered pane edge.
+    const guide = setup.renderer.root.findDescendantById("terminal-resize-guide");
+    expect(guide).toBeDefined();
     expect(setup.captureCharFrame().split("\n")[5]?.[10]).toBe("╎");
     expect(setup.captureCharFrame().split("\n")[5]?.[12]).not.toBe("╎");
     const current = {
@@ -1064,6 +1066,7 @@ describe("ApplicationTerminalWorkspace", () => {
     };
     setObservedLayout({ current, windows: [current] });
     await setup.renderOnce();
+    expect(setup.renderer.root.findDescendantById("terminal-resize-guide")).toBe(guide);
     expect(setup.captureCharFrame().split("\n")[5]?.[12]).toBe("╎");
     expect(setup.captureCharFrame().split("\n")[5]?.[10]).not.toBe("╎");
     // Reversing direction must not pull the highlight away from the pane either.
@@ -1072,9 +1075,11 @@ describe("ApplicationTerminalWorkspace", () => {
     expect(previews.at(-1)).toMatchObject({ cells: 8 });
     expect(setup.captureCharFrame().split("\n")[5]?.[12]).toBe("╎");
     expect(setup.captureCharFrame().split("\n")[5]?.[8]).not.toBe("╎");
+    expect(setup.renderer.root.findDescendantById("terminal-resize-guide")).toBe(guide);
     await setup.mockMouse.release(10, 5, MouseButtons.LEFT);
     await setup.renderOnce();
     expect(submissions).toHaveLength(1);
+    expect(setup.captureCharFrame()).not.toContain("╎");
     expect(submissions[0]).toMatchObject({
       semanticPaneId: "pane.a",
       axis: "cols",
@@ -1083,6 +1088,45 @@ describe("ApplicationTerminalWorkspace", () => {
     await setup.mockMouse.release(10, 5, MouseButtons.LEFT);
     expect(submissions).toHaveLength(1);
     setup.renderer.destroy();
+  });
+
+  it("paints one continuous horizontal resize guide and clears it on release", async () => {
+    registerPaneSurface();
+    const theme = createSemanticThemeSnapshot({ mode: "light" });
+    const current = {
+      ...layout().current!,
+      panes: [
+        { pane: "pane.a", left: 0, top: 0, width: 30, height: 4, active: true },
+        { pane: "pane.b", left: 0, top: 5, width: 30, height: 4, active: false },
+      ],
+    };
+    const setup = await renderForTest(
+      () => (
+        <ApplicationTerminalWorkspace
+          layout={() => ({ current, windows: [current] })}
+          adapter={adapter({ "pane.a": "A", "pane.b": "B" }, [])}
+          rendererEpoch={1}
+          width={30}
+          height={10}
+          focusedPane="pane.a"
+          theme={theme}
+          palette={createTerminalPaletteProjection(theme)}
+          onSelectPane={() => undefined}
+        />
+      ),
+      { width: 30, height: 12 },
+    );
+    try {
+      await setup.renderOnce();
+      await setup.mockMouse.pressDown(0, 7, MouseButtons.LEFT);
+      await setup.renderOnce();
+      expect(setup.captureCharFrame().split("\n")[7]).toBe("╌".repeat(30));
+      await setup.mockMouse.release(0, 7, MouseButtons.LEFT);
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).not.toContain("╌");
+    } finally {
+      setup.renderer.destroy();
+    }
   });
 
   it.each(["emacs", "vi"] as const)("supports local keyboard copy in %s mode", async (mode) => {

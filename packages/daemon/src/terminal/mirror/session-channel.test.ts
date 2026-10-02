@@ -510,6 +510,65 @@ describe("identity join", () => {
     await channel.dispose();
   });
 
+  it.each(["resize", "membership-aba", "zoom-aba", "malformed"])(
+    "distinguishes %s notifications from identity stability during inventory reads",
+    async (change) => {
+      const descriptorReply = { manual: false };
+      const { channel, sim, state } = await startedRig({ descriptorReply, borderReply: "manual" });
+      state.descriptorRows[2] = state.descriptorRows[2]!.replace(
+        "%3\t\t",
+        "%3\tpane.mirror.gen1\t",
+      ).replace("\t\tzz-sim", "\twindow.test.two\tzz-sim");
+      const descriptorQueries = () =>
+        sim.written.filter((cmd) => cmd.includes("qa:@tmux_ide_pane_id")).length;
+      const before = descriptorQueries();
+      descriptorReply.manual = true;
+      const inventory = channel.describeTrustedInventory("$1");
+      let settled = false;
+      const outcome = inventory
+        .then(
+          (value) => ({ value }),
+          (error) => ({ error }),
+        )
+        .finally(() => {
+          settled = true;
+        });
+      try {
+        for (let index = 0; index < 4; index++) {
+          await vi.waitFor(() =>
+            expect(settled || descriptorQueries() === before + index + 1).toBe(true),
+          );
+          if (settled) break;
+          const original = FIXTURE.layoutW2;
+          const changed = change === "membership-aba" ? "cccc,180x40,0,0,4" : "cccc,180x40,0,0,3";
+          if (change === "malformed") {
+            sim.feedLines("%layout-change malformed");
+          } else {
+            sim.feedLines(
+              `%layout-change @2 ${changed} ${changed} ${change === "zoom-aba" ? "Z" : "*"}`,
+            );
+            sim.feedLines(`%layout-change @2 ${original} ${original} *`);
+          }
+          // Reply in native command order: inventory, then the border queries.
+          sim.reply(state.descriptorRows);
+          if (change !== "malformed") {
+            sim.reply(["off"]);
+            sim.reply(["off"]);
+          }
+        }
+        if (change === "resize") {
+          expect(await outcome).toMatchObject({ value: { runtimeSessionId: "$1" } });
+        } else {
+          expect(await outcome).toMatchObject({
+            error: expect.objectContaining({ message: expect.stringMatching(/did not settle/u) }),
+          });
+        }
+      } finally {
+        await channel.dispose();
+      }
+    },
+  );
+
   it("fails trusted inventory closed when the coherent fence has no single active pane", async () => {
     const { channel, state } = await startedRig();
     state.descriptorRows[2] = state.descriptorRows[2]!.replace(

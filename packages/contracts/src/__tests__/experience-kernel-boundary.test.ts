@@ -104,6 +104,7 @@ describe("experience-kernel import boundary", () => {
       "mission-projections.ts",
       "owner-scope-identity.ts",
       "pane-appearance.ts",
+      "pane-team.ts",
       "semantic-identity.ts",
       "visual-recipes.ts",
       "visual-tokens.ts",

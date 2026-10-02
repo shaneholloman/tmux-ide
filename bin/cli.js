@@ -11932,7 +11932,7 @@ var require_package = __commonJS({
   "package.json"(exports, module) {
     module.exports = {
       name: "tmux-ide",
-      version: "2.9.0-beta.49",
+      version: "2.9.0-beta.50",
       description: "A visual, agent-aware IDE for any tmux session, with optional workspace presets",
       type: "module",
       bin: {
@@ -32671,6 +32671,10 @@ function snapshotFingerprint2(captureLines, cursorLine, fallbackSize) {
 function tmuxSingleQuote(value) {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
+function layoutIdentitiesEqual(left, right) {
+  const paneIds = (layout) => layout?.leaves.map((leaf) => leaf.id);
+  return left.zoomed === right.zoomed && JSON.stringify(paneIds(left)) === JSON.stringify(paneIds(right)) && JSON.stringify(paneIds(left.unzoomed)) === JSON.stringify(paneIds(right.unzoomed));
+}
 function defaultMirrorPaneId() {
   return `pane.mirror.${randomBytes3(8).toString("hex")}`;
 }
@@ -32793,7 +32797,9 @@ var init_session_channel = __esm({
       disposed = false;
       nativeGrid;
       nativeClientProbePending = false;
+      // Native captures fence every geometry event; inventory fences identity only.
       windowAuthorityOrdinal = 0;
+      windowIdentityOrdinal = 0;
       paneIncarnation = 0;
       recoveryOrdinal = 0;
       plainReseedActive = null;
@@ -34709,11 +34715,13 @@ var init_session_channel = __esm({
           rest
         ) || /^tmux-ide-copy-keys\s+\$[0-9]+\s+@[0-9]+\s+[0-9]+\s+-\s*:\s*(emacs|vi)\s*$/u.test(rest))) {
           this.windowAuthorityOrdinal += 1;
+          this.windowIdentityOrdinal += 1;
           this.scheduleSync();
           return;
         }
         if (name === "layout-change" || name === "window-pane-changed" || name === "session-window-changed" || STRUCTURAL_NOTIFICATIONS.has(name)) {
           this.windowAuthorityOrdinal += 1;
+          if (name !== "layout-change") this.windowIdentityOrdinal += 1;
         }
         if (this.opts.onNativeClientActivity && (NATIVE_CLIENT_NOTIFICATIONS.has(name) || name === "layout-change")) {
           this.probeNativeClientActivity();
@@ -34764,9 +34772,13 @@ var init_session_channel = __esm({
         }
         if (name === "layout-change") {
           const change = parseLayoutChange(rest);
-          if (!change) return;
+          if (!change) {
+            this.windowIdentityOrdinal += 1;
+            return;
+          }
           const parsed = parseLayout(change.visible);
           if (!parsed) {
+            this.windowIdentityOrdinal += 1;
             this.scheduleSync();
             return;
           }
@@ -34775,6 +34787,9 @@ var init_session_channel = __esm({
             zoomed: change.zoomed,
             unzoomed: parseLayout(change.layout) ?? void 0
           };
+          const previousLayout = this.pendingLayoutOutput.get(change.windowId)?.layout ?? this.layoutByWindow.get(change.windowId);
+          if (!pendingLayout.unzoomed || !previousLayout || !layoutIdentitiesEqual(previousLayout, pendingLayout))
+            this.windowIdentityOrdinal += 1;
           const membership = change.zoomed ? parseLayout(change.layout) : parsed;
           if (!membership) {
             this.scheduleSync();
@@ -35048,7 +35063,7 @@ var init_session_channel = __esm({
         return { listed, movedWindowRuntimeIds };
       }
       async refreshTrustedInventory(expectedRuntimeSessionId, attempt = 0) {
-        const authorityOrdinal = this.windowAuthorityOrdinal;
+        const authorityOrdinal = this.windowIdentityOrdinal;
         const beforeLines = await this.io.request(
           `list-panes -s -t "${expectedRuntimeSessionId}" -F "${SESSION_PANE_DESCRIPTOR_FORMAT}"`
         );
@@ -35112,7 +35127,7 @@ var init_session_channel = __esm({
         );
         const confirmedWindowStage = await this.stageWindows(expectedRuntimeSessionId);
         const coherent = beforeLines.length === afterLines.length && beforeLines.every((line, index) => line === afterLines[index]);
-        if (windowStage.repairedIdentity || confirmedWindowStage.repairedIdentity || repairedPanes || !coherent || !this.windowStagesEqual(windowStage, confirmedWindowStage) || authorityOrdinal !== this.windowAuthorityOrdinal) {
+        if (windowStage.repairedIdentity || confirmedWindowStage.repairedIdentity || repairedPanes || !coherent || !this.windowStageIdentitiesEqual(windowStage, confirmedWindowStage) || authorityOrdinal !== this.windowIdentityOrdinal) {
           if (attempt >= 1)
             throw new Error(`trusted inventory for ${this.opts.session} did not settle`);
           return await this.refreshTrustedInventory(expectedRuntimeSessionId, attempt + 1);
@@ -35252,7 +35267,11 @@ var init_session_channel = __esm({
         for (const runtimeId of layoutEmits) this.releasePendingLayout(runtimeId, syncOrdinal);
         this.emitLayoutAuthority();
       }
-      windowStagesEqual(left, right) {
+      // Inventory establishes pane/window identity, not a frozen terminal size.
+      // Native resize notifications independently publish geometry. Requiring two
+      // identical sizes here makes continuous dragging exhaust the inventory retry
+      // and revoke otherwise unchanged window links, stalling layout publication.
+      windowStageIdentitiesEqual(left, right) {
         if (JSON.stringify(left.links) !== JSON.stringify(right.links) || left.currentWindow !== right.currentWindow || left.windows.size !== right.windows.size || left.layouts.size !== right.layouts.size) {
           return false;
         }
@@ -35260,10 +35279,7 @@ var init_session_channel = __esm({
           const rightWindow = right.windows.get(runtimeId);
           const leftLayout = left.layouts.get(runtimeId);
           const rightLayout = right.layouts.get(runtimeId);
-          if (!rightWindow || !leftLayout || !rightLayout || leftWindow.semanticId !== rightWindow.semanticId || leftWindow.name !== rightWindow.name || leftWindow.paneBorderStatus !== rightWindow.paneBorderStatus || leftWindow.modeKeys !== rightWindow.modeKeys || leftLayout.zoomed !== rightLayout.zoomed || JSON.stringify(leftLayout.unzoomed) !== JSON.stringify(rightLayout.unzoomed) || leftLayout.width !== rightLayout.width || leftLayout.height !== rightLayout.height || leftLayout.leaves.length !== rightLayout.leaves.length || leftLayout.leaves.some((leaf, index) => {
-            const candidate = rightLayout.leaves[index];
-            return !candidate || leaf.id !== candidate.id || leaf.left !== candidate.left || leaf.top !== candidate.top || leaf.width !== candidate.width || leaf.height !== candidate.height;
-          })) {
+          if (!rightWindow || !leftLayout || !rightLayout || leftWindow.semanticId !== rightWindow.semanticId || leftWindow.name !== rightWindow.name || leftWindow.paneBorderStatus !== rightWindow.paneBorderStatus || leftWindow.modeKeys !== rightWindow.modeKeys || !layoutIdentitiesEqual(leftLayout, rightLayout)) {
             return false;
           }
         }

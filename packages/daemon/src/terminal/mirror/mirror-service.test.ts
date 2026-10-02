@@ -349,7 +349,7 @@ describe("MirrorService refcounting", () => {
     await first.close();
   });
 
-  it("exhausts a churning trusted transaction without mutating or publishing incumbent state", async () => {
+  it("accepts continuous geometry changes without exhausting the identity inventory fence", async () => {
     const state = fixtureState();
     stampDetachedFixture(state);
     let transactional = false;
@@ -364,6 +364,47 @@ describe("MirrorService refcounting", () => {
               windowRows: FIXTURE.windowRows(
                 FIXTURE.layoutW1,
                 windowReads % 2 === 1 ? "cccc,180x40,0,0,3" : "dddd,170x35,0,0,3",
+              ),
+            })(command);
+          }
+          return fixtureAutoReply(state)(command);
+        }),
+    });
+    const incumbent: Array<{ window: string | null; cols: number }> = [];
+    const first = await service.subscribeLayout(FIXTURE.session, (layout) => {
+      incumbent.push({ window: layout.semanticWindowId, cols: layout.cols });
+    });
+    incumbent.length = 0;
+    transactional = true;
+
+    const second = await service.subscribeLayout(FIXTURE.session, () => undefined);
+    expect(windowReads).toBe(2);
+    expect(incumbent).toEqual([{ window: "window.test.two", cols: 170 }]);
+    expect(await service.describeTrustedInventory(FIXTURE.session, "$1")).toMatchObject({
+      runtimeSessionId: "$1",
+      panes: expect.arrayContaining([
+        expect.objectContaining({ runtimePaneId: "%3", semanticPaneId: "pane.gamma" }),
+      ]),
+    });
+    await second.close();
+    await first.close();
+  });
+
+  it("exhausts a transaction with churning pane membership without mutating or publishing incumbent state", async () => {
+    const state = fixtureState();
+    stampDetachedFixture(state);
+    let transactional = false;
+    let windowReads = 0;
+    const service = new MirrorService({
+      createIo: (_session, handlers) =>
+        new SimulatedChannel(handlers, (command) => {
+          if (transactional && command.startsWith("list-windows")) {
+            windowReads += 1;
+            return fixtureAutoReply({
+              ...state,
+              windowRows: FIXTURE.windowRows(
+                FIXTURE.layoutW1,
+                windowReads % 2 === 1 ? "cccc,180x40,0,0,3" : "dddd,170x35,0,0,4",
               ),
             })(command);
           }
