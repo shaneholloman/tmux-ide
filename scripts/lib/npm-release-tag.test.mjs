@@ -25,7 +25,7 @@ test("npm release workflow keeps Electron outside both beta and GM gates", () =>
     "utf8",
   );
 
-  assert.match(workflow, /needs: \[build_macos_notifier, build_macos_tmux\]/u);
+  assert.match(workflow, /needs: \[build_macos_notifier, build_bundled_tmux\]/u);
   assert.match(workflow, /always\(\).*build_macos_notifier\.result == 'skipped'/u);
   const focusedGate = workflow.indexOf("name: Run focused OpenTUI release checks");
   const buildDaemon = workflow.indexOf("name: Build daemon");
@@ -136,7 +136,7 @@ test("native qualification can retain failed build evidence without publishing n
   assert.match(workflow, /qualification_only:[\s\S]+type: boolean[\s\S]+default: false/u);
   assert.match(
     workflow,
-    /publish_npm:[\s\S]+if: \$\{\{ always\(\) && !inputs\.qualification_only && needs\.build_macos_tmux\.result == 'success'/u,
+    /publish_npm:[\s\S]+if: \$\{\{ always\(\) && !inputs\.qualification_only && needs\.build_bundled_tmux\.result == 'success'/u,
   );
   assert.match(
     workflow,
