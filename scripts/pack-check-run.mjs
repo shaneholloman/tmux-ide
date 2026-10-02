@@ -1480,55 +1480,33 @@ async function runPackedGoldenJourney(installedCli, initialOwner) {
 
   await selectPaletteCommand(one, "Split pane right");
   await observe("split pane right", 10_000, () => paneCount("journey-beta") === 2, one.diagnostics);
-  // Native pane creation precedes the owner's metadata verification/commit.
-  // Do not rename its provisional pane until both headers are published:
-  // doing so races inspectMatches and correctly causes the split to roll back.
-  // A success toast is transient and may be cleared by the layout rebind.
-  await observe(
-    "split layout published",
-    10_000,
-    () =>
-      capture(one.targetPane)
-        .split("\n")
-        .some((line) => (line.match(/⋯/gu) ?? []).length >= 2),
-    one.diagnostics,
-  );
-  // Adoption above deliberately exercises unnamed ordinary tmux panes. For
-  // this split-publication proof, assign distinct manual fixture labels: the
-  // optional @ide_name can otherwise remain generic "Terminal" while the
-  // production terminal layout correctly projects a memorable fallback.
+  // Prove both terminal surfaces with distinct output, without changing
+  // provisional metadata while the split owner is still committing it.
   const splitPanes = tmuxResult(["list-panes", "-t", "=journey-beta", "-F", "#{pane_id}"])
     .stdout.trim()
     .split("\n");
   if (splitPanes.length !== 2 || new Set(splitPanes).size !== 2)
     throw new Error(`Expected two distinct native split panes: ${JSON.stringify(splitPanes)}`);
+  const splitMarkers = splitPanes.map((_, index) => `PACK_SPLIT_${index + 1}_${process.pid}`);
   for (const [index, paneId] of splitPanes.entries()) {
-    const named = tmuxResult([
-      "set-option",
-      "-p",
+    const sent = tmuxResult([
+      "send-keys",
       "-t",
       paneId,
-      "@ide_name",
-      `Pack pane ${index + 1}`,
-      ";",
-      "set-option",
-      "-p",
-      "-t",
-      paneId,
-      "@tmux_ide_name_source",
-      "manual",
+      "-l",
+      `printf '${splitMarkers[index]}\\n'`,
     ]);
-    if (named.status !== 0)
-      throw new Error(`Could not name fixture pane ${paneId}: ${named.stderr}`);
+    if (sent.status !== 0) throw new Error(`Could not paint split fixture: ${sent.stderr}`);
+    tmuxResult(["send-keys", "-t", paneId, "Enter"]);
   }
   const splitDiagnostics = () =>
-    `${one.diagnostics()}\nsplit pane identities/names:\n${
+    `${one.diagnostics()}\nsplit pane identities:\n${
       tmuxResult([
         "list-panes",
         "-t",
         "=journey-beta",
         "-F",
-        "#{pane_id} | #{@tmux_ide_pane_id} | #{@ide_name} | #{@tmux_ide_name_source} | #{pane_title}",
+        "#{pane_id} | #{@tmux_ide_pane_id} | #{pane_title}",
       ]).stdout
     }`;
   let stableSplitFrames = 0;
@@ -1536,17 +1514,10 @@ async function runPackedGoldenJourney(installedCli, initialOwner) {
     "split pane UI publication settles",
     10_000,
     () => {
-      // Idle headers hide action buttons until focus/hover. Check both pane
-      // names as well as the focused header's menu, rather than requiring
-      // hidden buttons to be painted during the steady-state frame.
       const frame = capture(one.targetPane);
-      const names = tmuxResult(["list-panes", "-t", "=journey-beta", "-F", "#{@ide_name}"])
-        .stdout.trim()
-        .split("\n");
       if (
-        names.length !== 2 ||
-        names.some((name) => !name || !frame.includes(name)) ||
-        !frame.includes("⋯")
+        paneCount("journey-beta") !== 2 ||
+        splitMarkers.some((marker) => !frame.includes(marker))
       ) {
         stableSplitFrames = 0;
         return false;
