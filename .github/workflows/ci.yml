@@ -50,6 +50,8 @@ jobs:
 
       - name: Install supported tmux for installed ownership smoke
         uses: ./.github/actions/setup-tmux
+        with:
+          test-node-version: ${{ matrix.node }}
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
