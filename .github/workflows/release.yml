@@ -214,6 +214,9 @@ jobs:
             test -f "packages/daemon/dist/native/tmux/$platform/tmux"
           done
 
+      - name: Use bundled tmux for release checks
+        run: echo "$PWD/packages/daemon/dist/native/tmux/linux-x64" >> "$GITHUB_PATH"
+
       - name: Download native macOS notifier for stable release
         if: steps.npm.outputs.tag == 'latest'
         uses: actions/download-artifact@v4

@@ -1,3 +1,4 @@
+import { requireSupportedTmuxVersion } from "./tmux-version.ts";
 import { join } from "node:path";
 import { createClaudeTeamMembershipReader } from "../terminal/attachments/claude-team-names.ts";
 import { PaneSourceDiscovery } from "./pane-source-discovery.ts";
@@ -1131,11 +1132,16 @@ async function startEmbeddedDaemonGeneration(
     // observe one daemon-generation authority rather than whichever server a
     // caller's ambient TMUX/PATH happens to select.
     const tmuxAuthority = resolveWorkspacePaneTmuxAuthority();
+    requireSupportedTmuxVersion(
+      execFileSync(tmuxAuthority.executablePath, ["-V"], { encoding: "utf8", timeout: 3000 }),
+    );
     const readTeamMemberships = createClaudeTeamMembershipReader(
       join(resolveRuntimeNamespace().claudeDir, "teams"),
     );
     const catalogTmuxRunner = createPinnedWorkspaceTmuxRunner(tmuxAuthority);
     const initialTmuxProof = captureTmuxServerProof(catalogTmuxRunner);
+    if (initialTmuxProof)
+      requireSupportedTmuxVersion(catalogTmuxRunner(["display-message", "-p", "#{version}"]));
     const initialNativeIdentityParts = initialTmuxProof
       ? catalogTmuxRunner(["display-message", "-p", "#{pid}\t#{start_time}"]).split("\t")
       : null;

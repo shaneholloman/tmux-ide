@@ -130,7 +130,7 @@ put your work behind a proprietary session format.
 
 ## Requirements
 
-- tmux 3.0 or newer; 3.2+ recommended
+- tmux 3.7 or newer (the universal installer includes 3.7c)
 - Node.js 20 or newer
 - macOS 26+ on ARM64, macOS 15+ on x64, or Linux arm64/x64 for the downloadable OpenTUI runtime
 - Bun only when developing or compiling the TUI from a checkout

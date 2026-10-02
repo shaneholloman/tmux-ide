@@ -48,8 +48,8 @@ jobs:
         with:
           bun-version-file: ".bun-version"
 
-      - name: Install tmux for installed ownership smoke
-        run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: Install supported tmux for installed ownership smoke
+        uses: ./.github/actions/setup-tmux
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -123,8 +123,8 @@ jobs:
         with:
           bun-version-file: ".bun-version"
 
-      - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: Install supported tmux
+        uses: ./.github/actions/setup-tmux
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -173,6 +173,9 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Install supported tmux for coverage fixtures
+        uses: ./.github/actions/setup-tmux
 
       - name: Build CLI (workspace deps may need dist/)
         run: pnpm build

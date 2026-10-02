@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## 2.9.0
 
 - Promote the terminal-first Home and Terminals experience to the stable channel.
+- Require tmux 3.7 or newer for clients and running servers; bundle 3.7c and preserve older servers for explicit migration.
 - Bring local and SSH-connected agents together with consistent names, team groups, and pane activity.
 - Ship shared dialogs, command search, keyboard controls, light/dark themes, and optional automatic contrast correction enabled by default.
 - Support scoped CLI/MCP pane reads and sends, with named interactions where attribution is verified. Raw tmux observation remains experimental and opt-in.

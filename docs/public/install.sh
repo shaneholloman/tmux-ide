@@ -80,7 +80,9 @@ for (let i = 0; i < Math.max(required.length, installed.length); i++) {
 if (!compatible) throw new Error(`Bundled tmux requires ${mac ? 'macOS' : 'glibc'} ${minimum}+; found ${current}. Existing installation unchanged.`);
 JS
   chmod +x "$native"
-  "$native" -V
+  native_version=$("$native" -V)
+  printf '%s\n' "$native_version" | awk '$1 == "tmux" && $2 ~ /^[0-9]+\.[0-9]+[a-z]?$/ { split($2, v, "."); if (v[1]+0 > 3 || (v[1]+0 == 3 && v[2]+0 >= 7)) ok=1 } END { exit !ok }' || fail 'Bundled tmux must be version 3.7 or newer'
+  printf '%s\n' "$native_version"
   node "$cli" update --tui-binary
   rm "$stage/node.tar.gz" "$stage/SHASUMS256.txt"
   node --input-type=module - "$root" "$prefix" "$stage" <<'JS'

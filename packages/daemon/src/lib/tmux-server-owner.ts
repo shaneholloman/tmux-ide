@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import { requireSupportedTmuxVersion } from "./tmux-version.ts";
 import { PaneSourceDiscovery } from "./pane-source-discovery.ts";
 import { createBackgroundNativeCapture } from "./background-native-capture.ts";
 import { createOwnedViewerAdapterFactory } from "./owned-viewer-factory.ts";
@@ -129,6 +131,9 @@ export function createNativeTmuxServerCatalog(
 export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwnerOptions) {
   const generation = z.uuid().parse(options.generation);
   const authority = options.tmuxAuthority;
+  requireSupportedTmuxVersion(
+    execFileSync(authority.executablePath, ["-V"], { encoding: "utf8", timeout: 3000 }),
+  );
   if (authority.socketSelector.kind !== "path") {
     throw new Error("A server owner requires a proven direct socket authority");
   }
@@ -142,6 +147,7 @@ export async function createNativeTmuxServerOwner(options: NativeTmuxServerOwner
   const generationRun = sessionMutationFence.wrap(
     createServerGenerationFencedTmuxRunner(authority, options.nativeServerIdentity),
   );
+  requireSupportedTmuxVersion(generationRun(["display-message", "-p", "#{version}"]));
   const identityParts = generationRun(["display-message", "-p", "#{pid}\t#{start_time}"]).split(
     "\t",
   );

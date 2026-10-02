@@ -129,9 +129,10 @@ it
       encoding: "utf8",
     }).trim();
     const wrapper = join(root, "replace-before-exec");
+    const marker = join(root, "replace-once");
     writeFileSync(
       wrapper,
-      `#!/bin/sh\n'${executable}' -S '${socketPath}' kill-server\n'${executable}' -S '${socketPath}' -f /dev/null new-session -d -s zz-replace 'sleep 300'\n'${executable}' -S '${socketPath}' link-window -s zz-replace:0 -t zz-replace:1\nexec '${executable}' "$@"\n`,
+      `#!/bin/sh\nset -eu\nif [ -f '${marker}' ]; then\nrm '${marker}'\n'${executable}' -S '${socketPath}' kill-server\n'${executable}' -S '${socketPath}' -f /dev/null new-session -d -s zz-replace 'sleep 300'\n'${executable}' -S '${socketPath}' link-window -s zz-replace:0 -t zz-replace:1\nfi\nexec '${executable}' "$@"\n`,
       { mode: 0o700 },
     );
     const mirror = new MirrorService({
@@ -177,6 +178,9 @@ it
         },
         "unlink",
       );
+      // Only the mutation under test may replace the private server. Version
+      // probes and subsequent authority reads must not repeatedly kill it.
+      if (phase === "after-validation") writeFileSync(marker, "");
       try {
         const result = await mirror.executeWindowLinkAction("zz-replace", {
           action: "unlink",

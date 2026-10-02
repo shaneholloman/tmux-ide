@@ -43,7 +43,7 @@ fs.writeFileSync(path.join(root,'package.json'),JSON.stringify({version:'2.9.0'}
 fs.writeFileSync(path.join(root,'bin/cli.js'), "if(process.env.MOCK_TUI_FAIL && process.argv.includes('--tui-binary')) process.exit(1); console.log(process.env.MOCK_BAD_VERSION ? 'tmux-ide v0.0.0' : 'tmux-ide v2.9.0');");
 fs.writeFileSync(path.join(root,'scripts/postinstall.js'), "require('node:fs').appendFileSync(process.env.HOME+'/postinstall', 'installed\\\\n');");
 fs.writeFileSync(path.join(root,'packages/daemon/dist/native/tmux/${target}/manifest.json'),JSON.stringify({minimumMacOS:'1.0',minimumGlibc:'1.0'}));
-if (!process.env.MOCK_MISSING_TMUX) fs.writeFileSync(path.join(root,'packages/daemon/dist/native/tmux/${target}/tmux'),'#!/bin/sh\\necho tmux 3.7c\\n');
+if (!process.env.MOCK_MISSING_TMUX) fs.writeFileSync(path.join(root,'packages/daemon/dist/native/tmux/${target}/tmux'),'#!/bin/sh\\necho tmux '+(process.env.MOCK_OLD_TMUX ? '3.4' : '3.7c')+'\\n');
 `,
   );
   const node = process.execPath;
@@ -89,6 +89,7 @@ for (const [label, failure] of [
   ["mismatched CLI version", { MOCK_BAD_VERSION: "1" }],
   ["TUI download failure", { MOCK_TUI_FAIL: "1" }],
   ["missing platform bundle", { MOCK_MISSING_TMUX: "1" }],
+  ["unsupported tmux version", { MOCK_OLD_TMUX: "1" }],
 ])
   test(`${label} preserves an existing installation`, (t) => {
     const { prefix, run } = fixture(t);

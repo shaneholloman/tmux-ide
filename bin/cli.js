@@ -19260,8 +19260,8 @@ function listTmuxSessionsForWorkspaceRegistry(run) {
   }
 }
 function defaultListSessions() {
-  const { execFileSync: execFileSync27 } = __require("node:child_process");
-  return listTmuxSessionsForWorkspaceRegistry(execFileSync27);
+  const { execFileSync: execFileSync29 } = __require("node:child_process");
+  return listTmuxSessionsForWorkspaceRegistry(execFileSync29);
 }
 var RegistryFileSchemaZ2, WORKSPACE_REGISTRY_TMUX_TIMEOUT_MS, WorkspaceAlreadyExistsError, WorkspaceNotFoundError, WorkspaceRegistry, _default, _defaultNamespaceKey;
 var init_workspace_registry = __esm({
@@ -24732,6 +24732,20 @@ function createBoundedDevelopmentLog(path2, options = {}) {
 }
 var init_development_log = __esm({
   "packages/daemon/src/lib/development-log.ts"() {
+    "use strict";
+  }
+});
+
+// packages/daemon/src/lib/tmux-version.ts
+function requireSupportedTmuxVersion(value) {
+  const match = /^(?:tmux\s+)?(\d+)\.(\d+)[a-z]?(?:\s|$)/u.exec(value.trim());
+  if (match && (Number(match[1]) > 3 || Number(match[1]) === 3 && Number(match[2]) >= 7)) return;
+  throw new Error(
+    `tmux 3.7 or newer is required (found ${value.trim() || "unknown version"}). Upgrade tmux and explicitly migrate older sessions when ready; existing servers have not been replaced.`
+  );
+}
+var init_tmux_version = __esm({
+  "packages/daemon/src/lib/tmux-version.ts"() {
     "use strict";
   }
 });
@@ -68658,6 +68672,7 @@ var init_tmux_interaction_observation_handler = __esm({
 });
 
 // packages/daemon/src/lib/tmux-server-owner.ts
+import { execFileSync as execFileSync17 } from "node:child_process";
 import { randomUUID as randomUUID27 } from "node:crypto";
 import { mkdirSync as mkdirSync21 } from "node:fs";
 import { z as z99 } from "zod";
@@ -68707,6 +68722,9 @@ function createNativeTmuxServerCatalog(workspaceRegistry, run, assertOpen = () =
 async function createNativeTmuxServerOwner(options) {
   const generation = z99.uuid().parse(options.generation);
   const authority2 = options.tmuxAuthority;
+  requireSupportedTmuxVersion(
+    execFileSync17(authority2.executablePath, ["-V"], { encoding: "utf8", timeout: 3e3 })
+  );
   if (authority2.socketSelector.kind !== "path") {
     throw new Error("A server owner requires a proven direct socket authority");
   }
@@ -68720,6 +68738,7 @@ async function createNativeTmuxServerOwner(options) {
   const generationRun = sessionMutationFence.wrap(
     createServerGenerationFencedTmuxRunner(authority2, options.nativeServerIdentity)
   );
+  requireSupportedTmuxVersion(generationRun(["display-message", "-p", "#{version}"]));
   const identityParts = generationRun(["display-message", "-p", "#{pid}	#{start_time}"]).split(
     "	"
   );
@@ -69123,6 +69142,7 @@ async function createNativeTmuxServerOwner(options) {
 var init_tmux_server_owner = __esm({
   "packages/daemon/src/lib/tmux-server-owner.ts"() {
     "use strict";
+    init_tmux_version();
     init_pane_source_discovery();
     init_background_native_capture();
     init_owned_viewer_factory();
@@ -70218,7 +70238,7 @@ var init_tmux_authority_replacement = __esm({
 });
 
 // packages/daemon/src/lib/session-monitor.ts
-import { execFileSync as execFileSync17 } from "node:child_process";
+import { execFileSync as execFileSync18 } from "node:child_process";
 function parseListeningPids(raw) {
   const pids = /* @__PURE__ */ new Set();
   let currentPid = null;
@@ -70245,7 +70265,7 @@ function parseProcessTree(raw) {
 }
 function getListeningPids() {
   try {
-    const raw = execFileSync17("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-FpPn"], {
+    const raw = execFileSync18("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-FpPn"], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 2e3
@@ -70257,7 +70277,7 @@ function getListeningPids() {
 }
 function getProcessTree() {
   try {
-    const raw = execFileSync17("ps", ["-axo", "pid=,ppid="], {
+    const raw = execFileSync18("ps", ["-axo", "pid=,ppid="], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 2e3
@@ -71867,7 +71887,7 @@ var init_directory_watcher = __esm({
 });
 
 // packages/daemon/src/command-center/workspace-resource-observer.ts
-import { execFileSync as execFileSync18 } from "node:child_process";
+import { execFileSync as execFileSync19 } from "node:child_process";
 import { isAbsolute as isAbsolute18, resolve as resolve21 } from "node:path";
 function slot() {
   return {
@@ -71883,7 +71903,7 @@ function slot() {
 }
 function resolveGitDirectory(projectDir) {
   try {
-    const value = execFileSync18("git", ["rev-parse", "--absolute-git-dir"], {
+    const value = execFileSync19("git", ["rev-parse", "--absolute-git-dir"], {
       cwd: projectDir,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
@@ -76025,7 +76045,7 @@ __export(daemon_provenance_exports, {
   pidLivenessProbe: () => pidLivenessProbe,
   resolveFdPath: () => resolveFdPath
 });
-import { execFileSync as execFileSync19 } from "node:child_process";
+import { execFileSync as execFileSync20 } from "node:child_process";
 import {
   closeSync as closeSync8,
   fstatSync as fstatSync6,
@@ -76507,7 +76527,7 @@ var init_daemon_provenance = __esm({
       }
       if (platform2 === "darwin") {
         try {
-          const out = execFileSync19("lsof", ["-a", "-p", String(pid), "-d", String(fd), "-F", "fn"], {
+          const out = execFileSync20("lsof", ["-a", "-p", String(pid), "-d", String(fd), "-F", "fn"], {
             encoding: "utf8",
             stdio: ["ignore", "pipe", "ignore"],
             timeout: 2e3
@@ -86479,7 +86499,7 @@ var init_types = __esm({
 
 // packages/daemon/src/lib/daemon-embed.ts
 import { join as join46 } from "node:path";
-import { execFileSync as execFileSync20 } from "node:child_process";
+import { execFileSync as execFileSync21 } from "node:child_process";
 import { randomBytes as randomBytes8, randomUUID as randomUUID39 } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { createServer as createServer2 } from "node:http";
@@ -86502,7 +86522,7 @@ function resolveDaemonProductVersion(explicit, loadPackage = loadBundledPackage)
   return "0.0.0";
 }
 function tmux6(...args) {
-  return execFileSync20("tmux", runtimeTmuxArgs(args), {
+  return execFileSync21("tmux", runtimeTmuxArgs(args), {
     encoding: "utf-8",
     // Pipe stdio explicitly. Inheriting (the default) inherits the parent's
     // file descriptors; when the daemon is launched detached (nohup, disown,
@@ -87136,11 +87156,16 @@ async function startEmbeddedDaemonGeneration(opts) {
       }
     }
     const tmuxAuthority = resolveWorkspacePaneTmuxAuthority();
+    requireSupportedTmuxVersion(
+      execFileSync21(tmuxAuthority.executablePath, ["-V"], { encoding: "utf8", timeout: 3e3 })
+    );
     const readTeamMemberships = createClaudeTeamMembershipReader(
       join46(resolveRuntimeNamespace().claudeDir, "teams")
     );
     const catalogTmuxRunner = createPinnedWorkspaceTmuxRunner(tmuxAuthority);
     const initialTmuxProof = captureTmuxServerProof(catalogTmuxRunner);
+    if (initialTmuxProof)
+      requireSupportedTmuxVersion(catalogTmuxRunner(["display-message", "-p", "#{version}"]));
     const initialNativeIdentityParts = initialTmuxProof ? catalogTmuxRunner(["display-message", "-p", "#{pid}	#{start_time}"]).split("	") : null;
     const initialNativeServerIdentity = initialNativeIdentityParts ? { pid: initialNativeIdentityParts[0], startTime: initialNativeIdentityParts[1] } : void 0;
     const sessionMutationFence = createTmuxSessionMutationFence();
@@ -88220,6 +88245,7 @@ var requireFromHere2, DEFAULT_HOSTNAME, DEFAULT_GRACEFUL_MS, EMBEDDED_SESSION_NA
 var init_daemon_embed = __esm({
   "packages/daemon/src/lib/daemon-embed.ts"() {
     "use strict";
+    init_tmux_version();
     init_claude_team_names();
     init_pane_source_discovery();
     init_background_native_capture();
@@ -89602,7 +89628,7 @@ __export(doctor_exports, {
   notifierRow: () => notifierRow,
   workspaceConfigRow: () => workspaceConfigRow
 });
-import { execSync as execSync3 } from "node:child_process";
+import { execSync as execSync3, execFileSync as execFileSync22 } from "node:child_process";
 import { accessSync as accessSync10, constants as constants14, existsSync as existsSync37 } from "node:fs";
 import { resolve as resolve35, dirname as dirname41 } from "node:path";
 import { fileURLToPath as fileURLToPath12 } from "node:url";
@@ -89737,23 +89763,11 @@ async function doctor({
 } = {}) {
   const checks = [];
   checks.push(
-    check("tmux installed", () => {
-      try {
-        execSync3("which tmux", { stdio: "ignore" });
-      } catch {
-        throw new Error(
-          "not found on PATH \u2014 install it (macOS: `brew install tmux`; Debian/Ubuntu: `sudo apt install tmux`)"
-        );
-      }
-      return "found";
-    })
-  );
-  checks.push(
-    check("tmux version \u2265 3.0", () => {
-      const version = execSync3("tmux -V", { encoding: "utf-8" }).trim();
-      const num = parseFloat(version.replace(/[^0-9.]/g, ""));
-      if (num < 3) throw new Error(`${version} (need \u2265 3.0)`);
-      return version;
+    check("tmux version \u2265 3.7", () => {
+      const executable = resolveTmuxExecutable();
+      const version = execFileSync22(executable, ["-V"], { encoding: "utf8", timeout: 3e3 }).trim();
+      requireSupportedTmuxVersion(version);
+      return `${version} (${executable})`;
     })
   );
   checks.push(nodeVersionRow(process.versions.node));
@@ -89901,6 +89915,8 @@ async function doctor({
 var init_doctor = __esm({
   "packages/daemon/src/doctor.ts"() {
     "use strict";
+    init_tmux_version();
+    init_tmux_client_execution();
     init_update_check();
     init_skill_sync();
     init_agent_discovery();
@@ -91410,11 +91426,11 @@ var migrate_exports = {};
 __export(migrate_exports, {
   migrate: () => migrate
 });
-import { execFileSync as execFileSync21 } from "node:child_process";
+import { execFileSync as execFileSync23 } from "node:child_process";
 import { dirname as dirname42, resolve as resolve38 } from "node:path";
 function gitIgnoresWorkspace(dir) {
   try {
-    execFileSync21("git", ["-C", dir, "check-ignore", "-q", ".tmux-ide/workspace.yml"], {
+    execFileSync23("git", ["-C", dir, "check-ignore", "-q", ".tmux-ide/workspace.yml"], {
       stdio: "ignore"
     });
     return true;
@@ -91824,7 +91840,7 @@ __export(automation_exports, {
   runAutomationCli: () => runAutomationCli
 });
 import { z as z110 } from "zod";
-import { execFileSync as execFileSync22 } from "node:child_process";
+import { execFileSync as execFileSync24 } from "node:child_process";
 import { parseArgs } from "node:util";
 function invokingPaneCredential(env = process.env) {
   const tmux7 = env.TMUX;
@@ -91833,7 +91849,7 @@ function invokingPaneCredential(env = process.env) {
   const match = /^(\/[^\0\r\n]+),\d+,\d+$/u.exec(tmux7);
   if (!match) return void 0;
   try {
-    const value = execFileSync22(
+    const value = execFileSync24(
       "tmux",
       ["-S", match[1], "show-option", "-p", "-v", "-t", pane, PANE_SOURCE_CREDENTIAL_OPTION],
       {
@@ -92150,9 +92166,9 @@ var pane_team_exports = {};
 __export(pane_team_exports, {
   assignPaneTeam: () => assignPaneTeam
 });
-import { execFileSync as execFileSync23 } from "node:child_process";
+import { execFileSync as execFileSync25 } from "node:child_process";
 import { isAbsolute as isAbsolute24 } from "node:path";
-function assignPaneTeam(options, run = (args) => execFileSync23("tmux", args, { encoding: "utf8", timeout: 5e3 })) {
+function assignPaneTeam(options, run = (args) => execFileSync25("tmux", args, { encoding: "utf8", timeout: 5e3 })) {
   if (!/^%\d+$/u.test(options.paneId)) throw new Error("Use an exact pane ID such as %3");
   if (options.socketPath && options.socketName) throw new Error("Choose one tmux socket selector");
   if (options.socketPath && !isAbsolute24(options.socketPath))
@@ -92378,7 +92394,7 @@ __export(worktree_exports, {
   worktreePath: () => worktreePath,
   worktreeSessionName: () => worktreeSessionName
 });
-import { execFileSync as execFileSync24 } from "node:child_process";
+import { execFileSync as execFileSync26 } from "node:child_process";
 import { basename as basename19, dirname as dirname43, isAbsolute as isAbsolute25, join as join50, resolve as resolve39 } from "node:path";
 function sanitizeForTmux(part) {
   return part.replace(/[.:/\s]+/g, "-");
@@ -92517,7 +92533,7 @@ var init_worktree = __esm({
         this.name = "WorktreeError";
       }
     };
-    gitRunner = (repoDir, args) => execFileSync24("git", args, {
+    gitRunner = (repoDir, args) => execFileSync26("git", args, {
       cwd: repoDir,
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "pipe"]
@@ -92592,7 +92608,7 @@ __export(update_exports, {
 });
 import { realpathSync as realpathSync28 } from "node:fs";
 import { dirname as dirname45, join as join52 } from "node:path";
-import { execFileSync as execFileSync25 } from "node:child_process";
+import { execFileSync as execFileSync27 } from "node:child_process";
 function planUpdate(input) {
   const current = input.currentVersion ?? getCurrentVersion();
   const method = input.gitRoot ? "dev" : detectPackageManager(input.cliPath);
@@ -92657,7 +92673,7 @@ function runUpdate({ cliDir, dryRun, json: json2 = false }, dependencies = {}) {
   } : planUpdate({ cliPath: source.path, gitRoot: source.gitRoot, currentVersion: current });
   if (plan.executable) {
     try {
-      const query = dependencies.query ?? ((executable, args) => execFileSync25(executable, args, {
+      const query = dependencies.query ?? ((executable, args) => execFileSync27(executable, args, {
         encoding: "utf8",
         timeout: 3e3,
         maxBuffer: 65536,
@@ -92685,7 +92701,7 @@ function runUpdate({ cliDir, dryRun, json: json2 = false }, dependencies = {}) {
   if (!json2) output(renderPlan(plan, { current, latest, dryRun }));
   let executed = false;
   if (!dryRun && plan.executable && plan.args) {
-    (dependencies.execute ?? execFileSync25)(plan.executable, plan.args, {
+    (dependencies.execute ?? execFileSync27)(plan.executable, plan.args, {
       stdio: json2 ? ["ignore", 2, 2] : "inherit"
     });
     executed = true;
@@ -92939,7 +92955,7 @@ var init_server3 = __esm({
 // bin/cli.ts
 import { parseArgs as parseArgs2 } from "node:util";
 import { resolve as resolve40, dirname as dirname46, join as join53 } from "node:path";
-import { execFileSync as execFileSync26 } from "node:child_process";
+import { execFileSync as execFileSync28 } from "node:child_process";
 import { appendFileSync as appendFileSync2, existsSync as existsSync39, mkdirSync as mkdirSync31, writeFileSync as writeFileSync29 } from "node:fs";
 import { fileURLToPath as fileURLToPath14 } from "node:url";
 
@@ -93301,7 +93317,7 @@ Install bun (https://bun.sh) \u2014 the TUI surfaces run on it. Sources ship wit
   };
   try {
     if (launch2.mode === "bun") {
-      execFileSync26(launch2.bin, launch2.argv, {
+      execFileSync28(launch2.bin, launch2.argv, {
         stdio: "inherit",
         cwd: resolve40(__dirname5, ".."),
         env
@@ -93309,7 +93325,7 @@ Install bun (https://bun.sh) \u2014 the TUI surfaces run on it. Sources ship wit
       markChildExited();
       return;
     }
-    execFileSync26(launch2.bin, launch2.argv, {
+    execFileSync28(launch2.bin, launch2.argv, {
       stdio: "inherit",
       cwd: ensureCompiledTuiRuntimeDir(),
       env
@@ -93355,7 +93371,7 @@ Install bun (https://bun.sh) \u2014 the TUI surfaces run on it. Sources ship wit
   }
   let exists = true;
   try {
-    execFileSync26("tmux", hostExistsArgv(), { stdio: "ignore" });
+    execFileSync28("tmux", hostExistsArgv(), { stdio: "ignore" });
   } catch {
     exists = false;
   }
@@ -93373,10 +93389,10 @@ Install bun (https://bun.sh) \u2014 the TUI surfaces run on it. Sources ship wit
         tuiBin: process.env.TMUX_IDE_TUI_BIN
       })
     );
-    execFileSync26("tmux", hostCreateArgv({ cwd, commandLine }), { stdio: "ignore" });
+    execFileSync28("tmux", hostCreateArgv({ cwd, commandLine }), { stdio: "ignore" });
   }
-  for (const args of hostSetupArgvs()) execFileSync26("tmux", args, { stdio: "ignore" });
-  const rootBindings = execFileSync26("tmux", hostRootBindingsArgv(), {
+  for (const args of hostSetupArgvs()) execFileSync28("tmux", args, { stdio: "ignore" });
+  const rootBindings = execFileSync28("tmux", hostRootBindingsArgv(), {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
     timeout: 1500,
@@ -93390,9 +93406,9 @@ Install bun (https://bun.sh) \u2014 the TUI surfaces run on it. Sources ship wit
     );
   }
   if (putAwayBinding === "absent") {
-    execFileSync26("tmux", hostPutAwayBindingArgv(), { stdio: "ignore" });
+    execFileSync28("tmux", hostPutAwayBindingArgv(), { stdio: "ignore" });
   }
-  execFileSync26("tmux", hostAttachArgv(Boolean(process.env.TMUX)), { stdio: "inherit" });
+  execFileSync28("tmux", hostAttachArgv(Boolean(process.env.TMUX)), { stdio: "inherit" });
 }
 async function printFleetJson() {
   const { createStatusTracker: createStatusTracker2 } = await Promise.resolve().then(() => (init_classify(), classify_exports));
@@ -94081,7 +94097,7 @@ try {
     case "adopt": {
       const { adoptSession: adoptSession2, adoptableSessionNames: adoptableSessionNames2 } = await Promise.resolve().then(() => (init_statusline(), statusline_exports));
       if (values.all) {
-        const raw = execFileSync26("tmux", ["list-sessions", "-F", "#{session_name}"], {
+        const raw = execFileSync28("tmux", ["list-sessions", "-F", "#{session_name}"], {
           encoding: "utf8",
           stdio: ["ignore", "pipe", "ignore"]
         }).trim();
@@ -94353,7 +94369,7 @@ install failed: ${e.message}`);
         const rawClient = typeof values.client === "string" ? values.client : "";
         let client = rawClient && !rawClient.includes("#{") ? rawClient : "";
         if (!client) {
-          const raw = execFileSync26(
+          const raw = execFileSync28(
             "tmux",
             ["list-clients", "-F", "#{client_activity} #{client_name}"],
             tmuxCap
@@ -94385,7 +94401,7 @@ install failed: ${e.message}`);
           ...position,
           ...buildMenu2(sessions, getAppConfig2().theme, getUpdateStatus2())
         ];
-        execFileSync26("tmux", args, { stdio: "ignore", timeout: 2e3 });
+        execFileSync28("tmux", args, { stdio: "ignore", timeout: 2e3 });
       } catch {
       }
       break;
@@ -94403,7 +94419,7 @@ Known panels: ${POPUP_WIDGETS2.join(", ")}.`,
       const scriptPath = resolve40(__dirname5, "../packages/daemon/src/widgets", widget, "index.tsx");
       let popupSession = "";
       try {
-        popupSession = execFileSync26("tmux", ["display-message", "-p", "#{session_name}"], {
+        popupSession = execFileSync28("tmux", ["display-message", "-p", "#{session_name}"], {
           encoding: "utf8",
           stdio: ["ignore", "pipe", "ignore"],
           timeout: 2e3
@@ -94427,7 +94443,7 @@ Known panels: ${POPUP_WIDGETS2.join(", ")}.`,
         let session = typeof values.session === "string" ? values.session.trim() : "";
         if (!session || session.includes("#{")) {
           try {
-            session = execFileSync26("tmux", ["display-message", "-p", "#{session_name}"], {
+            session = execFileSync28("tmux", ["display-message", "-p", "#{session_name}"], {
               encoding: "utf8",
               stdio: ["ignore", "pipe", "ignore"],
               timeout: 2e3
@@ -94865,7 +94881,7 @@ Known panels: ${POPUP_WIDGETS2.join(", ")}.`,
         const scriptPath = resolve40(__dirname5, "../packages/daemon/src/server/standalone.ts");
         const serverArgs = ["--experimental-strip-types", scriptPath];
         if (values.port) serverArgs.push("--port", values.port);
-        execFileSync26("node", serverArgs, { stdio: "inherit" });
+        execFileSync28("node", serverArgs, { stdio: "inherit" });
       } else {
         const { start: start2 } = await Promise.resolve().then(() => (init_server3(), server_exports3));
         await start2(values.port ? parseInt(values.port, 10) : void 0);
