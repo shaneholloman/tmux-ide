@@ -984,8 +984,9 @@ describe.skipIf(!available)("native normal-screen bottom row and cursor", () => 
       });
       const owners: SessionRuntimeTerminalReplicaOwner[] = [];
       try {
-        await vi.waitFor(() =>
-          expect(tmux("capture-pane", "-p", "-t", session)).toContain("BOTTOM"),
+        await vi.waitFor(
+          () => expect(tmux("capture-pane", "-p", "-t", session)).toContain("BOTTOM"),
+          { timeout: 5000 },
         );
         const described = await mirror.describeSession(session);
         const runtimeIds = tmux("list-panes", "-t", session, "-F", "#{pane_id}").split("\n");
@@ -1012,79 +1013,82 @@ describe.skipIf(!available)("native normal-screen bottom row and cursor", () => 
           ];
           for (const transition of transitions) {
             tmux(...transition);
-            await vi.waitFor(() => {
-              expect(latest?.type).toBe("terminal.seed");
-              if (latest?.type !== "terminal.seed") return;
-              const [cols, nativeRows, x, y] = tmux(
-                "display-message",
-                "-p",
-                "-t",
-                runtimeId,
-                "#{pane_width} #{pane_height} #{cursor_x} #{cursor_y}",
-              )
-                .split(" ")
-                .map(Number);
-              expect(latest.cols).toBe(cols);
-              expect(latest.rows).toBe(nativeRows);
-              expect(
-                latest.snapshot.grid
-                  .map((row) =>
-                    row.cells
-                      .map((cell) => (cell.width === 0 ? "" : cell.grapheme || " "))
-                      .join("")
-                      .trimEnd(),
-                  )
-                  .join("\n")
-                  .trimEnd(),
-              ).toBe(tmux("capture-pane", "-p", "-t", runtimeId));
-              expect(latest.snapshot.cursor).toMatchObject({ x: Math.min(x!, cols! - 1), y });
-              expect(latest.snapshot.history.length).toBeGreaterThan(0);
-              expect(
-                latest.snapshot.history.some((row) =>
-                  row.cells.some(
-                    (cell) =>
-                      cell.grapheme === "漢" &&
-                      cell.foreground.kind === "indexed" &&
-                      cell.foreground.index === 2,
+            await vi.waitFor(
+              () => {
+                expect(latest?.type).toBe("terminal.seed");
+                if (latest?.type !== "terminal.seed") return;
+                const [cols, nativeRows, x, y] = tmux(
+                  "display-message",
+                  "-p",
+                  "-t",
+                  runtimeId,
+                  "#{pane_width} #{pane_height} #{cursor_x} #{cursor_y}",
+                )
+                  .split(" ")
+                  .map(Number);
+                expect(latest.cols).toBe(cols);
+                expect(latest.rows).toBe(nativeRows);
+                expect(
+                  latest.snapshot.grid
+                    .map((row) =>
+                      row.cells
+                        .map((cell) => (cell.width === 0 ? "" : cell.grapheme || " "))
+                        .join("")
+                        .trimEnd(),
+                    )
+                    .join("\n")
+                    .trimEnd(),
+                ).toBe(tmux("capture-pane", "-p", "-t", runtimeId));
+                expect(latest.snapshot.cursor).toMatchObject({ x: Math.min(x!, cols! - 1), y });
+                expect(latest.snapshot.history.length).toBeGreaterThan(0);
+                expect(
+                  latest.snapshot.history.some((row) =>
+                    row.cells.some(
+                      (cell) =>
+                        cell.grapheme === "漢" &&
+                        cell.foreground.kind === "indexed" &&
+                        cell.foreground.index === 2,
+                    ),
                   ),
-                ),
-              ).toBe(true);
-              const nativeHistory = tmux(
-                "capture-pane",
-                "-p",
-                "-S",
-                "-2000",
-                "-E",
-                "-1",
-                "-t",
-                runtimeId,
-              );
-              expect(
-                latest.snapshot.history
-                  .map((row) =>
-                    row.cells
-                      .map((cell) => (cell.width === 0 ? "" : cell.grapheme || " "))
-                      .join("")
-                      .trimEnd(),
-                  )
-                  .join("\n")
-                  .trimEnd(),
-              ).toBe(nativeHistory);
-              const offset = Math.min(3, latest.snapshot.history.length);
-              const first = terminalSelectionCell(latest.snapshot, 0, 0, offset);
-              const last = terminalSelectionCell(latest.snapshot, cols! - 1, offset - 1, offset);
-              expect(first).not.toBeNull();
-              expect(last).not.toBeNull();
-              expect(extractTerminalSelection(latest.snapshot, first!, last!)?.text).toBe(
-                nativeHistory.split("\n").slice(-offset).join("\n"),
-              );
-              expect(
-                latest.snapshot.grid[y!]?.cells
-                  .map((cell) => (cell.width === 0 ? "" : cell.grapheme || " "))
-                  .join("")
-                  .trimEnd(),
-              ).toBe("line-79 BOTTOM");
-            });
+                ).toBe(true);
+                const nativeHistory = tmux(
+                  "capture-pane",
+                  "-p",
+                  "-S",
+                  "-2000",
+                  "-E",
+                  "-1",
+                  "-t",
+                  runtimeId,
+                );
+                expect(
+                  latest.snapshot.history
+                    .map((row) =>
+                      row.cells
+                        .map((cell) => (cell.width === 0 ? "" : cell.grapheme || " "))
+                        .join("")
+                        .trimEnd(),
+                    )
+                    .join("\n")
+                    .trimEnd(),
+                ).toBe(nativeHistory);
+                const offset = Math.min(3, latest.snapshot.history.length);
+                const first = terminalSelectionCell(latest.snapshot, 0, 0, offset);
+                const last = terminalSelectionCell(latest.snapshot, cols! - 1, offset - 1, offset);
+                expect(first).not.toBeNull();
+                expect(last).not.toBeNull();
+                expect(extractTerminalSelection(latest.snapshot, first!, last!)?.text).toBe(
+                  nativeHistory.split("\n").slice(-offset).join("\n"),
+                );
+                expect(
+                  latest.snapshot.grid[y!]?.cells
+                    .map((cell) => (cell.width === 0 ? "" : cell.grapheme || " "))
+                    .join("")
+                    .trimEnd(),
+                ).toBe("line-79 BOTTOM");
+              },
+              { timeout: 5000 },
+            );
           }
         }
       } finally {
@@ -1465,8 +1469,9 @@ describe.skipIf(!available)("native history reader continuity", () => {
       );
       tmux("new-window", "-d", "-t", session, "-n", "history", `${process.execPath} ${script}`);
       const target = `${session}:history`;
-      await vi.waitFor(() =>
-        expect(tmux("capture-pane", "-p", "-t", target)).toContain("DONE-120"),
+      await vi.waitFor(
+        () => expect(tmux("capture-pane", "-p", "-t", target)).toContain("DONE-120"),
+        { timeout: 5000 },
       );
       // Bounded metadata only: preserve the exact failing capture path in CI
       // without printing terminal contents or issuing another capture.

@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## 2.9.0
+## 2.9.1
 
 - Promote the terminal-first Home and Terminals experience to the stable channel.
 - Require tmux 3.7 or newer for clients and running servers; bundle 3.7c and preserve older servers for explicit migration.

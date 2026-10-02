@@ -14,7 +14,7 @@ export const SOFTWARE_VERSION = packageMetadata.version;
 export const SOCIAL_PROFILE = "https://x.com/prototyper_co";
 export const INSTALL_COMMAND = "curl -fsSL https://tmux.thijsverreck.com/install.sh | sh";
 export const APP_COMMAND = "tmux-ide app";
-export const CURRENT_RELEASE_PATH = "/docs/release-2-9-0";
+export const CURRENT_RELEASE_PATH = "/docs/release-2-9-1";
 
 export function absoluteUrl(path = "/"): string {
   return new URL(path, `${SITE_URL}/`).toString();
