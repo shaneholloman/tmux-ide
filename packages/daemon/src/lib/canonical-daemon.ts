@@ -1066,7 +1066,7 @@ export async function probeCanonicalDaemonIdentity(
         includeTmuxServerProof ? "/identity?tmuxServerProof=1" : "/identity",
       ),
       {
-        signal: parentSignal ?? timeoutSignal(750),
+        signal: parentSignal ?? timeoutSignal(includeTmuxServerProof ? 2_500 : 750),
       },
     );
     if (!res.ok) return null;

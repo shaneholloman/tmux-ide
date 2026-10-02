@@ -1895,7 +1895,9 @@ async function startEmbeddedDaemonGeneration(
         readProjectAuth: !sessionless,
         daemonIdentity: { productVersion, instanceId, startedAt, environmentId },
         tmuxServerProof: async () => {
-          const deadline = AbortSignal.timeout(500);
+          // Two native reads share this bound. Concurrent cold CLI election
+          // can delay the daemon on small hosts; this is not an input deadline.
+          const deadline = AbortSignal.timeout(2_000);
           return (
             (await captureTmuxServerProofAsync((args) => fleetFactsTmuxRunner(args, deadline))) ??
             captureUnboundTmuxSelectorProof(tmuxAuthority)

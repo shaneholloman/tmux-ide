@@ -140,6 +140,31 @@ describe("canonical daemon info", () => {
     expect(readCanonicalDaemonInfo()).toBeNull();
   });
 
+  it("allows cold server proof past the ordinary identity deadline and honors cancellation", async () => {
+    server = createServer((_req, res) => {
+      setTimeout(() => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            ...info(1),
+            ok: true,
+            tmuxServerProof: { version: 1, kind: "live", digest: "a".repeat(64) },
+          }),
+        );
+      }, 1_000);
+    });
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test port");
+    expect(
+      (await probeCanonicalDaemonIdentity(info(address.port), undefined, true))?.tmuxServerProof
+        ?.digest,
+    ).toBe("a".repeat(64));
+    expect(
+      await probeCanonicalDaemonIdentity(info(address.port), AbortSignal.timeout(10), true),
+    ).toBeNull();
+  });
+
   it("treats a dead PID as stale", async () => {
     const port = await listen();
     expect(await isCanonicalDaemonAlive({ ...info(port), pid: 999_999_999 })).toBe(false);

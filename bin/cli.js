@@ -13646,7 +13646,7 @@ async function probeCanonicalDaemonIdentity(info, parentSignal, includeTmuxServe
         includeTmuxServerProof ? "/identity?tmuxServerProof=1" : "/identity"
       ),
       {
-        signal: parentSignal ?? timeoutSignal(750)
+        signal: parentSignal ?? timeoutSignal(includeTmuxServerProof ? 2500 : 750)
       }
     );
     if (!res.ok) return null;
@@ -87838,7 +87838,7 @@ async function startEmbeddedDaemonGeneration(opts) {
         readProjectAuth: !sessionless,
         daemonIdentity: { productVersion, instanceId, startedAt, environmentId },
         tmuxServerProof: async () => {
-          const deadline = AbortSignal.timeout(500);
+          const deadline = AbortSignal.timeout(2e3);
           return await captureTmuxServerProofAsync((args) => fleetFactsTmuxRunner(args, deadline)) ?? captureUnboundTmuxSelectorProof(tmuxAuthority);
         },
         workspacePaneCreationBackend: workspacePaneCreation,
