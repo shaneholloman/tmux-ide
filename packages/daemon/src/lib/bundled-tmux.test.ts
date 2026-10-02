@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  cpSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -13,6 +14,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  bundledTmuxResourceEnvironment,
+  withBundledTmuxResources,
   isMacOSVersionCompatible,
   resolveBundledTmux,
   validateBundledTmux,
@@ -145,4 +148,66 @@ describe("bundled tmux authority", () => {
     symlinkSync(join(root, "external"), join(bundle, "tmux"));
     expect(() => validateBundledTmux(bundle)).toThrow("escapes");
   });
+});
+
+function resourceFixture() {
+  const result = fixture();
+  const files: Record<string, string> = result.manifest.files;
+  for (const name of ["xterm-256color", "screen-256color", "tmux-256color"]) {
+    const path = `share/terminfo/${name[0]}/${name}`;
+    mkdirSync(join(result.bundle, "share/terminfo", name[0]!), { recursive: true });
+    writeFileSync(join(result.bundle, path), "compiled-entry");
+    files[path] = createHash("sha256").update("compiled-entry").digest("hex");
+  }
+  Object.assign(result.manifest, { terminfo: { directory: "share/terminfo", entries: 3 } });
+  result.save();
+  return result;
+}
+describe("bundled terminfo resource authority", () => {
+  it("rebases a relocated catalog and preserves custom TERM and trusted search configuration", () => {
+    const f = resourceFixture();
+    const relocated = join(f.root, "relocated");
+    cpSync(f.bundle, relocated, { recursive: true });
+    rmSync(f.bundle, { recursive: true });
+    const input = {
+      TERM: "xterm-private",
+      TERMINFO: "/custom/single",
+      TERMINFO_DIRS: "/custom/search",
+      TMUX: "",
+    };
+    const env = withBundledTmuxResources(join(relocated, "tmux"), input);
+    expect(env).toEqual({
+      ...input,
+      TERMINFO_DIRS: `${realpathSync(relocated)}/share/terminfo:/custom/search`,
+    });
+    expect(withBundledTmuxResources(join(relocated, "tmux"), env)).toBe(env);
+    expect(bundledTmuxResourceEnvironment(join(relocated, "tmux"))).toBe(
+      bundledTmuxResourceEnvironment(join(relocated, "tmux")),
+    );
+  });
+  it("leaves legacy and unrelated external tmux environments unchanged", () => {
+    const f = fixture();
+    const env = { TERM: "custom-terminal", TERMINFO_DIRS: "/custom" };
+    expect(withBundledTmuxResources(join(f.bundle, "tmux"), env)).toBe(env);
+    for (const manifest of ["not-json", "null", "[]", "{}"]) {
+      writeFileSync(join(f.bundle, "manifest.json"), manifest);
+      expect(withBundledTmuxResources(join(f.bundle, "tmux"), env)).toBe(env);
+    }
+    expect(withBundledTmuxResources("tmux", env)).toBe(env);
+  });
+  it.each(["corrupt", "unlisted", "symlink"])(
+    "rejects %s catalog content before owner admission",
+    (kind) => {
+      const f = resourceFixture();
+      const path = join(f.bundle, "share/terminfo/x/xterm-256color");
+      if (kind === "corrupt") writeFileSync(path, "changed");
+      if (kind === "unlisted")
+        writeFileSync(join(f.bundle, "share/terminfo/x/xterm-extra"), "entry");
+      if (kind === "symlink") {
+        rmSync(path);
+        symlinkSync("../s/screen-256color", path);
+      }
+      expect(() => bundledTmuxResourceEnvironment(join(f.bundle, "tmux"))).toThrow();
+    },
+  );
 });

@@ -1,4 +1,37 @@
-import { runtimeTmuxArgs } from "./runtime-namespace.ts";
+import { requireSupportedTmuxVersion } from "./tmux-version.ts";
+import { join } from "node:path";
+import { createClaudeTeamMembershipReader } from "../terminal/attachments/claude-team-names.ts";
+import { PaneSourceDiscovery } from "./pane-source-discovery.ts";
+import { createBackgroundNativeCapture } from "./background-native-capture.ts";
+import { createOwnedViewerAdapterFactory } from "./owned-viewer-factory.ts";
+import { publishOwnerInteractionReceipt } from "./interaction-receipt-publication.ts";
+import { createAuthoredNativeCommandRunner } from "./authored-native-command-runner.ts";
+import { AuthoredNativeReceiptEnricher } from "./authored-native-receipt-staging.ts";
+import {
+  OwnerInteractionObservation,
+  nativeInteractionObservationRequested,
+} from "./owner-interaction-observation.ts";
+import { createNativeTmuxSessionCreator } from "./tmux-server-session-create.ts";
+import { createTmuxSessionMutationFence } from "./tmux-session-mutation-fence.ts";
+import { createNativeTmuxSessionOpener } from "./tmux-server-session-open.ts";
+import {
+  createServerGenerationFencedTmuxRunner,
+  createServerGenerationFencedTmuxAsyncRunner,
+} from "./tmux-server-generation-runner.ts";
+import { createNativeTmuxServerCatalog } from "./tmux-server-owner.ts";
+import { createEmbeddedTmuxServerOwners } from "./embedded-tmux-server-owners.ts";
+import {
+  captureTmuxServerProofAsync,
+  captureTmuxServerProof,
+  captureUnboundTmuxSelectorProof,
+  type TmuxServerProof,
+} from "./tmux-server-proof.ts";
+import { assertCanonicalDaemonServerIntent } from "./canonical-daemon-bootstrap.ts";
+import {
+  runtimeTmuxArgs,
+  resolveTmuxServerIntent,
+  resolveRuntimeNamespace,
+} from "./runtime-namespace.ts";
 import { createFleetPreviewCapture } from "../command-center/resources/fleet-preview-route.ts";
 import { mountTerminalNativeBackingRoute } from "../command-center/resources/terminal-native-backing-route.ts";
 import { startOwnedEmbeddedDaemon } from "./embedded-daemon-lifecycle.ts";
@@ -34,7 +67,6 @@ import {
 import {
   classifySessionInspectionError,
   DaemonSessionMonitor,
-  execTmuxAsync,
   isConfirmedMissingTmuxTarget,
   parseDaemonMonitorPanes,
   readPortProcessFactsAsync,
@@ -77,6 +109,13 @@ import { FleetLifecycleAuthority } from "./fleet-lifecycle-authority.ts";
 import { AppWindowMutationAuthority } from "./app-window-mutation.ts";
 import { WorkspaceMultiplexerAuthority } from "./workspace-multiplexer-verbs.ts";
 import { TmuxExternalInteractionObserver } from "./tmux-external-interaction-observer.ts";
+import {
+  createTmuxInteractionObservationHandler,
+  externalTmuxInteractionDraft,
+} from "./tmux-interaction-observation-handler.ts";
+import { InteractionReceiptJournal } from "./interaction-receipt-journal.ts";
+import { InteractionObservationStatusStore } from "./interaction-observation-status.ts";
+import { InteractionEvidenceAuthority } from "./interaction-evidence-authority.ts";
 import {
   createNativeTerminalAttachmentRuntime,
   type NativeTerminalAttachmentRuntime,
@@ -219,14 +258,6 @@ function tmux(...args: string[]): string {
     stdio: ["ignore", "pipe", "pipe"],
     timeout: 2_000,
   }).trim();
-}
-
-function tmuxSilent(...args: string[]): string {
-  try {
-    return tmux(...args);
-  } catch {
-    return "";
-  }
 }
 
 function assertTmuxSession(
@@ -549,6 +580,7 @@ function sameCanonicalInstance(left: CanonicalDaemonInfo, right: CanonicalDaemon
 async function requestValidatedDaemonShutdown(
   info: CanonicalDaemonInfo,
   deadline: TakeoverDeadline,
+  intent: ReturnType<typeof resolveTmuxServerIntent>,
 ): Promise<void> {
   if (info.supervisionId)
     throw new DaemonStartupError(
@@ -573,6 +605,8 @@ async function requestValidatedDaemonShutdown(
       "canonical_takeover_identity_mismatch",
     );
   }
+  await assertCanonicalDaemonServerIntent(info, intent);
+  assertTakeoverDeadline(deadline, "Tmux server intent proof exceeded the takeover deadline");
   const health = await probeCanonicalDaemonHealth(info, deadline.signal);
   assertTakeoverDeadline(
     deadline,
@@ -757,6 +791,7 @@ async function startHttpServer({
   localBypassToken,
   silent,
   readProjectAuth,
+  tmuxServerProof,
   daemonIdentity,
   workspacePaneCreationBackend,
   workspaceOpenBackend,
@@ -774,7 +809,9 @@ async function startHttpServer({
   catalogFleet,
   fleetPreviewCapture,
   sessionRuntimeRegistry,
+  serverOwners,
 }: {
+  serverOwners: Awaited<ReturnType<typeof createEmbeddedTmuxServerOwners>>;
   sessionName: string;
   requestedPort: number;
   bindHostname: string;
@@ -783,6 +820,7 @@ async function startHttpServer({
   localBypassToken?: string | null;
   silent?: boolean;
   readProjectAuth?: boolean;
+  tmuxServerProof: () => Promise<TmuxServerProof | null>;
   daemonIdentity: {
     productVersion: string;
     instanceId: string;
@@ -807,7 +845,9 @@ async function startHttpServer({
     readonly sessionName: string;
     readonly paneCount: number;
   }[];
-  catalogFleet: () => ReturnType<typeof readAdoptedFleet>;
+  catalogFleet: () =>
+    | ReturnType<typeof readAdoptedFleet>
+    | Promise<ReturnType<typeof readAdoptedFleet>>;
   fleetPreviewCapture: (
     liveSessionId: string,
     signal?: AbortSignal,
@@ -839,6 +879,7 @@ async function startHttpServer({
   const authService = new AuthService(authConfig.secret);
 
   const app = createApp({
+    tmuxServerOwners: serverOwners.owners,
     authService,
     authConfig,
     remoteAccess: {
@@ -848,6 +889,7 @@ async function startHttpServer({
       ownerToken: localBypassToken ?? null,
     },
     daemonIdentity,
+    tmuxServerProof,
     workspacePaneCreationBackend,
     workspaceOpenBackend,
     workspaceOpenHandoffBackend,
@@ -914,7 +956,13 @@ async function startHttpServer({
       (create ? getTerminalAttachmentRuntime() : peekTerminalAttachmentRuntime())?.admission ??
       null,
   );
-  const paneStreamBoundary = attachPaneStreamWebSocket(server, paneStreamRuntime.coordinator);
+  const paneStreamBoundary = attachPaneStreamWebSocket(
+    server,
+    paneStreamRuntime.coordinator,
+    PANE_STREAM_REDEEM_PATH,
+    () => serverOwners.isDefaultCurrent(),
+  );
+  serverOwners.attach(server);
 
   try {
     await new Promise<void>((resolve, reject) => {
@@ -987,6 +1035,7 @@ export async function startEmbeddedDaemon(
 async function startEmbeddedDaemonGeneration(
   opts: EmbeddedDaemonOptions,
 ): Promise<EmbeddedDaemonHandle> {
+  const tmuxServerIntent = resolveTmuxServerIntent();
   const sessionName = opts.sessionName ?? EMBEDDED_SESSION_NAME;
   const sessionless = opts.sessionName == null;
   const appSettings = readAppSettings();
@@ -1026,7 +1075,7 @@ async function startEmbeddedDaemonGeneration(
     if (state.status === "valid" && (await isCanonicalDaemonAlive(state.info))) {
       const takeoverDeadline = createTakeoverDeadline(takeoverTimeoutMs());
       try {
-        await requestValidatedDaemonShutdown(state.info, takeoverDeadline);
+        await requestValidatedDaemonShutdown(state.info, takeoverDeadline, tmuxServerIntent);
         claim = await acquireCanonicalDaemonClaimAfterTakeover(state.info, takeoverDeadline);
       } finally {
         takeoverDeadline.dispose();
@@ -1083,8 +1132,31 @@ async function startEmbeddedDaemonGeneration(
     // observe one daemon-generation authority rather than whichever server a
     // caller's ambient TMUX/PATH happens to select.
     const tmuxAuthority = resolveWorkspacePaneTmuxAuthority();
+    requireSupportedTmuxVersion(
+      execFileSync(tmuxAuthority.executablePath, ["-V"], { encoding: "utf8", timeout: 3000 }),
+    );
+    const readTeamMemberships = createClaudeTeamMembershipReader(
+      join(resolveRuntimeNamespace().claudeDir, "teams"),
+    );
     const catalogTmuxRunner = createPinnedWorkspaceTmuxRunner(tmuxAuthority);
-    const fleetFactsTmuxRunner = createPinnedWorkspaceTmuxAsyncRunner(tmuxAuthority);
+    const initialTmuxProof = captureTmuxServerProof(catalogTmuxRunner);
+    if (initialTmuxProof)
+      requireSupportedTmuxVersion(catalogTmuxRunner(["display-message", "-p", "#{version}"]));
+    const initialNativeIdentityParts = initialTmuxProof
+      ? catalogTmuxRunner(["display-message", "-p", "#{pid}\t#{start_time}"]).split("\t")
+      : null;
+    const initialNativeServerIdentity = initialNativeIdentityParts
+      ? { pid: initialNativeIdentityParts[0]!, startTime: initialNativeIdentityParts[1]! }
+      : undefined;
+    const sessionMutationFence = createTmuxSessionMutationFence();
+    const nativeGenerationTmuxRunner = sessionMutationFence.wrap(
+      initialNativeServerIdentity
+        ? createServerGenerationFencedTmuxRunner(tmuxAuthority, initialNativeServerIdentity)
+        : catalogTmuxRunner,
+    );
+    const fleetFactsTmuxRunner = initialNativeServerIdentity
+      ? createServerGenerationFencedTmuxAsyncRunner(tmuxAuthority, initialNativeServerIdentity)
+      : createPinnedWorkspaceTmuxAsyncRunner(tmuxAuthority);
     const tmuxAuthorityReplaced = createTmuxAuthorityReplacementProbe(
       tmuxAuthority,
       catalogTmuxRunner,
@@ -1110,11 +1182,18 @@ async function startEmbeddedDaemonGeneration(
     const workspaceRegistry = getDefaultWorkspaceRegistry();
     await workspaceRegistry.load(() => readWorkspaceRegistrySessionInventory(registryTmuxRunner));
     const paneSourceCredentials = new PaneSourceCredentialAuthority({
-      run: (args) => tmuxSilent(...args),
-      runAsync: (args, signal) => execTmuxAsync(args, signal),
+      run: (args) => nativeGenerationTmuxRunner(args),
+      runAsync: (args, signal) => fleetFactsTmuxRunner(args, signal),
     });
+    const sourceDiscovery = new PaneSourceDiscovery(paneSourceCredentials, () =>
+      workspaceRegistry.list(),
+    );
     const legacySession = process.env.TMUX_IDE_SESSION;
-    if (legacySession && !workspaceRegistry.has(legacySession)) {
+    if (
+      legacySession &&
+      !workspaceRegistry.has(legacySession) &&
+      !workspaceRegistry.list().some((workspace) => workspace.sessionName === legacySession)
+    ) {
       try {
         workspaceRegistry.add({
           name: legacySession,
@@ -1133,7 +1212,8 @@ async function startEmbeddedDaemonGeneration(
     if (
       !sessionless &&
       sessionName !== EMBEDDED_SESSION_NAME &&
-      !workspaceRegistry.has(sessionName)
+      !workspaceRegistry.has(sessionName) &&
+      !workspaceRegistry.list().some((workspace) => workspace.sessionName === sessionName)
     ) {
       try {
         workspaceRegistry.add({
@@ -1153,16 +1233,19 @@ async function startEmbeddedDaemonGeneration(
       daemonInstanceId: instanceId,
       registry: workspaceRegistry,
       tmuxAuthority,
+      io: { runTmux: nativeGenerationTmuxRunner },
     });
     const workspaceOpen = new WorkspaceOpenAuthority({
       daemonInstanceId: instanceId,
       registry: workspaceRegistry,
       tmuxAuthority,
+      io: { runTmux: nativeGenerationTmuxRunner },
     });
     const workspacePromotion = new WorkspacePromotionAuthority({
       daemonInstanceId: instanceId,
       registry: workspaceRegistry,
       tmuxAuthority,
+      io: { runTmux: fleetFactsTmuxRunner },
     });
     if (opts.restoreTmuxWorkspaces) {
       for (const workspace of workspaceRegistry.list()) {
@@ -1178,66 +1261,149 @@ async function startEmbeddedDaemonGeneration(
       productVersion,
       startedAt,
       registry: workspaceRegistry,
-      runTmux: catalogTmuxRunner,
+      runTmux: nativeGenerationTmuxRunner,
       readFleet: () => readAdoptedFleet(workspaceRegistry, catalogTmuxRunner),
     });
     const appWindowMutation = new AppWindowMutationAuthority({
       daemonInstanceId: instanceId,
       registry: workspaceRegistry,
     });
+    let authoredNativeRunner: ReturnType<typeof createAuthoredNativeCommandRunner> | null = null;
     const workspaceMultiplexer = new WorkspaceMultiplexerAuthority({
       daemonInstanceId: instanceId,
       registry: workspaceRegistry,
       tmuxAuthority,
+      ...(initialTmuxProof
+        ? {
+            io: {
+              runTmux: nativeGenerationTmuxRunner,
+              runAuthoredNative: (request, options) =>
+                authoredNativeRunner?.(request, options) ?? null,
+            },
+          }
+        : {}),
+    });
+    const interactionReceipts = new InteractionReceiptJournal();
+    let interactionEvidence: InteractionEvidenceAuthority | null = null;
+    let interactionObservation: InteractionObservationStatusStore | null = null;
+    const nativeObservationRequested = nativeInteractionObservationRequested();
+    let observationSelector: OwnerInteractionObservation | null = null;
+    let backgroundCapture: ReturnType<typeof createBackgroundNativeCapture> | null = null;
+    let ownedViewerFactory: ReturnType<typeof createOwnedViewerAdapterFactory> | null = null;
+    const authoredReceiptEnricher = new AuthoredNativeReceiptEnricher({
+      journal: interactionReceipts,
+      publishRaw: (evidence) => interactionReceipts.appendEvidence(evidence),
+      noteGap: () => observationSelector?.noteOwnedOperationUncertainty(),
+      onFailure: () => observationSelector?.failOwnedOperationObservation(),
     });
     let sessionRuntimeRegistry: SessionRuntimeRegistry | null = null;
     let workspaceOpenHandoff: WorkspaceOpenHandoffCoordinator | null = null;
     let terminalInventoryRuntime: WorkspaceTerminalInventoryRuntime | null = null;
+    let sessionMonitor: DaemonSessionMonitor | null = null;
     const externalInteractionObserver = new TmuxExternalInteractionObserver({
       daemonInstanceId: instanceId,
+      onAvailability: (available) => {
+        if (observationSelector) observationSelector.stockAvailable(available);
+        else interactionObservation?.setStockAvailable(available);
+      },
+      onGap: (gap) => {
+        terminalInventoryRuntime?.invalidate();
+        if (observationSelector)
+          observationSelector.stockGap(
+            gap.reason === "overflow"
+              ? "retention-overflow"
+              : gap.reason === "hooks-replaced"
+                ? "hooks-replaced"
+                : "uncertain-consume",
+          );
+        else
+          interactionObservation?.noteGap(
+            gap.reason === "overflow"
+              ? "retention-overflow"
+              : gap.reason === "hooks-replaced"
+                ? "hooks-replaced"
+                : "uncertain-consume",
+          );
+      },
       internalReadOwnerToken: localBypassToken,
+      resolveCapturedTarget: (target) => {
+        const endpoint = interactionEvidence?.captureObservedEndpoint(target);
+        return endpoint?.kind === "pane" ? endpoint : null;
+      },
+      onUnresolvedObservation: () => {
+        if (observationSelector) observationSelector.stockGap("unresolved-target", 1);
+        else interactionObservation?.noteGap("unresolved-target", 1);
+        terminalInventoryRuntime?.invalidate();
+      },
+      io: { runTmux: fleetFactsTmuxRunner },
       registry: workspaceRegistry,
       tmuxAuthority,
       // A gap cannot reconstruct historical interactions. Refresh inventory
       // facts while authored operations retain their observation deadlines.
-      onGap: () => terminalInventoryRuntime?.invalidate(),
-      onObserved: ({ workspaceName, semanticPaneId, operationKind, operationId }) => {
-        if (operationKind !== "workspace.pane.read") terminalInventoryRuntime?.invalidate();
-        if (operationId) {
-          const consumed =
-            sessionRuntimeRegistry?.observeTmuxInteraction({
-              operationId,
-              workspaceName,
-              semanticPaneId,
-              operationKind,
-            }) ?? false;
-          if (consumed) return true;
-        }
-        try {
-          broadcastInteractionReceipt(
-            {
-              operationId: randomUUID(),
-              origin: "external",
-              workspaceName,
-              target: { kind: "pane", semanticPaneId },
-              operationKind,
-              phase: "observed",
-              summary:
-                operationKind === "workspace.pane.read"
-                  ? { operationKind, observedOnly: true }
-                  : { operationKind, observedOnly: true },
-              proof: { operationKind, observed: true, semanticPaneId },
-            },
-            instanceId,
+      onObserved: createTmuxInteractionObservationHandler({
+        invalidateInventory: () => terminalInventoryRuntime?.invalidate(),
+        consumeAuthored: (observation) =>
+          sessionRuntimeRegistry?.observeTmuxInteraction({
+            ...observation,
+            operationId: observation.operationId!,
+          }) ?? false,
+        publishExternal: (observation) => {
+          if (
+            observationSelector
+              ? !observationSelector.allowStockPublication()
+              : nativeObservationRequested
+          )
+            return;
+          if (!interactionEvidence) throw new Error("Scoped interaction evidence is unavailable");
+          const draft = externalTmuxInteractionDraft(
+            observation,
+            observation.capturedTarget
+              ? interactionEvidence.captureObservedEndpoint(observation.capturedTarget)
+              : interactionEvidence.captureUnavailableEndpoint(),
           );
-        } catch (error) {
+          interactionReceipts.publish(draft);
+          broadcastInteractionReceipt(draft, instanceId);
+        },
+        reportPublicationFailure: (error) => {
           if (!opts.silent) console.error("[daemon] External interaction receipt failed:", error);
-        }
-        return false;
-      },
+        },
+      }),
     });
+    const disposeInteractionObservation = async () => {
+      authoredReceiptEnricher.dispose();
+      const failures: unknown[] = [];
+      try {
+        await observationSelector?.dispose();
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        await externalInteractionObserver.dispose();
+      } catch (error) {
+        failures.push(error);
+      }
+      if (failures.length)
+        throw new AggregateError(failures, "Interaction observer retirement failed");
+    };
     let terminalAttachmentRuntime: NativeTerminalAttachmentRuntime | null = null;
     let paneStreamRuntime: PaneStreamRuntime | null = null;
+    let serverOwners: Awaited<ReturnType<typeof createEmbeddedTmuxServerOwners>> | null = null;
+    const defaultSessionCreator = createNativeTmuxSessionCreator({
+      generation: instanceId,
+      registry: workspaceRegistry,
+      run: nativeGenerationTmuxRunner,
+      assertOpen: () => {
+        if (serverOwners?.defaultRetired) throw new Error("Default tmux owner is retired");
+      },
+    });
+    const defaultSessionOpener = createNativeTmuxSessionOpener({
+      generation: instanceId,
+      registry: workspaceRegistry,
+      run: fleetFactsTmuxRunner,
+      assertOpen: () => {
+        if (serverOwners?.defaultRetired) throw new Error("Default tmux owner is retired");
+      },
+    });
     let runtimeTraceStream: ReturnType<typeof createWriteStream> | null = null;
     const closeRuntimeTraceStream = async (): Promise<void> => {
       externalInteractionObserver.setDiagnostics(null);
@@ -1254,14 +1420,37 @@ async function startEmbeddedDaemonGeneration(
         operationId: string,
         intent: SessionRuntimeSemanticIntent,
         timing?: Parameters<typeof workspaceMultiplexer.mutate>[1],
+        execution?: Parameters<typeof workspaceMultiplexer.mutate>[2],
       ) => {
         if (intent.verb === "workspace.pane.read") {
-          workspaceMultiplexer.readPane(operationId, intent);
-          return;
+          return workspaceMultiplexer.readPane(operationId, intent, execution);
+        }
+        if (
+          intent.verb === "workspace.window.link.select" ||
+          intent.verb === "workspace.window.link.unlink" ||
+          intent.verb === "workspace.pane.select"
+        ) {
+          return workspaceMultiplexer.mutateWindowLink(
+            { operationId, expectedDaemonInstanceId: instanceId, intent },
+            (session, action) => {
+              if (!sessionRuntimeRegistry) throw new Error("Session runtime unavailable");
+              return sessionRuntimeRegistry.executeWindowLinkAction(session, action);
+            },
+          );
+        }
+        if (intent.verb === "workspace.pane.resize") {
+          return workspaceMultiplexer.mutateResize(
+            { operationId, expectedDaemonInstanceId: instanceId, intent },
+            (session) => {
+              if (!sessionRuntimeRegistry) throw new Error("Session runtime unavailable");
+              return sessionRuntimeRegistry.paneResizeTransport(session);
+            },
+          );
         }
         return workspaceMultiplexer.mutate(
           { operationId, expectedDaemonInstanceId: instanceId, intent },
           timing,
+          execution,
         );
       };
       const runtimeTracePath = process.env.TMUX_IDE_SESSION_RUNTIME_TRACE_LOG;
@@ -1318,16 +1507,42 @@ async function startEmbeddedDaemonGeneration(
         generation: instanceId,
         ...(runtimeObservability ? { observability: runtimeObservability } : {}),
         semanticMutations: {
+          captureInteractionContext: (intent) => {
+            if (!interactionEvidence) throw new Error("Scoped interaction evidence is unavailable");
+            return {
+              destination:
+                ("semanticPaneId" in intent &&
+                  interactionEvidence.captureAuthoredEndpoint(
+                    intent.workspaceName,
+                    intent.semanticPaneId,
+                  )) ||
+                interactionEvidence.captureUnavailableEndpoint(),
+              source: null,
+            };
+          },
+          validateInteractionContext: (context) => {
+            if (
+              context.destination.kind !== "pane" ||
+              !interactionEvidence?.isCurrent(context.destination)
+            )
+              throw new Error("Interaction target lifetime is no longer current");
+          },
           resolveSession: (workspaceName) =>
             workspaceRegistry.get(workspaceName)?.sessionName ?? null,
           execute: executeRuntimeIntent,
           traceAuthority: { generation: instanceId, incarnation: null },
-          publishReceipt: (receipt) => broadcastInteractionReceipt(receipt, instanceId),
+          publishReceipt: (receipt) =>
+            publishOwnerInteractionReceipt(interactionReceipts, receipt, (draft) =>
+              broadcastInteractionReceipt(draft, instanceId),
+            ),
           publishResourceChange: (change) => broadcastResourceChanged(change, instanceId),
         },
         mirror: {
+          createOwnedViewerAdapter: () => ownedViewerFactory?.(),
+          nativeServerIdentity: initialNativeServerIdentity,
           executable: tmuxAuthority.executablePath,
-          resolveSocketPath: () => catalogTmuxRunner(["display-message", "-p", "#{socket_path}"]),
+          resolveSocketPath: () =>
+            nativeGenerationTmuxRunner(["display-message", "-p", "#{socket_path}"]),
           internalReadHookEmission: (runtimePaneId, marker) =>
             externalInteractionObserver.internalReadHookEmission(runtimePaneId, marker),
           ...(selector.kind === "path" ? { socketPath: selector.path } : {}),
@@ -1403,6 +1618,7 @@ async function startEmbeddedDaemonGeneration(
         sessionRuntimeRegistry,
         tmuxAuthority: {
           executablePath: tmuxAuthority.executablePath,
+          nativeServerIdentity: initialNativeServerIdentity,
           socketSelector: tmuxAuthority.socketSelector,
           trustedCwd: dir,
           ...(tmuxAuthority.socketSelector.kind === "name"
@@ -1415,10 +1631,58 @@ async function startEmbeddedDaemonGeneration(
               }
             : {}),
         },
-        agentStatusProbeFactory: ({ run }) => createTmuxAgentStatusProbe({ run }),
-        onInventory: (snapshot) => workspaceMultiplexer.adoptPaneInventory(snapshot.panes),
-        onSessionInventory: (sessionName, snapshot) =>
-          workspaceMultiplexer.adoptSessionPaneInventory(sessionName, snapshot?.panes ?? []),
+        agentStatusProbeFactory: ({ run }) =>
+          createTmuxAgentStatusProbe({
+            run,
+            readTeamMemberships,
+            captureNative: (pane, signal) =>
+              backgroundCapture?.(
+                {
+                  paneId: pane.runtimePaneId,
+                  nativeIdentity: pane.nativeIdentity ?? null,
+                  mode: "agent-status",
+                },
+                signal,
+              ) ?? Promise.resolve(null),
+          }),
+        nativeServerEpoch: () => observationSelector?.nativeServerEpoch ?? null,
+        resolveInteractionEndpoint: (workspaceName, semanticPaneId) =>
+          interactionEvidence?.captureAuthoredEndpoint(workspaceName, semanticPaneId) ?? null,
+        onInventory: async (snapshot, signal) => {
+          workspaceMultiplexer.adoptPaneInventory(snapshot.panes);
+          interactionEvidence?.adoptInventory(snapshot.panes);
+          await sourceDiscovery.prepare(
+            snapshot.panes.map((pane) => ({
+              ...pane,
+              paneLifetimeId: pane.semanticPaneId
+                ? (interactionEvidence?.captureInventoryEndpoint(
+                    pane.sessionName,
+                    pane.runtimePaneId,
+                    pane.semanticPaneId,
+                  )?.paneLifetimeId ?? null)
+                : null,
+            })),
+            signal,
+          );
+        },
+        onSessionInventory: async (sessionName, snapshot, signal) => {
+          workspaceMultiplexer.adoptSessionPaneInventory(sessionName, snapshot?.panes ?? []);
+          interactionEvidence?.adoptSessionInventory(sessionName, snapshot?.panes ?? []);
+          if (snapshot)
+            await sourceDiscovery.prepare(
+              snapshot.panes.map((pane) => ({
+                ...pane,
+                paneLifetimeId: pane.semanticPaneId
+                  ? (interactionEvidence?.captureInventoryEndpoint(
+                      pane.sessionName,
+                      pane.runtimePaneId,
+                      pane.semanticPaneId,
+                    )?.paneLifetimeId ?? null)
+                  : null,
+              })),
+              signal,
+            );
+        },
         ...(runtimeObservability ? { observability: runtimeObservability } : {}),
       } satisfies ConstructorParameters<typeof WorkspaceTerminalInventoryRuntime>[0];
       terminalInventoryRuntime = new WorkspaceTerminalInventoryRuntime(terminalRuntimeOptions);
@@ -1450,12 +1714,177 @@ async function startEmbeddedDaemonGeneration(
         registry: sessionRuntimeRegistry,
         resolveSession: (workspaceName) =>
           workspaceRegistry.get(workspaceName)?.sessionName ?? null,
+        resolvePaneSourceBinding: (credential, resolvedSession, claimedSource) => {
+          const grant = paneSourceCredentials.resolveBinding(
+            credential,
+            resolvedSession,
+            claimedSource,
+          );
+          return grant && interactionEvidence
+            ? interactionEvidence.captureSourceBinding(grant)
+            : null;
+        },
         resolvePaneSourceCredential: (credential, resolvedSession, claimedSource) =>
           paneSourceCredentials.resolve(credential, resolvedSession, claimedSource),
       });
       await externalInteractionObserver.start();
+      serverOwners = await createEmbeddedTmuxServerOwners({
+        environmentId,
+        onDefaultScope: async (scope) => {
+          interactionEvidence = new InteractionEvidenceAuthority(environmentId, scope);
+          interactionObservation = new InteractionObservationStatusStore(environmentId, scope);
+          observationSelector = new OwnerInteractionObservation({
+            environmentId,
+            serverScope: scope,
+            tmuxAuthority,
+            nativeServerIdentity: initialNativeServerIdentity,
+            enabled: nativeObservationRequested,
+            status: interactionObservation,
+            onOwnedPlanComplete: (proof) => {
+              sessionRuntimeRegistry?.observeOwnedNativePlan(proof);
+            },
+            publishOwnedEvidence: (decision) => authoredReceiptEnricher.consume(decision),
+            publishEvidence: (evidence) => {
+              interactionReceipts.appendEvidence(evidence);
+            },
+          });
+          ownedViewerFactory = createOwnedViewerAdapterFactory({
+            environmentId,
+            serverScope: scope,
+            observation: observationSelector,
+            status: interactionObservation,
+          });
+          backgroundCapture = createBackgroundNativeCapture({
+            environmentId,
+            serverScope: scope,
+            observation: () => observationSelector,
+            runPinnedTmux: fleetFactsTmuxRunner,
+          });
+          authoredNativeRunner = createAuthoredNativeCommandRunner({
+            environmentId,
+            serverScope: scope,
+            sessionGuard: () => sessionMutationFence.snapshot(),
+            observation: () => observationSelector,
+            runPinnedTmux: createPinnedWorkspaceTmuxRunner(tmuxAuthority, { timeoutMs: 5_000 }),
+          });
+          observationSelector.stockAvailable(externalInteractionObserver.available);
+          if (nativeObservationRequested) interactionObservation.noteGap("uncertain-consume");
+          await observationSelector.start();
+          await terminalInventoryRuntime!.discoverTerminalInventory();
+        },
+        defaultAuthority: tmuxAuthority,
+        defaultGeneration: instanceId,
+        expectedDefaultProofDigest: initialTmuxProof?.digest ?? null,
+        stateDirectory: resolveRuntimeNamespace().runtimeDir,
+        webSocketBaseUrl: canonicalDaemonUrl("ws", bindHostname, port),
+        defaultOwner: {
+          get interactionObservation() {
+            return interactionObservation;
+          },
+          get interactionEvidence() {
+            return interactionEvidence;
+          },
+          submitAutomationIntent: (operationId, intent, authority) =>
+            sessionRuntimeRegistry!.submitAutomationIntent(operationId, intent, authority),
+          resolveInteractionSource: (credential, workspaceName, claimedSemanticPaneId) => {
+            const session = workspaceRegistry.get(workspaceName)?.sessionName;
+            if (!session || !interactionEvidence) return null;
+            const grant = paneSourceCredentials.resolveBinding(
+              credential,
+              session,
+              claimedSemanticPaneId,
+            );
+            return grant ? interactionEvidence.captureSourceBinding(grant) : null;
+          },
+          interactionReceipts,
+          catalog: createNativeTmuxServerCatalog(workspaceRegistry, fleetFactsTmuxRunner),
+          openSession: async (liveSessionId) => {
+            await createNativeTmuxServerCatalog(workspaceRegistry, fleetFactsTmuxRunner)();
+            const result = await defaultSessionOpener.openSession(liveSessionId);
+            terminalInventoryRuntime!.invalidate();
+            return result;
+          },
+          workspaceRegistry,
+          multiplexerBackend: orderedMultiplexerBackend,
+          createSession: defaultSessionCreator.createSession,
+          createSessionPane: async (liveSessionId, request) => {
+            const selectedSession = workspaceRegistry.get(
+              request.intent.workspaceName,
+            )?.sessionName;
+            if (!selectedSession) throw new Error("Selected workspace is unavailable");
+            const result = await sessionMutationFence.execute({
+              liveSessionId,
+              sessionName: selectedSession,
+              run: fleetFactsTmuxRunner,
+              mutate: () => workspacePaneCreation.create(request),
+            });
+            terminalInventoryRuntime!.invalidate();
+            return result;
+          },
+          mutateSession: async (liveSessionId, request, authenticatedHostClientId) => {
+            const selectedSession = workspaceRegistry.get(
+              request.intent.workspaceName,
+            )?.sessionName;
+            if (!selectedSession) throw new Error("Selected workspace is unavailable");
+            return sessionMutationFence.execute({
+              liveSessionId,
+              sessionName: selectedSession,
+              run: fleetFactsTmuxRunner,
+              mutate: () =>
+                orderedMultiplexerBackend.mutate(
+                  request,
+                  authenticatedHostClientId,
+                  undefined,
+                  true,
+                ),
+            });
+          },
+          sessionRuntimeRegistry,
+          terminalInventoryRuntime,
+          paneStreamRuntime,
+          dispose: async () => {
+            sessionMonitor?.stop();
+            paneSourceCredentials.dispose();
+            const transportResults = await Promise.allSettled([
+              Promise.resolve().then(() => terminalAttachmentRuntime?.dispose()),
+              Promise.resolve().then(() => paneStreamRuntime!.dispose()),
+            ]);
+            const authorityResults = await Promise.allSettled([
+              Promise.resolve().then(() => terminalInventoryRuntime!.dispose()),
+              Promise.resolve().then(() => workspacePaneCreation.dispose()),
+              Promise.resolve().then(() => workspaceOpen.dispose()),
+              Promise.resolve().then(() => workspaceOpenHandoff?.dispose()),
+              Promise.resolve().then(() =>
+                Promise.all([
+                  workspacePromotion.dispose(),
+                  defaultSessionOpener.dispose(),
+                  defaultSessionCreator.dispose(),
+                ]).then(() => {}),
+              ),
+              Promise.resolve().then(() => appWindowMutation.dispose()),
+              Promise.resolve().then(() => workspaceMultiplexer.dispose()),
+              Promise.resolve().then(() => disposeInteractionObservation()),
+            ]);
+            try {
+              await sessionRuntimeRegistry!.dispose();
+            } finally {
+              interactionReceipts.dispose();
+              interactionEvidence?.dispose();
+              interactionEvidence = null;
+              interactionObservation?.dispose();
+              interactionObservation = null;
+            }
+            const failures = [...transportResults, ...authorityResults].flatMap((result) =>
+              result.status === "rejected" ? [result.reason] : [],
+            );
+            if (failures.length)
+              throw new AggregateError(failures, "Default tmux owner retirement failed");
+          },
+        },
+      });
       setFleetFactsTmuxRunner(fleetFactsTmuxRunner);
       startedServer = await startHttpServer({
+        serverOwners,
         sessionName,
         requestedPort: port,
         bindHostname,
@@ -1465,6 +1894,15 @@ async function startEmbeddedDaemonGeneration(
         silent: opts.silent,
         readProjectAuth: !sessionless,
         daemonIdentity: { productVersion, instanceId, startedAt, environmentId },
+        tmuxServerProof: async () => {
+          // Two native reads share this bound. Concurrent cold CLI election
+          // can delay the daemon on small hosts; this is not an input deadline.
+          const deadline = AbortSignal.timeout(2_000);
+          return (
+            (await captureTmuxServerProofAsync((args) => fleetFactsTmuxRunner(args, deadline))) ??
+            captureUnboundTmuxSelectorProof(tmuxAuthority)
+          );
+        },
         workspacePaneCreationBackend: workspacePaneCreation,
         workspaceOpenBackend: workspaceOpen,
         workspaceOpenHandoffBackend: workspaceOpenHandoff,
@@ -1478,13 +1916,48 @@ async function startEmbeddedDaemonGeneration(
         peekTerminalAttachmentRuntime,
         paneStreamRuntime,
         catalogLiveSessions: () => discoverLiveSessionSummaries(catalogTmuxRunner),
-        catalogFleet: () => readAdoptedFleet(workspaceRegistry, catalogTmuxRunner),
-        fleetPreviewCapture: createFleetPreviewCapture(
-          createPinnedWorkspaceTmuxAsyncRunner(tmuxAuthority),
-        ),
+        catalogFleet: async () => {
+          const fleet = readAdoptedFleet(
+            workspaceRegistry,
+            nativeGenerationTmuxRunner,
+            (sessionName, pane) =>
+              pane.semanticPaneId
+                ? (interactionEvidence?.captureInventoryEndpoint(
+                    sessionName,
+                    pane.runtimePaneId,
+                    pane.semanticPaneId,
+                  ) ?? null)
+                : null,
+            () => observationSelector?.nativeServerEpoch ?? null,
+          );
+          if (!fleet) return null;
+          const names = await readTeamMemberships(
+            fleet.flatMap((session) =>
+              session.panes.map((pane) => ({
+                runtimePaneId: pane.runtimePaneId,
+                pid: pane.incarnation,
+              })),
+            ),
+          );
+          return fleet.map((session) => ({
+            ...session,
+            panes: session.panes.map((pane) => {
+              const name = names.get(pane.runtimePaneId);
+              return name
+                ? { ...pane, teamMemberName: name.name, team: pane.team ?? name.team }
+                : pane;
+            }),
+          }));
+        },
+        fleetPreviewCapture: createFleetPreviewCapture(fleetFactsTmuxRunner, {
+          serverEpoch: () => observationSelector?.nativeServerEpoch ?? null,
+          capture: (request, signal) =>
+            backgroundCapture?.(request, signal) ?? Promise.resolve(null),
+        }),
         sessionRuntimeRegistry,
       });
     } catch (error) {
+      await serverOwners?.dispose();
       setFleetFactsTmuxRunner(null);
       await Promise.allSettled([
         Promise.resolve().then(() => terminalAttachmentRuntime?.dispose()),
@@ -1493,10 +1966,14 @@ async function startEmbeddedDaemonGeneration(
         workspacePaneCreation.dispose(),
         workspaceOpen.dispose(),
         Promise.resolve().then(() => workspaceOpenHandoff?.dispose()),
-        workspacePromotion.dispose(),
+        Promise.all([
+          workspacePromotion.dispose(),
+          defaultSessionOpener.dispose(),
+          defaultSessionCreator.dispose(),
+        ]).then(() => {}),
         appWindowMutation.dispose(),
         workspaceMultiplexer.dispose(),
-        externalInteractionObserver.dispose(),
+        disposeInteractionObservation(),
         closeRuntimeTraceStream(),
       ]);
       // The pane-stream coordinator may still hold runtime consumers while it
@@ -1526,6 +2003,7 @@ async function startEmbeddedDaemonGeneration(
       );
     };
     const abortStartedServer = async (): Promise<void> => {
+      await serverOwners?.dispose();
       setFleetFactsTmuxRunner(null);
       const terminalFailures = [
         ...(await retireTerminalAttachmentTransport(
@@ -1540,13 +2018,19 @@ async function startEmbeddedDaemonGeneration(
       const workspaceOpenHandoffDisposal = Promise.resolve().then(() =>
         workspaceOpenHandoff?.dispose(),
       );
-      const workspacePromotionDisposal = Promise.resolve().then(() => workspacePromotion.dispose());
+      const workspacePromotionDisposal = Promise.resolve().then(() =>
+        Promise.all([
+          workspacePromotion.dispose(),
+          defaultSessionOpener.dispose(),
+          defaultSessionCreator.dispose(),
+        ]).then(() => {}),
+      );
       const appWindowMutationDisposal = Promise.resolve().then(() => appWindowMutation.dispose());
       const workspaceMultiplexerDisposal = Promise.resolve().then(() =>
         workspaceMultiplexer.dispose(),
       );
       const externalInteractionDisposal = Promise.resolve().then(() =>
-        externalInteractionObserver.dispose(),
+        disposeInteractionObservation(),
       );
       const closePromise = Promise.resolve()
         .then(() => waitForServerClose(server))
@@ -1600,6 +2084,7 @@ async function startEmbeddedDaemonGeneration(
           environmentId,
           bindHostname,
           authToken: localBypassToken,
+          tmuxServerProofVersion: 1,
           provenance,
         },
         claim,
@@ -1658,14 +2143,14 @@ async function startEmbeddedDaemonGeneration(
       },
     });
 
-    const sessionMonitor = sessionless
+    sessionMonitor = sessionless
       ? null
       : new DaemonSessionMonitor({
           sessionName,
           backend: {
             inspectSession: async (candidate, signal) => {
               try {
-                await execTmuxAsync(["has-session", "-t", candidate], signal);
+                await fleetFactsTmuxRunner(["has-session", "-t", candidate], signal);
                 return "yes";
               } catch (error) {
                 if (signal.aborted) return "unknown";
@@ -1685,14 +2170,14 @@ async function startEmbeddedDaemonGeneration(
             },
             hasClients: async (signal) => {
               try {
-                return (await execTmuxAsync(["list-clients"], signal)).length > 0;
+                return (await fleetFactsTmuxRunner(["list-clients"], signal)).length > 0;
               } catch {
                 return null;
               }
             },
             listPanes: async (candidate, signal) => {
               try {
-                const raw = await execTmuxAsync(
+                const raw = await fleetFactsTmuxRunner(
                   [
                     "list-panes",
                     "-t",
@@ -1716,21 +2201,21 @@ async function startEmbeddedDaemonGeneration(
             },
             setPaneOption: async (paneId, option, value, signal) => {
               try {
-                await execTmuxAsync(["set-option", "-pt", paneId, option, value], signal);
+                await fleetFactsTmuxRunner(["set-option", "-pt", paneId, option, value], signal);
               } catch (error) {
                 if (!isConfirmedMissingTmuxTarget(error)) throw error;
               }
             },
             setPaneTitle: async (paneId, title, signal) => {
               try {
-                await execTmuxAsync(["select-pane", "-t", paneId, "-T", title], signal);
+                await fleetFactsTmuxRunner(["select-pane", "-t", paneId, "-T", title], signal);
               } catch (error) {
                 if (!isConfirmedMissingTmuxTarget(error)) throw error;
               }
             },
             refreshClients: async (signal) => {
               try {
-                await execTmuxAsync(["refresh-client", "-S"], signal);
+                await fleetFactsTmuxRunner(["refresh-client", "-S"], signal);
               } catch (error) {
                 if (!isConfirmedMissingTmuxTarget(error)) throw error;
               }
@@ -1744,7 +2229,21 @@ async function startEmbeddedDaemonGeneration(
     const wsUrl = canonicalDaemonUrl("ws", bindHostname, port, "/ws/events");
 
     const handle: EmbeddedDaemonHandle = {
-      tmuxAuthorityReplaced,
+      tmuxAuthorityReplaced: async () => {
+        if (serverOwners?.defaultRetired) return false;
+        const replaced = await tmuxAuthorityReplaced();
+        // A native server replacement cannot restart unrelated server owners.
+        // Legacy default-only callers retain the established restart adapter.
+        if (
+          replaced &&
+          serverOwners &&
+          (serverOwners.owners.list().length > 1 || serverOwners.defaultRetired)
+        ) {
+          await serverOwners.owners.refresh();
+          return false;
+        }
+        return replaced;
+      },
       instanceId,
       pid: process.pid,
       port,
@@ -1769,6 +2268,7 @@ async function startEmbeddedDaemonGeneration(
             await capture(() => setActivationBackend(null));
             await capture(() => sessionMonitor?.stop());
             paneSourceCredentials.dispose();
+            await capture(() => serverOwners?.dispose());
 
             // Retire direct-ticket admission, live PTYs, and the direct upgrade
             // listener before touching the legacy WS or HTTP surfaces.
@@ -1783,10 +2283,16 @@ async function startEmbeddedDaemonGeneration(
             await capture(() => workspacePaneCreation.dispose());
             await capture(() => workspaceOpen.dispose());
             await capture(() => workspaceOpenHandoff?.dispose());
-            await capture(() => workspacePromotion.dispose());
+            await capture(() =>
+              Promise.all([
+                workspacePromotion.dispose(),
+                defaultSessionOpener.dispose(),
+                defaultSessionCreator.dispose(),
+              ]).then(() => {}),
+            );
             await capture(() => appWindowMutation.dispose());
             await capture(() => workspaceMultiplexer.dispose());
-            await capture(() => externalInteractionObserver.dispose());
+            await capture(() => disposeInteractionObservation());
 
             let closePromise: Promise<void>;
             try {

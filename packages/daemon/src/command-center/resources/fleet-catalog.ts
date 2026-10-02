@@ -43,6 +43,7 @@ import {
   isAgentPane,
   resolveAgentPresentation,
   type ApplicationShellPanePresentationFacts,
+  resolvedAgentLabel,
 } from "./application-shell.ts";
 
 function digest(value: string): string {
@@ -123,16 +124,19 @@ function toPresentationPane(
   return {
     semanticPaneId: null,
     index,
-    title: "",
+    title: pane.title ?? "",
     currentCommand: pane.currentCommand,
     active: pane.active,
     role: null,
-    name: null,
+    name: pane.name ?? null,
+    nameSource: pane.nameSource,
     type: null,
     agentKind: pane.agentHintRaw,
     agentStateRaw: pane.agentStateRaw,
     agentStatusTextRaw: pane.agentStatusTextRaw,
     agentDisplayNameRaw: pane.agentDisplayNameRaw,
+    teamMemberName: pane.teamMemberName,
+    team: pane.team,
     // Authority-only: the fleet never scrapes an unopened session. `null` (not
     // `undefined`) keeps `resolveAgentPresentation` on the ground-truth path
     // while its scrape verdict resolves to `unknown` without any capture.
@@ -155,11 +159,17 @@ function projectSession(
     const presentation = resolveAgentPresentation(presentationPane, nowSec);
     agents.push({
       agentId: fleetAgentIdForPane(session.name, pane),
-      name: fleetLabel(presentation.displayName ?? pane.currentCommand, `Agent ${index + 1}`),
+      name: fleetLabel(
+        resolvedAgentLabel(presentationPane, presentation, index),
+        `Agent ${index + 1}`,
+      ),
       harness: harnessForPane(presentationPane),
+      ...(pane.team ? { team: pane.team } : {}),
       activity: presentation.activity,
       attention: presentation.attention,
       statusSource: presentation.statusSource,
+      interactionEndpoint: pane.interactionEndpoint ?? null,
+      nativeIdentity: pane.nativeIdentity ?? null,
     });
   }
   return {

@@ -16,12 +16,20 @@ const PRESENTATION_SOURCES = [
   "runtime/application-shell-sidebar.tsx",
   "runtime/application-terminal-workspace-policy.ts",
   "ui/agent-badge.tsx",
+  "ui/agent-row.tsx",
+  "ui/status-presentation.ts",
+  "ui/pane-interaction.tsx",
+  "ui/pane-interaction-presentation.ts",
+  "ui/pane-mode-control.tsx",
   "ui/badge.tsx",
   "ui/button.tsx",
   "ui/dialog.tsx",
   "ui/key-hint.tsx",
   "ui/menu.tsx",
   "ui/navigation-row.tsx",
+  "ui/session-row.tsx",
+  "ui/working-sessions.tsx",
+  "ui/icons.ts",
   "ui/overlay-frame.tsx",
   "ui/state.ts",
   "ui/status-bar.tsx",
@@ -46,6 +54,14 @@ function runtimeImports(source: string): string[] {
 }
 
 describe("OpenTUI component and chrome contract", () => {
+  it("shares agent presentation between Home and the production sidebar", () => {
+    for (const path of [
+      "runtime/application-machine-sidebar.tsx",
+      "runtime/application-home-agent-roster.tsx",
+    ])
+      expect(readFileSync(join(mirrorRoot, path), "utf8")).toContain("<AgentRow");
+  });
+
   it.each([
     [200, 60, "wide", 28, 172, 57, 56],
     [120, 40, "standard", 28, 92, 37, 36],

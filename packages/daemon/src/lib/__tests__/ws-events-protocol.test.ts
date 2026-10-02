@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { testStockInteractionEvidence } from "../../../test-support/interaction-evidence.ts";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { DaemonEventServerFrameSchemaZ, type DaemonEventServerFrame } from "@tmux-ide/contracts";
 import {
@@ -451,6 +452,14 @@ describe("/ws/events client frame protocol", () => {
         target: { kind: "pane", semanticPaneId: "pane.editor" },
         operationKind: "workspace.pane.read",
         phase: "observed",
+        evidence: {
+          ...testStockInteractionEvidence(
+            "10000000-0000-4000-8000-000000000001",
+            "alpha",
+            "pane.editor",
+          ),
+          observation: { kind: "stock-hook", command: "capture-pane" },
+        },
         summary: { operationKind: "workspace.pane.read", observedOnly: true },
         proof: {
           operationKind: "workspace.pane.read",
@@ -665,6 +674,11 @@ describe("/ws/events client frame protocol", () => {
         target: { kind: "pane", semanticPaneId: "pane.editor" },
         operationKind: "workspace.pane.send",
         phase: "observed",
+        evidence: testStockInteractionEvidence(
+          "10000000-0000-4000-8000-000000000001",
+          "tmux-ide",
+          "pane.editor",
+        ),
         summary: {
           operationKind: "workspace.pane.send",
           characterCount: 17,
@@ -689,6 +703,13 @@ describe("/ws/events client frame protocol", () => {
       ["interaction.receipt", 2],
     ]);
     expect(JSON.stringify(frames(left))).not.toContain("prompt");
+    expect(frames(left)[1]).toMatchObject({
+      evidence: testStockInteractionEvidence(
+        "10000000-0000-4000-8000-000000000001",
+        "tmux-ide",
+        "pane.editor",
+      ),
+    });
 
     const replay = new ProtocolWebSocket();
     handleWsEventsConnection(replay, daemonIdentity);
@@ -697,6 +718,7 @@ describe("/ws/events client frame protocol", () => {
     expect(frames(replay)).toEqual([
       expect.objectContaining({ type: "interaction.receipt", sequence: 2 }),
     ]);
+    expect(frames(replay)[0]).toEqual(frames(left)[1]);
 
     left.disconnect();
     right.disconnect();

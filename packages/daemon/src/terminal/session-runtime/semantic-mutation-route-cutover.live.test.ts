@@ -1,3 +1,4 @@
+import { testInteractionContext } from "../../../test-support/interaction-evidence.ts";
 import { randomUUID } from "node:crypto";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -116,6 +117,7 @@ describe.skipIf(!hasTmux).sequential("semantic mutation production cutover, live
     registry = new SessionRuntimeRegistry({
       generation,
       semanticMutations: {
+        captureInteractionContext: testInteractionContext,
         resolveSession: (workspace) =>
           workspace === workspaceName
             ? (workspaceRegistry.get(workspace)?.sessionName ?? null)

@@ -1,3 +1,4 @@
+import { testInteractionContext } from "../../../test-support/interaction-evidence.ts";
 import type { InteractionReceipt, SessionRuntimeSemanticIntent } from "@tmux-ide/contracts";
 import { describe, expect, it, vi } from "vitest";
 
@@ -54,6 +55,9 @@ function resultFor(
         semanticPaneId: "pane.created",
         displayTitle: intent.displayTitle ?? "Terminal",
       };
+    case "workspace.window.link.select":
+    case "workspace.window.link.unlink":
+      return { ...base, verb: intent.verb, target: intent.target };
     case "workspace.window.kill":
       return { ...base, verb: intent.verb, remainingWindowCount: 1 };
     case "workspace.pane.kill":
@@ -113,6 +117,7 @@ function rig(
     return receipt;
   };
   const executor = new SessionSemanticMutationExecutor({
+    captureInteractionContext: testInteractionContext,
     resolveSession: (workspace) => (workspace === "beta" ? "session-beta" : "session-alpha"),
     execute: options.execute ?? resultFor,
     publishReceipt,
@@ -139,6 +144,143 @@ function submit(
 }
 
 describe("SessionSemanticMutationExecutor", () => {
+  it("returns snapshot text only to the first caller and keeps pending/completed replay metadata-only", async () => {
+    const text = "PRIVATE TERMINAL CONTENT\n";
+    let finish!: (value: SessionRuntimeIntentResult) => void;
+    const execute = vi.fn(
+      () =>
+        new Promise<SessionRuntimeIntentResult>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const receipts: unknown[] = [];
+    let sequence = 0;
+    const executor = new SessionSemanticMutationExecutor({
+      captureInteractionContext: testInteractionContext,
+      resolveSession: () => "alpha",
+      execute,
+      publishReceipt: (input) => {
+        const receipt = { type: "interaction.receipt" as const, sequence: ++sequence, ...input };
+        receipts.push(receipt);
+        return receipt;
+      },
+    });
+    const intent = {
+      verb: "workspace.pane.read" as const,
+      workspaceName: "alpha",
+      semanticPaneId: "pane.alpha",
+      origin: "sdk" as const,
+    };
+    const first = submit(executor, OP_A, intent);
+    const pendingReplay = submit(executor, OP_A, intent);
+    await Promise.resolve();
+    finish({
+      verb: intent.verb,
+      operationId: OP_A,
+      daemonInstanceId: OP_B,
+      workspaceName: "alpha",
+      semanticPaneId: "pane.alpha",
+      format: "ansi",
+      byteCount: Buffer.byteLength(text),
+      capturedByteCount: Buffer.byteLength(text),
+      truncated: false,
+      availability: "available",
+      text,
+    });
+    executor.observe({
+      operationId: OP_A,
+      workspaceName: "alpha",
+      semanticPaneId: "pane.alpha",
+      operationKind: intent.verb,
+    });
+    expect(await first).toMatchObject({ availability: "available", text });
+    expect(await pendingReplay).toMatchObject({ availability: "replay-unavailable", text: null });
+    expect(await submit(executor, OP_A, intent)).toMatchObject({
+      availability: "replay-unavailable",
+      text: null,
+    });
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(receipts)).not.toContain(text.trim());
+    await executor.dispose();
+  });
+
+  it("holds the existing session lane until asynchronous link proof completes", async () => {
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const calls: string[] = [];
+    const { executor, receipts } = rig({
+      execute: async (id, intent) => {
+        calls.push(id);
+        if (id === OP_A) await pending;
+        return resultFor(id, intent);
+      },
+    });
+    const intent = {
+      verb: "workspace.window.link.select" as const,
+      workspaceName: "alpha",
+      target: {
+        liveSessionId: `live-session.${"a".repeat(20)}`,
+        linkId: `window-link.${"b".repeat(32)}`,
+        expectedSemanticWindowId: "window.alpha",
+        linkRevision: 2,
+      },
+    };
+    const first = submit(executor, OP_A, intent);
+    const next = submit(executor, OP_B, intent);
+    await vi.waitFor(() => expect(calls).toEqual([OP_A]));
+    expect(receipts.filter((receipt) => receipt.phase === "observed")).toEqual([]);
+    finish();
+    await Promise.all([first, next]);
+    expect(calls).toEqual([OP_A, OP_B]);
+    expect(receipts.filter((receipt) => receipt.phase === "observed")).toHaveLength(2);
+  });
+
+  it("retains an indeterminate link operation rejection without re-executing", async () => {
+    const execute = vi.fn(async () => {
+      throw new Error("indeterminate native outcome");
+    });
+    const { executor, receipts } = rig({ execute });
+    const intent = {
+      verb: "workspace.window.link.unlink" as const,
+      workspaceName: "alpha",
+      target: {
+        liveSessionId: `live-session.${"a".repeat(20)}`,
+        linkId: `window-link.${"b".repeat(32)}`,
+        expectedSemanticWindowId: "window.alpha",
+        linkRevision: 2,
+      },
+    };
+    await expect(submit(executor, OP_B, intent)).rejects.toMatchObject({ outcome: "rejected" });
+    await expect(submit(executor, OP_B, intent)).rejects.toMatchObject({ outcome: "rejected" });
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(receipts.map((receipt) => receipt.phase)).toEqual(["accepted", "rejected"]);
+  });
+
+  it("replays the original unlink receipt without repeating the mutation", async () => {
+    const execute = vi.fn(resultFor);
+    const { executor, receipts } = rig({ execute });
+    const intent = {
+      verb: "workspace.window.link.unlink" as const,
+      workspaceName: "alpha",
+      target: {
+        liveSessionId: `live-session.${"a".repeat(20)}`,
+        linkId: `window-link.${"b".repeat(32)}`,
+        expectedSemanticWindowId: "window.alpha",
+        linkRevision: 2,
+      },
+    };
+    const first = await submit(executor, OP_B, intent);
+    expect(await submit(executor, OP_B, intent)).toEqual({ ...first, outcome: "replayed" });
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(receipts).toHaveLength(2);
+    expect(receipts[1]).toMatchObject({
+      target: { kind: "window-link", target: intent.target },
+      proof: { operationKind: intent.verb, target: intent.target },
+    });
+  });
+
   it("threads one operation-fenced detailed timing port and keeps a throwing span sink fail-open", async () => {
     let micros = 0;
     const observed: SessionRuntimeStageSpan[] = [];
@@ -150,6 +292,7 @@ describe("SessionSemanticMutationExecutor", () => {
       },
     });
     const executor = new SessionSemanticMutationExecutor({
+      captureInteractionContext: testInteractionContext,
       resolveSession: () => "session-alpha",
       traceAuthority: { generation: "daemon-a", incarnation: null },
       observability,
@@ -186,6 +329,7 @@ describe("SessionSemanticMutationExecutor", () => {
     const order: string[] = [];
     let sequence = 0;
     const executor = new SessionSemanticMutationExecutor({
+      captureInteractionContext: testInteractionContext,
       resolveSession: () => "session-alpha",
       execute: resultFor,
       publishReceipt: (input) => {
@@ -279,8 +423,20 @@ describe("SessionSemanticMutationExecutor", () => {
     }
   });
 
-  it("publishes result-derived accepted and observed receipts for all eleven intents", async () => {
+  it("publishes result-derived accepted and observed receipts for all supported intents", async () => {
     const intents: SessionRuntimeSemanticIntent[] = [
+      ...(["workspace.window.link.select", "workspace.window.link.unlink"] as const).map(
+        (verb) => ({
+          verb,
+          workspaceName: "alpha",
+          target: {
+            liveSessionId: `live-session.${"a".repeat(20)}`,
+            linkId: `window-link.${"b".repeat(32)}`,
+            expectedSemanticWindowId: "window.alpha",
+            linkRevision: 2,
+          },
+        }),
+      ),
       {
         verb: "workspace.window.split",
         workspaceName: "alpha",
@@ -355,7 +511,7 @@ describe("SessionSemanticMutationExecutor", () => {
       });
       expect(observed).toMatchObject({ operationKind: intent.verb, phase: "observed" });
       expect(observed!.proof).toMatchObject({ operationKind: intent.verb });
-      expect(observed!.target.kind).toMatch(/^(session|window|pane)$/u);
+      expect(observed!.target.kind).toMatch(/^(session|window|window-link|pane)$/u);
     }
     expect(
       built.receipts.find(
@@ -384,6 +540,7 @@ describe("SessionSemanticMutationExecutor", () => {
           [
             "workspace.window.split",
             "workspace.window.kill",
+            "workspace.window.link.unlink",
             "workspace.pane.kill",
             "workspace.session.kill",
           ].includes(result.verb)
@@ -978,4 +1135,81 @@ describe("SessionSemanticMutationExecutor", () => {
       [OP_B, "rejected"],
     ]);
   });
+});
+
+it("forwards captured trusted context only after validation and authorization, with no replay execution", async () => {
+  const order: string[] = [];
+  const intent = {
+    verb: "workspace.pane.read" as const,
+    workspaceName: "alpha",
+    semanticPaneId: "pane.alpha",
+    origin: "sdk" as const,
+  };
+  const captured = testInteractionContext(intent);
+  const source = {
+    endpoint: { ...captured.destination, semanticPaneId: "pane.trusted" },
+    bindingId: OP_B,
+  };
+  const execute = vi.fn((..._args: unknown[]) => {
+    order.push("execute");
+    return {
+      verb: "workspace.pane.read" as const,
+      operationId: OP_A,
+      daemonInstanceId: OP_B,
+      workspaceName: "alpha",
+      semanticPaneId: "pane.alpha",
+      format: "ansi" as const,
+      availability: "available" as const,
+      text: "",
+      byteCount: 0,
+      capturedByteCount: 0,
+      truncated: false,
+    };
+  });
+  let sequence = 0;
+  const executor = new SessionSemanticMutationExecutor({
+    captureInteractionContext: () => captured,
+    validateInteractionContext: () => {
+      order.push("validate");
+    },
+    resolveSession: () => "session-alpha",
+    execute,
+    publishReceipt: (receipt) => ({
+      ...receipt,
+      type: "interaction.receipt",
+      sequence: ++sequence,
+    }),
+  });
+  const authority = {
+    origin: "cli" as const,
+    authenticatedSourceBinding: source,
+    authorizeBeforeEffect: () => {
+      order.push("authorize");
+    },
+  };
+  const pending = executor.submit(OP_A, intent, authority);
+  await Promise.resolve();
+  executor.observe({
+    operationId: OP_A,
+    workspaceName: "alpha",
+    semanticPaneId: "pane.alpha",
+    operationKind: intent.verb,
+  });
+  await pending;
+  await executor.submit(OP_A, intent, authority);
+  expect(order).toEqual(["validate", "authorize", "execute"]);
+  expect(execute).toHaveBeenCalledTimes(1);
+  expect(execute.mock.calls[0]).toEqual([
+    OP_A,
+    { ...intent, origin: "cli" },
+    undefined,
+    {
+      interactionContext: { ...captured, source },
+      origin: "cli",
+      executionId: expect.any(String),
+      authoredReceiptAdmissionSequence: 1,
+    },
+  ]);
+  expect(execute.mock.calls[0]![3]).not.toBe(captured);
+  await executor.dispose();
 });

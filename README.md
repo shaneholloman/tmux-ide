@@ -22,12 +22,17 @@ the processes, PTYs, sessions, windows, panes, and persistence; tmux-ide adds
 Home, clickable pane and window chrome, agent indicators, memorable names, and
 direct controls. Close the app and the underlying sessions keep running.
 
-## Install the OpenTUI beta
+## Install
 
 ```bash
-npm install -g tmux-ide@beta
+curl -fsSL https://tmux.thijsverreck.com/install.sh | sh
 tmux-ide app
 ```
+
+The installer supports macOS 26+ on ARM64, macOS 15+ on x64, and glibc Linux (Ubuntu 24.04 or newer baseline) on ARM64/x64. It installs a private
+Node runtime, bundled tmux, and the verified TUI under `~/.local`, without sudo.
+Add `~/.local/bin` to your PATH if prompted. Existing tmux sessions are preserved.
+With Node.js 20+ already installed, you can also use `npm install -g tmux-ide`.
 
 Open a particular session directly:
 
@@ -125,9 +130,9 @@ put your work behind a proprietary session format.
 
 ## Requirements
 
-- tmux 3.0 or newer; 3.2+ recommended
+- tmux 3.7 or newer (the universal installer includes 3.7c)
 - Node.js 20 or newer
-- macOS arm64/x64 or Linux arm64/x64 for the downloadable OpenTUI runtime
+- macOS 26+ on ARM64, macOS 15+ on x64, or Linux arm64/x64 for the downloadable OpenTUI runtime
 - Bun only when developing or compiling the TUI from a checkout
 
 Run `tmux-ide doctor --json` for an environment report.
@@ -145,6 +150,11 @@ and lifecycle tests, and installs the packed tarball into an isolated new-user
 environment.
 
 Regenerate the production-renderer demo with `pnpm demo:tui`.
+
+Explore real Home, sidebar, Help, pane-header and footer components with `pnpm gallery:tui`. The
+development gallery uses fixture data and local actions, so it does not connect
+to your daemon or change live tmux sessions. See the
+[gallery controls and checks](scripts/tui-gallery/README.md).
 
 - [Documentation](https://github.com/wavyrai/tmux-ide/tree/main/docs)
 - [Contributing](CONTRIBUTING.md)

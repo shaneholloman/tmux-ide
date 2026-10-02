@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 
 export const PANE_SOURCE_CREDENTIAL_OPTION = "@tmux_ide_source_credential_v1";
 export const PANE_SOURCE_CREDENTIAL_HEADER = "X-Tmux-Ide-Pane-Source-Credential";
@@ -9,11 +9,13 @@ export interface PaneSourceCredentialTmux {
   runAsync?: (args: readonly string[], signal?: AbortSignal) => Promise<string>;
 }
 
-interface CredentialGrant {
+export interface PaneSourceBinding {
+  readonly bindingId: string;
   readonly session: string;
   readonly runtimePaneId: string;
   readonly semanticPaneId: string;
 }
+type CredentialGrant = PaneSourceBinding;
 
 /**
  * Daemon-generation-only source attribution capabilities for local tmux panes.
@@ -26,6 +28,7 @@ interface CredentialGrant {
  */
 export class PaneSourceCredentialAuthority {
   readonly #tmux: PaneSourceCredentialTmux;
+  readonly #lifetime = new AbortController();
   readonly #grants = new Map<string, CredentialGrant>();
   readonly #tokensByPane = new Map<string, string>();
   readonly #sessionRevisions = new Map<string, number>();
@@ -45,6 +48,7 @@ export class PaneSourceCredentialAuthority {
   }
 
   reconcileSession(session: string): void {
+    this.#lifetime.signal.throwIfAborted();
     this.#sessionRevisions.set(session, (this.#sessionRevisions.get(session) ?? 0) + 1);
     const rows = this.#tmux.run([
       "list-panes",
@@ -74,7 +78,7 @@ export class PaneSourceCredentialAuthority {
         token,
       ]);
       this.#tokensByPane.set(paneKey, token);
-      this.#grants.set(token, { session, runtimePaneId, semanticPaneId });
+      this.#grants.set(token, { bindingId: randomUUID(), session, runtimePaneId, semanticPaneId });
     }
     for (const [paneKey, token] of this.#tokensByPane) {
       if (!paneKey.startsWith(`${session}\0`) || live.has(paneKey)) continue;
@@ -90,6 +94,8 @@ export class PaneSourceCredentialAuthority {
    * cannot settle on different tokens.
    */
   async reconcileSessionAsync(session: string, signal?: AbortSignal): Promise<void> {
+    signal = AbortSignal.any([this.#lifetime.signal, ...(signal ? [signal] : [])]);
+    signal.throwIfAborted();
     const runAsync = this.#tmux.runAsync;
     if (!runAsync) {
       this.reconcileSession(session);
@@ -136,7 +142,12 @@ export class PaneSourceCredentialAuthority {
         }
         if (existingToken) this.#grants.delete(existingToken);
         this.#tokensByPane.set(paneKey, token);
-        this.#grants.set(token, { session, runtimePaneId, semanticPaneId });
+        this.#grants.set(token, {
+          bindingId: randomUUID(),
+          session,
+          runtimePaneId,
+          semanticPaneId,
+        });
       }
       if (raced) continue;
       for (const [paneKey, token] of this.#tokensByPane) {
@@ -153,6 +164,27 @@ export class PaneSourceCredentialAuthority {
     session: string,
     claimedSemanticPaneId: string | undefined,
   ): string | null {
+    return this.resolveBinding(credential, session, claimedSemanticPaneId)?.semanticPaneId ?? null;
+  }
+
+  resolveBinding(
+    credential: string | undefined,
+    session: string,
+    claimedSemanticPaneId: string | undefined,
+  ): PaneSourceBinding | null {
+    if (
+      !credential ||
+      credential.length > 128 ||
+      /[\0\r\n]/u.test(credential) ||
+      !this.#grants.has(credential)
+    )
+      return null;
+    const known = this.#grants.get(credential)!;
+    if (
+      known.session !== session ||
+      (claimedSemanticPaneId !== undefined && known.semanticPaneId !== claimedSemanticPaneId)
+    )
+      return null;
     try {
       this.reconcileSession(session);
     } catch {
@@ -160,16 +192,16 @@ export class PaneSourceCredentialAuthority {
       // retain or fall back from a previously minted credential.
       return null;
     }
-    if (!credential || credential.length > 128 || /[\0\r\n]/u.test(credential)) return null;
     const grant = this.#grants.get(credential);
     if (!grant || grant.session !== session) return null;
     if (claimedSemanticPaneId !== undefined && claimedSemanticPaneId !== grant.semanticPaneId) {
       return null;
     }
-    return grant.semanticPaneId;
+    return { ...grant };
   }
 
   dispose(): void {
+    this.#lifetime.abort();
     this.#grants.clear();
     this.#tokensByPane.clear();
     this.#sessionRevisions.clear();

@@ -19,6 +19,7 @@ export function createSemanticShellViewportResizeOwner(
     >[];
     readonly current: Pick<OpenTuiWorkspaceLayout, "paneBorderStatus"> | null;
   } = () => ({ current: { paneBorderStatus: "top" } }),
+  sidebarVisible: () => boolean = () => true,
 ): Readonly<{
   adopt(
     dimensions: Dimensions,
@@ -41,7 +42,7 @@ export function createSemanticShellViewportResizeOwner(
   type ScopedTarget = Readonly<{ cols: number; rows: number; semanticWindowId?: string }>;
   let desired: Readonly<{ identity: ResizeIdentity; targets: readonly ScopedTarget[] }> | null =
     null;
-  let scopedFlight = false;
+  let scopedFlight: object | null = null;
   let scopedEpoch = 0;
   let authorityClient: OpenTuiGenerationHostSnapshot["authorityClient"] = null;
   let stopAuthority: (() => void) | null = null;
@@ -53,7 +54,8 @@ export function createSemanticShellViewportResizeOwner(
   const targetSize = (target: ScopedTarget) => `${target.cols}x${target.rows}`;
   const drain = async (): Promise<void> => {
     if (scopedFlight || disposed || authoritySuspended) return;
-    scopedFlight = true;
+    const flight = {};
+    scopedFlight = flight;
     try {
       while (desired && !disposed && !authoritySuspended) {
         const owner = desired;
@@ -70,7 +72,7 @@ export function createSemanticShellViewportResizeOwner(
           .resize(target)
           .catch(() => ({ status: "failed" as const }));
         if (disposed || !desired) break;
-        if (epoch !== scopedEpoch) continue;
+        if (epoch !== scopedEpoch) break;
         const stillDesired = desired.targets.some(
           (entry) =>
             targetKey(entry) === targetKey(target) && targetSize(entry) === targetSize(target),
@@ -85,7 +87,7 @@ export function createSemanticShellViewportResizeOwner(
           scopedApplied.set(targetKey(target), targetSize(target));
       }
     } finally {
-      scopedFlight = false;
+      if (scopedFlight === flight) scopedFlight = null;
     }
   };
   const sameAuthority = (left: ResizeIdentity, right: ResizeIdentity): boolean =>
@@ -122,6 +124,7 @@ export function createSemanticShellViewportResizeOwner(
         pending = null;
         desired = null;
         scopedEpoch += 1;
+        scopedFlight = null;
         scopedApplied.clear();
         return;
       }
@@ -150,10 +153,11 @@ export function createSemanticShellViewportResizeOwner(
             pending = null;
             scopedApplied.clear();
             scopedEpoch += 1;
+            scopedFlight = null;
             if (!authoritySuspended) retry?.();
           }) ?? null;
       }
-      const viewport = applicationShellViewport(dimensions, true);
+      const viewport = applicationShellViewport(dimensions, true, sidebarVisible());
       const lane = generation.fastLane;
       const target = Object.freeze({
         lane,
@@ -174,6 +178,8 @@ export function createSemanticShellViewportResizeOwner(
         pending = null;
         if (!desired || !sameAuthority(desired.identity, target)) {
           scopedEpoch += 1;
+          // A retired lane must not hold a replacement lane behind its receipt.
+          scopedFlight = null;
           scopedApplied.clear();
         }
         const retainedWindows = new Set(["", ...windows.map((window) => window.semanticWindowId!)]);
@@ -199,6 +205,7 @@ export function createSemanticShellViewportResizeOwner(
       if (desired) {
         desired = null;
         scopedEpoch += 1;
+        scopedFlight = null;
         scopedApplied.clear();
         applied = null;
         pending = null;
@@ -228,6 +235,7 @@ export function createSemanticShellViewportResizeOwner(
       stopAuthority = null;
       authorityClient = null;
       desired = null;
+      scopedFlight = null;
       scopedApplied.clear();
       applied = null;
       pending = null;

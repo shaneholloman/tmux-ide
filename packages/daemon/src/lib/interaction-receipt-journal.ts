@@ -1,0 +1,160 @@
+import {
+  InteractionReceiptSchemaZ,
+  InteractionEvidenceRecordSchemaZ,
+  type InteractionEvidence,
+  type InteractionEvidenceRecord,
+  type InteractionJournalEntry,
+  type InteractionReceipt,
+} from "@tmux-ide/contracts";
+
+export type InteractionReceiptDraft = Omit<InteractionReceipt, "type" | "sequence">;
+export interface InteractionReceiptReplay {
+  readonly cursor: number;
+  readonly gap: { readonly from: number; readonly through: number } | null;
+  readonly receipts: readonly InteractionJournalEntry[];
+}
+
+/** One owner's bounded receipt history. Its cursor is NOT the global resource clock. */
+export class InteractionReceiptJournal {
+  readonly #capacity: number;
+  readonly #receipts: InteractionJournalEntry[] = [];
+  readonly #listeners = new Set<() => void>();
+  #sequence = 0;
+  #disposed = false;
+  #wakeScheduled = false;
+
+  constructor(capacity = 256) {
+    if (!Number.isSafeInteger(capacity) || capacity < 1 || capacity > 4096)
+      throw new RangeError("Receipt journal capacity must be between 1 and 4096");
+    this.#capacity = capacity;
+  }
+
+  #assertOpen(): void {
+    if (this.#disposed) throw new Error("Receipt journal owner is retired");
+  }
+
+  publish(draft: InteractionReceiptDraft): InteractionReceipt {
+    this.#assertOpen();
+    if (!Number.isSafeInteger(this.#sequence + 1)) throw new Error("Receipt cursor exhausted");
+    const receipt = InteractionReceiptSchemaZ.parse({
+      ...draft,
+      type: "interaction.receipt",
+      sequence: this.#sequence + 1,
+    });
+    return structuredClone(this.#append(receipt));
+  }
+
+  publishEvidence(evidence: InteractionEvidence): InteractionEvidenceRecord {
+    return structuredClone(this.#append(this.#parseEvidence(evidence)));
+  }
+
+  /** Same validation and input isolation, without an unused detached return value. */
+  appendEvidence(evidence: InteractionEvidence): void {
+    this.#append(this.#parseEvidence(evidence));
+  }
+
+  #parseEvidence(evidence: InteractionEvidence): InteractionEvidenceRecord {
+    this.#assertOpen();
+    if (!Number.isSafeInteger(this.#sequence + 1)) throw new Error("Receipt cursor exhausted");
+    return InteractionEvidenceRecordSchemaZ.parse({
+      type: "interaction.evidence",
+      sequence: this.#sequence + 1,
+      evidence,
+    });
+  }
+
+  #append<T extends InteractionJournalEntry>(entry: T): T {
+    this.#sequence = entry.sequence;
+    this.#receipts.push(entry);
+    if (this.#receipts.length > this.#capacity) this.#receipts.shift();
+    this.#scheduleWake();
+    return entry;
+  }
+
+  #scheduleWake(): void {
+    if (this.#wakeScheduled) return;
+    this.#wakeScheduled = true;
+    // Signal only, coalesced across a burst, off the mutation's call stack.
+    // Readers retain one cursor, not a queue of copied event payloads.
+    queueMicrotask(() => {
+      this.#wakeScheduled = false;
+      for (const listener of [...this.#listeners]) {
+        if (!this.#listeners.has(listener)) continue;
+        try {
+          listener();
+        } catch {
+          this.#listeners.delete(listener);
+        }
+      }
+      if (this.#disposed) this.#listeners.clear();
+    });
+  }
+
+  read(after: number): InteractionReceiptReplay {
+    this.#assertOpen();
+    if (!Number.isSafeInteger(after) || after < 0 || after > this.#sequence)
+      throw new RangeError("Invalid owner receipt cursor");
+    const oldest = this.#receipts[0]?.sequence ?? this.#sequence + 1;
+    return {
+      cursor: this.#sequence,
+      gap: after + 1 < oldest ? { from: after + 1, through: oldest - 1 } : null,
+      receipts: this.#receipts
+        .filter((receipt) => receipt.sequence > after)
+        .map((receipt) => structuredClone(receipt)),
+    };
+  }
+
+  /** Bounded newest-first lookup; never exposes retained journal objects. */
+  latestOperationReceipt(operationId: string): InteractionReceipt | null {
+    this.#assertOpen();
+    for (let index = this.#receipts.length - 1; index >= 0; index--) {
+      const entry = this.#receipts[index]!;
+      if (entry.type === "interaction.receipt" && entry.operationId === operationId)
+        return structuredClone(entry);
+    }
+    return null;
+  }
+
+  /** Exact private admission binding. Evicted history is unavailable, never guessed. */
+  latestOperationReceiptForAttempt(
+    operationId: string,
+    acceptedSequence: number | null,
+  ): InteractionReceipt | null {
+    this.#assertOpen();
+    if (
+      !Number.isSafeInteger(acceptedSequence) ||
+      acceptedSequence === null ||
+      acceptedSequence < 1
+    )
+      return null;
+    let latest: InteractionReceipt | null = null;
+    for (let index = this.#receipts.length - 1; index >= 0; index--) {
+      const entry = this.#receipts[index]!;
+      if (entry.sequence < acceptedSequence) return null;
+      if (entry.type !== "interaction.receipt" || entry.operationId !== operationId) continue;
+      latest ??= entry;
+      if (entry.phase === "accepted")
+        return entry.sequence === acceptedSequence ? structuredClone(latest) : null;
+    }
+    return null;
+  }
+
+  /** Subscribe before taking the initial snapshot to avoid a readiness gap. */
+  subscribe(wake: () => void): () => void {
+    this.#assertOpen();
+    if (this.#listeners.size >= 64 && !this.#listeners.has(wake))
+      throw new Error("Receipt subscriber capacity reached");
+    this.#listeners.add(wake);
+    return () => {
+      this.#listeners.delete(wake);
+    };
+  }
+
+  dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    // Wake idle transports so they close when read() reports retirement.
+    this.#scheduleWake();
+    this.#receipts.length = 0;
+  }
+}

@@ -1,4 +1,6 @@
-import { execSync } from "node:child_process";
+import { requireSupportedTmuxVersion } from "./lib/tmux-version.ts";
+import { resolveTmuxExecutable } from "./lib/tmux-client-execution.ts";
+import { execSync, execFileSync } from "node:child_process";
 import { accessSync, constants, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -217,24 +219,11 @@ export async function doctor({
   const checks: CheckResult[] = [];
 
   checks.push(
-    check("tmux installed", () => {
-      try {
-        execSync("which tmux", { stdio: "ignore" });
-      } catch {
-        throw new Error(
-          "not found on PATH — install it (macOS: `brew install tmux`; Debian/Ubuntu: `sudo apt install tmux`)",
-        );
-      }
-      return "found";
-    }),
-  );
-
-  checks.push(
-    check("tmux version ≥ 3.0", () => {
-      const version = execSync("tmux -V", { encoding: "utf-8" }).trim();
-      const num = parseFloat(version.replace(/[^0-9.]/g, ""));
-      if (num < 3.0) throw new Error(`${version} (need ≥ 3.0)`);
-      return version;
+    check("tmux version ≥ 3.7", () => {
+      const executable = resolveTmuxExecutable();
+      const version = execFileSync(executable, ["-V"], { encoding: "utf8", timeout: 3000 }).trim();
+      requireSupportedTmuxVersion(version);
+      return `${version} (${executable})`;
     }),
   );
 

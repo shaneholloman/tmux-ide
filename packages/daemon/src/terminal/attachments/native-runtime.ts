@@ -1,3 +1,11 @@
+import type { NativePaneIdentity } from "@tmux-ide/contracts";
+import { nativePaneIdentity } from "../../lib/native-pane-identity.ts";
+import type { InteractionPaneEndpoint } from "@tmux-ide/contracts";
+type ResolvedInteractionEndpoint = Extract<InteractionPaneEndpoint, { kind: "pane" }>;
+import {
+  fenceNativeTmuxCommand,
+  type NativeTmuxServerIdentity,
+} from "../../lib/tmux-server-generation-runner.ts";
 import { accessSync, constants, realpathSync, statSync } from "node:fs";
 import { execFile } from "node:child_process";
 import type { createNamedSocketFence } from "../../lib/tmux-named-socket-fence.ts";
@@ -119,6 +127,7 @@ export function getNativeTerminalAttachmentRuntimeConstructionCount(): number {
 }
 
 export interface NativeTerminalAttachmentTmuxAuthority {
+  readonly nativeServerIdentity?: NativeTmuxServerIdentity;
   /** Shared with the canonical daemon's named command runners. */
   readonly namedSocketFence?: ReturnType<typeof createNamedSocketFence>;
   readonly executablePath: string;
@@ -163,6 +172,7 @@ export interface NativeTerminalInventoryReadRunner {
 }
 
 interface CanonicalTmuxAuthority {
+  readonly nativeServerIdentity?: NativeTmuxServerIdentity;
   readonly namedSocketFence: ReturnType<typeof createNamedSocketFence> | null;
   readonly executablePath: string;
   readonly socketSelector: DaemonTmuxSocketSelector;
@@ -208,6 +218,7 @@ function canonicalAuthority(input: NativeTerminalAttachmentTmuxAuthority): Canon
       socketArgv = ["-L", input.socketSelector.name];
     }
     return Object.freeze({
+      nativeServerIdentity: input.nativeServerIdentity,
       namedSocketFence: socketSelector.kind === "name" ? (input.namedSocketFence ?? null) : null,
       executablePath,
       socketSelector: Object.freeze(socketSelector),
@@ -288,9 +299,12 @@ function pinnedRunner(
     run(command: TmuxArgvPlan): TmuxAttachmentCommandResult {
       if (command.executable !== "tmux") return { status: "failed" };
       try {
+        const guarded = authority.nativeServerIdentity
+          ? fenceNativeTmuxCommand(command.argv, authority.nativeServerIdentity)
+          : null;
         const stdout = execute(
           authority.executablePath,
-          [...currentSocketArgv(authority), ...command.argv],
+          [...currentSocketArgv(authority), ...(guarded?.argv ?? command.argv)],
           {
             cwd: authority.trustedCwd,
             env: authority.environment,
@@ -298,7 +312,7 @@ function pinnedRunner(
             timeoutMs: TERMINAL_ATTACHMENT_TMUX_COMMAND_TIMEOUT_MS,
           },
         );
-        const value = String(stdout);
+        const value = guarded ? guarded.verify(String(stdout)) : String(stdout);
         if (authority.namedSocketFence && !authority.namedSocketFence.isPinned())
           authority.namedSocketFence.resolve();
         if (value.includes("\0") || Buffer.byteLength(value, "utf8") > MAX_TMUX_OUTPUT_BYTES) {
@@ -368,13 +382,16 @@ function pinnedReadRunner(
     async run(command: TmuxArgvPlan, signal?: AbortSignal): Promise<TmuxAttachmentCommandResult> {
       if (command.executable !== "tmux" || signal?.aborted) return { status: "failed" };
       try {
+        const guarded = authority.nativeServerIdentity
+          ? fenceNativeTmuxCommand(command.argv, authority.nativeServerIdentity)
+          : null;
         const stdout = await execute(
           authority.executablePath,
           [
             ...(authority.namedSocketFence
               ? await authority.namedSocketFence.resolveAsync(signal)
               : currentSocketArgv(authority)),
-            ...command.argv,
+            ...(guarded?.argv ?? command.argv),
           ],
           {
             cwd: authority.trustedCwd,
@@ -384,7 +401,7 @@ function pinnedReadRunner(
             ...(signal ? { signal } : {}),
           },
         );
-        const value = String(stdout);
+        const value = guarded ? guarded.verify(String(stdout)) : String(stdout);
         if (authority.namedSocketFence && !authority.namedSocketFence.isPinned())
           await authority.namedSocketFence.resolveAsync(signal);
         if (value.includes("\0") || Buffer.byteLength(value, "utf8") > MAX_TMUX_OUTPUT_BYTES)
@@ -460,6 +477,9 @@ export type NativeTerminalInventoryCatalogIssue =
   | "duplicate-runtime-pane-binding";
 
 export interface NativeTerminalInventoryPaneSnapshot extends TrustedSemanticPaneSnapshot {
+  readonly nativePaneBirthId?: string | null;
+  readonly nativeIdentity?: NativePaneIdentity | null;
+  readonly interactionEndpoint?: ResolvedInteractionEndpoint | null;
   readonly sessionName: string;
   readonly index: number;
   readonly title: string;
@@ -467,6 +487,7 @@ export interface NativeTerminalInventoryPaneSnapshot extends TrustedSemanticPane
   readonly active: boolean;
   readonly role: string | null;
   readonly name: string | null;
+  readonly nameSource?: string | null;
   readonly type: string | null;
   /** Durable `@tmux_ide_mission` creation stamp, or null when unset. */
   readonly missionStamp: string | null;
@@ -555,6 +576,7 @@ function projectTrustedMirrorInventory(
     return Object.freeze({
       workspaceName,
       semanticPaneId: nullable(pane.semanticPaneId),
+      nativePaneBirthId: pane.nativePaneBirthId ?? null,
       windowStamp: nullable(pane.semanticWindowId),
       sessionId: pane.runtimeSessionId,
       windowId: pane.runtimeWindowId,
@@ -568,6 +590,7 @@ function projectTrustedMirrorInventory(
       active: pane.active,
       role: nullable(pane.role),
       name: nullable(pane.name),
+      ...(pane.nameSource ? { nameSource: nullable(pane.nameSource) } : {}),
       type: nullable(pane.type),
       missionStamp: nullable(pane.missionStamp),
       dir: boundedWireValue(pane.dir, 4_096),
@@ -600,6 +623,9 @@ function analyzeInventoryPanes(panes: readonly NativeTerminalInventoryPaneSnapsh
         type: _type,
         missionStamp: _missionStamp,
         dir: _dir,
+        interactionEndpoint: _interactionEndpoint,
+        nativeIdentity: _nativeIdentity,
+        nativePaneBirthId: _nativePaneBirthId,
         ...row
       }) => row,
     ),
@@ -690,6 +716,8 @@ const PANE_FORMAT = [
   // window reports the same value; the catalog requires it before a multi-pane
   // window is attachable.
   "#{@tmux_ide_window_id}",
+  "#{window_index}",
+  "#{pane_birth_id}",
   PANE_WIRE_SENTINEL,
 ].join(WIRE_SEPARATOR);
 
@@ -742,12 +770,13 @@ type LivePaneFacts = Omit<NativeTerminalInventoryPaneSnapshot, "workspaceName">;
 function parsePaneSnapshot(
   stdout: string,
   expected: LiveSessionIdentity,
-): readonly LivePaneFacts[] {
+): { panes: readonly LivePaneFacts[]; linksProof: string } {
   const panes: LivePaneFacts[] = [];
-  const runtimeIds = new Set<string>();
+  const runtimeIds = new Map<string, { facts: LivePaneFacts; proof: string }>();
+  const links = new Map<number, { windowId: string; active: boolean; panes: Set<string> }>();
   for (const line of strictLines(stdout, MAX_DISCOVERED_PANES)) {
     const fields = line.split(WIRE_SEPARATOR);
-    if (fields.length !== 19 || fields[18] !== PANE_WIRE_SENTINEL) {
+    if (fields.length !== 21 || fields[20] !== PANE_WIRE_SENTINEL) {
       throw new NativeTerminalAttachmentRuntimeError("invalid-tmux-output");
     }
     const [
@@ -769,7 +798,11 @@ function parsePaneSnapshot(
       missionStamp,
       dir,
       windowStampValue,
+      windowIndexValue,
+      nativePaneBirthId,
     ] = fields as [
+      string,
+      string,
       string,
       string,
       string,
@@ -795,16 +828,14 @@ function parsePaneSnapshot(
       sessionId !== expected.id ||
       !RUNTIME_WINDOW_ID.test(windowId) ||
       !RUNTIME_PANE_ID.test(runtimePaneId) ||
-      runtimeIds.has(runtimePaneId) ||
       !["0", "1"].includes(windowActive) ||
       !["0", "1"].includes(paneActive)
     ) {
       throw new NativeTerminalAttachmentRuntimeError("invalid-tmux-output");
     }
-    runtimeIds.add(runtimePaneId);
     const nullable = (value: string): string | null =>
       boundedWireValue(value, 256).length === 0 ? null : value;
-    panes.push({
+    const facts: LivePaneFacts = {
       sessionName,
       sessionId,
       windowId,
@@ -812,6 +843,7 @@ function parsePaneSnapshot(
       windowPaneCount: positiveInteger(paneCountValue),
       sessionWindowCount: positiveInteger(windowCountValue),
       semanticPaneId: nullable(stamp),
+      nativePaneBirthId: nativePaneBirthId || null,
       windowStamp: nullable(windowStampValue),
       index: nonnegativeInteger(indexValue),
       title: boundedWireValue(title, 1_024),
@@ -826,22 +858,58 @@ function parsePaneSnapshot(
       // registered workspace remains the trusted application-shell root, so
       // keep discovery available and carry the empty presentation value.
       dir: boundedWireValue(dir, 4_096),
-    });
+    };
+    const windowIndex = nonnegativeInteger(windowIndexValue);
+    const link = links.get(windowIndex) ?? {
+      windowId,
+      active: windowActive === "1",
+      panes: new Set<string>(),
+    };
+    if (
+      link.windowId !== windowId ||
+      link.active !== (windowActive === "1") ||
+      link.panes.has(runtimePaneId)
+    ) {
+      throw new NativeTerminalAttachmentRuntimeError("invalid-tmux-output");
+    }
+    link.panes.add(runtimePaneId);
+    links.set(windowIndex, link);
+    // Only link index and current-link state may differ for a shared backing.
+    const proof = JSON.stringify(fields.filter((_value, index) => index !== 10 && index !== 18));
+    const previous = runtimeIds.get(runtimePaneId);
+    if (previous) {
+      if (previous.proof !== proof)
+        throw new NativeTerminalAttachmentRuntimeError("invalid-tmux-output");
+      if (facts.active && !previous.facts.active) {
+        const merged = { ...previous.facts, active: true };
+        panes[panes.indexOf(previous.facts)] = merged;
+        previous.facts = merged;
+      }
+    } else {
+      runtimeIds.set(runtimePaneId, { facts, proof });
+      panes.push(facts);
+    }
   }
   const counts = new Map<string, number>();
   for (const pane of panes) counts.set(pane.windowId, (counts.get(pane.windowId) ?? 0) + 1);
-  const windows = new Set(panes.map((pane) => pane.windowId));
   if (
     panes.some(
       (pane) =>
         counts.get(pane.windowId) !== pane.windowPaneCount ||
-        windows.size !== pane.sessionWindowCount,
+        links.size !== pane.sessionWindowCount,
     ) ||
+    [...links.values()].some((link) => link.panes.size !== counts.get(link.windowId)) ||
+    [...links.values()].filter((link) => link.active).length > 1 ||
     panes.filter((pane) => pane.active).length > 1
   ) {
     throw new NativeTerminalAttachmentRuntimeError("invalid-tmux-output");
   }
-  return panes;
+  return {
+    panes,
+    linksProof: JSON.stringify(
+      [...links].map(([index, link]) => [index, link.windowId, [...link.panes]]),
+    ),
+  };
 }
 
 /**
@@ -872,10 +940,12 @@ export async function discoverWorkspaceRegistryTerminalInventory(
     const argv = ["list-panes", "-s", "-t", identity.id, "-F", PANE_FORMAT] as const;
     const before = await requiredTmuxResult(runner, argv, signal);
     if (before === null) continue;
-    const panes = parsePaneSnapshot(before, identity);
+    const first = parsePaneSnapshot(before, identity);
+    const panes = first.panes;
     const after = await requiredTmuxResult(runner, argv, signal);
     if (after === null) throw new NativeTerminalAttachmentRuntimeError("discovery-failed");
-    const latest = parsePaneSnapshot(after, identity);
+    const second = parsePaneSnapshot(after, identity);
+    const latest = second.panes;
     // Foreground commands, titles, focus and paths can change while the same
     // pane remains valid. Fence binding/topology only, then publish one complete
     // latest snapshot rather than mixing presentation values across reads.
@@ -891,6 +961,7 @@ export async function discoverWorkspaceRegistryTerminalInventory(
       "index",
     ] as const;
     if (
+      first.linksProof !== second.linksProof ||
       panes.length !== latest.length ||
       panes.some((pane, index) => proofKeys.some((key) => pane[key] !== latest[index]![key]))
     ) {
@@ -921,6 +992,9 @@ export async function discoverWorkspaceRegistryTerminalInventory(
         type: _type,
         missionStamp: _missionStamp,
         dir: _dir,
+        interactionEndpoint: _interactionEndpoint,
+        nativeIdentity: _nativeIdentity,
+        nativePaneBirthId: _nativePaneBirthId,
         ...row
       }) => row,
     ),
@@ -947,6 +1021,9 @@ export async function discoverWorkspaceRegistrySemanticPanes(
       type: _type,
       missionStamp: _missionStamp,
       dir: _dir,
+      interactionEndpoint: _interactionEndpoint,
+      nativeIdentity: _nativeIdentity,
+      nativePaneBirthId: _nativePaneBirthId,
       ...row
     }) => row,
   );
@@ -1129,6 +1206,11 @@ type AdmissionRuntimeOptions = Omit<
 >;
 
 export interface WorkspaceTerminalInventoryRuntimeOptions {
+  readonly nativeServerEpoch?: () => string | null;
+  readonly resolveInteractionEndpoint?: (
+    workspaceName: string,
+    semanticPaneId: string,
+  ) => ResolvedInteractionEndpoint | null;
   readonly registry: WorkspaceRegistry;
   readonly sessionRuntimeRegistry?: SessionRuntimeRegistry;
   readonly tmuxAuthority: NativeTerminalAttachmentTmuxAuthority;
@@ -1141,11 +1223,15 @@ export interface WorkspaceTerminalInventoryRuntimeOptions {
   }) => AgentStatusProbe;
   /** Opt-in bounded daemon qualification spans; production normally uses the disabled singleton. */
   readonly observability?: SessionRuntimeObservability;
-  readonly onInventory?: (snapshot: NativeTerminalInventorySnapshot) => void;
+  readonly onInventory?: (
+    snapshot: NativeTerminalInventorySnapshot,
+    signal: AbortSignal,
+  ) => void | Promise<void>;
   readonly onSessionInventory?: (
     sessionName: string,
     snapshot: NativeTerminalInventorySnapshot | null,
-  ) => void;
+    signal: AbortSignal,
+  ) => void | Promise<void>;
 }
 
 /**
@@ -1178,6 +1264,8 @@ async function enumerateStartupMarkedViews(
  * legacy attachment stack.
  */
 export class WorkspaceTerminalInventoryRuntime {
+  readonly #nativeServerEpoch: (() => string | null) | undefined;
+  readonly #resolveInteractionEndpoint: WorkspaceTerminalInventoryRuntimeOptions["resolveInteractionEndpoint"];
   readonly semanticPaneCatalog: SemanticPaneCatalog;
   readonly runner: TmuxAttachmentCommandRunner;
   readonly readRunner: NativeTerminalInventoryReadRunner;
@@ -1187,9 +1275,9 @@ export class WorkspaceTerminalInventoryRuntime {
   ) => Promise<NativeTerminalInventorySnapshot>;
   readonly #agentStatusProbe: AgentStatusProbe | null;
   readonly #observability: SessionRuntimeObservability;
-  readonly #onInventory: ((snapshot: NativeTerminalInventorySnapshot) => void) | null;
+  readonly #onInventory: WorkspaceTerminalInventoryRuntimeOptions["onInventory"] | null;
   readonly #onSessionInventory:
-    | ((sessionName: string, snapshot: NativeTerminalInventorySnapshot | null) => void)
+    | WorkspaceTerminalInventoryRuntimeOptions["onSessionInventory"]
     | null;
   readonly #prewarmSessionRuntime:
     | ((sessionName: string, runtimeSessionId: string, signal: AbortSignal) => Promise<void>)
@@ -1231,6 +1319,8 @@ export class WorkspaceTerminalInventoryRuntime {
     this.readRunner = pinnedReadRunner(authority, executeRead);
     this.#registry = options.registry;
     this.#observability = options.observability ?? DISABLED_SESSION_RUNTIME_OBSERVABILITY;
+    this.#resolveInteractionEndpoint = options.resolveInteractionEndpoint;
+    this.#nativeServerEpoch = options.nativeServerEpoch;
     this.#onInventory = options.onInventory ?? null;
     this.#onSessionInventory = options.onSessionInventory ?? null;
     this.#discoverTerminalInventory = (signal) => this.#readInventory(signal);
@@ -1251,6 +1341,9 @@ export class WorkspaceTerminalInventoryRuntime {
               type: _type,
               missionStamp: _missionStamp,
               dir: _dir,
+              interactionEndpoint: _interactionEndpoint,
+              nativeIdentity: _nativeIdentity,
+              nativePaneBirthId: _nativePaneBirthId,
               ...row
             }) => row,
           );
@@ -1432,13 +1525,42 @@ export class WorkspaceTerminalInventoryRuntime {
     );
   }
 
-  #publishInventory(snapshot: NativeTerminalInventorySnapshot): NativeTerminalInventorySnapshot {
+  async #publishInventory(
+    snapshot: NativeTerminalInventorySnapshot,
+    nativeEpoch: string | null,
+    signal: AbortSignal,
+    epoch: number,
+  ): Promise<NativeTerminalInventorySnapshot> {
     try {
-      this.#onInventory?.(snapshot);
+      await this.#onInventory?.(snapshot, signal);
     } catch {
-      // Cache adoption is an optimization/readiness fence, never inventory authority.
+      if (signal.aborted || this.#disposed || this.#inventoryEpoch !== epoch)
+        throw new NativeTerminalAttachmentRuntimeError("discovery-failed");
+      // Inventory still renders; stale evidence must not escape a failed adoption.
+      return {
+        ...snapshot,
+        panes: snapshot.panes.map((pane) => ({
+          ...pane,
+          interactionEndpoint: null,
+          nativeIdentity: null,
+        })),
+      };
     }
-    return snapshot;
+    if (signal.aborted || this.#disposed || this.#inventoryEpoch !== epoch)
+      throw new NativeTerminalAttachmentRuntimeError("discovery-failed");
+    return {
+      ...snapshot,
+      panes: snapshot.panes.map((pane) => ({
+        ...pane,
+        nativeIdentity: nativePaneIdentity(
+          nativeEpoch === this.#nativeServerEpoch?.() ? nativeEpoch : null,
+          pane.nativePaneBirthId,
+        ),
+        interactionEndpoint: pane.semanticPaneId
+          ? (this.#resolveInteractionEndpoint?.(pane.workspaceName, pane.semanticPaneId) ?? null)
+          : null,
+      })),
+    };
   }
 
   async #readInventory(
@@ -1447,6 +1569,7 @@ export class WorkspaceTerminalInventoryRuntime {
   ): Promise<NativeTerminalInventorySnapshot> {
     if (this.#disposed) throw new NativeTerminalAttachmentRuntimeError("runtime-disposed");
     const epoch = this.#inventoryEpoch;
+    const nativeEpoch = this.#nativeServerEpoch?.() ?? null;
     if (signal) {
       if (signal.aborted) throw new NativeTerminalAttachmentRuntimeError("runtime-disposed");
       let snapshot: NativeTerminalInventorySnapshot;
@@ -1464,7 +1587,7 @@ export class WorkspaceTerminalInventoryRuntime {
         if (staleRetry < 1) return this.#readInventory(signal, staleRetry + 1);
         throw new NativeTerminalAttachmentRuntimeError("discovery-failed");
       }
-      return this.#publishInventory(snapshot);
+      return this.#publishInventory(snapshot, nativeEpoch, signal, epoch);
     }
     if (this.#inventoryRead?.epoch === epoch) return this.#inventoryRead.promise;
     const abort = new AbortController();
@@ -1483,7 +1606,7 @@ export class WorkspaceTerminalInventoryRuntime {
         if (staleRetry < 1) return this.#readInventory(undefined, staleRetry + 1);
         throw new NativeTerminalAttachmentRuntimeError("discovery-failed");
       }
-      return this.#publishInventory(value);
+      return this.#publishInventory(value, nativeEpoch, abort.signal, epoch);
     })().finally(() => {
       if (this.#inventoryRead?.promise === promise) this.#inventoryRead = null;
     });
@@ -1553,6 +1676,7 @@ export class WorkspaceTerminalInventoryRuntime {
       return Promise.reject(new NativeTerminalAttachmentRuntimeError("discovery-failed"));
     };
     assertLive();
+    const nativeEpoch = this.#nativeServerEpoch?.() ?? null;
     const memberships = this.#registry
       .list()
       .filter((workspace) => workspace.sessionName === requestedSessionName);
@@ -1693,6 +1817,7 @@ export class WorkspaceTerminalInventoryRuntime {
     }
     const finalRetry = retryIfReplaced();
     if (finalRetry) return finalRetry;
+    let trustedInteractionInventoryAdopted = false;
     if (trustedInventory) {
       const currentMembership = this.#registry
         .list()
@@ -1714,11 +1839,25 @@ export class WorkspaceTerminalInventoryRuntime {
         throw new NativeTerminalAttachmentRuntimeError("discovery-failed");
       }
       try {
-        this.#onSessionInventory?.(workspace.sessionName, shouldPrewarm ? inventory : null);
+        await this.#onSessionInventory?.(
+          workspace.sessionName,
+          shouldPrewarm ? inventory : null,
+          signal,
+        );
+        const callbackRetry = retryIfReplaced();
+        if (callbackRetry) return callbackRetry;
+        if (
+          this.#trustedSessionInventoryCurrent?.(workspace.sessionName, trustedInventoryToken) !==
+          true
+        )
+          throw new NativeTerminalAttachmentRuntimeError("discovery-failed");
+        trustedInteractionInventoryAdopted = shouldPrewarm;
       } catch {
         // A cache consumer cannot own terminal inventory discovery.
       }
     }
+    const adoptionRetry = retryIfReplaced();
+    if (adoptionRetry) return adoptionRetry;
     this.#observeWorkspaceSession?.(workspace.name, workspace.sessionName);
     return Object.freeze({
       workspaceName: workspace.name,
@@ -1735,7 +1874,27 @@ export class WorkspaceTerminalInventoryRuntime {
             sessionWindowCount: _sessionWindowCount,
             dir: _dir,
             ...pane
-          }) => Object.freeze({ ...pane }),
+          }) =>
+            Object.freeze({
+              ...pane,
+              ...(trustedInventory
+                ? {
+                    nativeIdentity: trustedInteractionInventoryAdopted
+                      ? nativePaneIdentity(
+                          nativeEpoch === this.#nativeServerEpoch?.() ? nativeEpoch : null,
+                          pane.nativePaneBirthId,
+                        )
+                      : null,
+                    interactionEndpoint:
+                      trustedInteractionInventoryAdopted && pane.semanticPaneId
+                        ? (this.#resolveInteractionEndpoint?.(
+                            workspace.name,
+                            pane.semanticPaneId,
+                          ) ?? null)
+                        : null,
+                  }
+                : {}),
+            }),
         ),
       ),
     });
@@ -1762,6 +1921,7 @@ export class WorkspaceTerminalInventoryRuntime {
               nowSec: Math.floor(Date.now() / 1000),
               panes: session.panes.map((pane) => ({
                 runtimePaneId: pane.runtimePaneId,
+                nativeIdentity: pane.nativeIdentity ?? null,
                 currentCommand: pane.currentCommand,
                 title: pane.title,
               })),
@@ -1895,6 +2055,9 @@ export class NativeTerminalAttachmentRuntime {
               type: _type,
               missionStamp: _missionStamp,
               dir: _dir,
+              interactionEndpoint: _interactionEndpoint,
+              nativeIdentity: _nativeIdentity,
+              nativePaneBirthId: _nativePaneBirthId,
               ...row
             }) => row,
           );
@@ -2166,6 +2329,9 @@ export class NativeTerminalAttachmentRuntime {
           type: _type,
           missionStamp: _missionStamp,
           dir: _dir,
+          interactionEndpoint: _interactionEndpoint,
+          nativeIdentity: _nativeIdentity,
+          nativePaneBirthId: _nativePaneBirthId,
           ...row
         }) => row,
       ),
@@ -2210,6 +2376,7 @@ export class NativeTerminalAttachmentRuntime {
             nowSec: Math.floor(Date.now() / 1000),
             panes: panes.map((pane) => ({
               runtimePaneId: pane.runtimePaneId,
+              nativeIdentity: pane.nativeIdentity ?? null,
               currentCommand: pane.currentCommand,
               title: pane.title,
             })),

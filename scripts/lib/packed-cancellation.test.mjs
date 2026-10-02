@@ -89,3 +89,42 @@ for (const mode of ["signal", "failure"])
       await closed;
     }
   });
+
+test("command deadline escalates a TERM-resistant retained child and keeps uncertainty", async () => {
+  const c = createPackedCancellation({ signals: new EventEmitter(), commandKillGraceMs: 30 });
+  try {
+    const result = await c.command(
+      process.execPath,
+      ["-e", "process.on('SIGTERM',()=>{});process.stdout.write('ready');setInterval(()=>{},1000)"],
+      { timeout: 200 },
+    );
+    assert.equal(result.stdout, "ready");
+    assert.equal(result.signal, "SIGKILL");
+    assert.equal(c.facts().uncertainCommand, true);
+    assert.equal(c.facts().commands[0].settled, true);
+    assert.throws(() => process.kill(result.pid, 0), { code: "ESRCH" });
+  } finally {
+    c.dispose();
+  }
+});
+
+test("inherited stdout cannot hold a completed root past the deadline", async () => {
+  const c = createPackedCancellation({ signals: new EventEmitter(), commandKillGraceMs: 30 });
+  try {
+    const result = await c.command(
+      process.execPath,
+      [
+        "-e",
+        "const{spawn}=require('node:child_process');const p=spawn(process.execPath,['-e','setTimeout(()=>{},400)'],{stdio:['ignore',1,2]});p.unref();process.exit(0)",
+      ],
+      { timeout: 100 },
+    );
+    assert.notEqual(result.status, 0);
+    assert.equal(c.facts().uncertainCommand, true);
+    assert.throws(() => process.kill(result.pid, 0), { code: "ESRCH" });
+  } finally {
+    c.dispose();
+    // The deliberately unowned descendant expires itself; never discover/kill it.
+    await delay(450);
+  }
+});

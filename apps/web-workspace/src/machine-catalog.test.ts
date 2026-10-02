@@ -34,6 +34,8 @@ function catalog(instanceId = "daemon.a", environmentId = "environment.a"): Flee
             activity: "running",
             attention: false,
             statusSource: "authority",
+            interactionEndpoint: null,
+            nativeIdentity: null,
           },
         ],
       },

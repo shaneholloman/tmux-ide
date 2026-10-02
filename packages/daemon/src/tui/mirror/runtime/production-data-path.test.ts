@@ -246,12 +246,12 @@ describe("production OpenTUI v2 data path", () => {
     );
     expect(applicationRootSource).toContain("createApplicationMachineNavigation({");
     const reset = applicationRootSource.slice(
-      applicationRootSource.indexOf("resetWorkspace(machineId, expectedLiveSessionId) {"),
+      applicationRootSource.indexOf("resetWorkspace(machineId, expectedLiveSessionId, server) {"),
       applicationRootSource.indexOf("cancelOpen: () => {"),
     );
     expect(reset.indexOf("sessionOwner?.dispose()")).toBeGreaterThanOrEqual(0);
     expect(reset.indexOf("sessionOwner?.dispose()")).toBeLessThan(
-      reset.indexOf("sessionOwner = makeSessionOwner(machineId, expectedLiveSessionId)"),
+      reset.indexOf("sessionOwner = makeSessionOwner(machineId, expectedLiveSessionId, server)"),
     );
     expect(applicationRootSource).toContain("if (ownedEpoch !== sessionOwnerEpoch) return;");
   });
@@ -272,7 +272,13 @@ describe("production OpenTUI v2 data path", () => {
     // One admission callback cancels initial auto-open after explicit machine navigation.
     // Machine-scoped agent navigation composes cancellation and exact-target input admission.
     // Fleet preview visibility, modal ownership and explicit-route callbacks remain composition only.
-    expect(applicationRootSource.trim().split(/\r?\n/u).length).toBeLessThanOrEqual(675);
+    // Two reference-dialog props connect the existing command owner to presentation.
+    // Home search and client-local sidebar visibility are wired here; navigation uses the existing picker. Reference search uses the modal paste route.
+    // Home activity receives its daemon identity to avoid cross-machine attribution.
+    // Three composition lines prepare the lazy tour before renderer creation;
+    // loading and persistence remain in the dedicated guided-tour owners.
+    // Named-agent dialog ownership adds one composition prop; its state and IO stay outside the root.
+    expect(applicationRootSource.trim().split(/\r?\n/u).length).toBeLessThanOrEqual(694);
     // Component leaves are reviewable presentation modules, not authority/data-path
     // owners. Their import boundary is enforced by production-design-system-contract;
     // retain the original budget for the runtime and authority graph itself.
@@ -380,6 +386,65 @@ describe("production OpenTUI v2 data path", () => {
     expect(productionGraph.sourceByFile.get(contrastPath)).not.toMatch(
       /node:|\b(?:process|fetch|setInterval|setTimeout|requestRender|createWorkspaceClient|createTerminalFastLane)\b/u,
     );
-    expect(authorityDataPathFiles.length).toBeLessThanOrEqual(153);
+    // Explicit server startup adds one routing adapter. It reuses the existing
+    // WorkspaceClient and renderer authority; no additional terminal lane is created.
+    const serverConnectionPath =
+      "packages/daemon/src/tui/mirror/application-shell-server-connection.ts";
+    expect(authorityDataPathFiles).toContain(serverConnectionPath);
+    expect(productionGraph.sourceByFile.get(serverConnectionPath)).not.toMatch(
+      /\b(?:createWorkspaceClient|createTerminalFastLane|setInterval|requestRender)\s*\(/u,
+    );
+    // Fleet Home and the walkthrough include explicit lazy-loading modules and
+    // the existing state-home path helper reached by tour persistence. They
+    // compose resident observers/actions and must not create another terminal lane.
+    const learningModules = [
+      "packages/daemon/src/lib/state-home.ts",
+      ...[
+        "application-home-fleet.ts",
+        "application-home-experience.ts",
+        "application-guided-tour-integration.tsx",
+        "application-guided-tour-lazy.tsx",
+        "application-guided-tour-loader.ts",
+        "application-guided-tour-preparation.ts",
+        "application-guided-tour-owner.ts",
+        "guided-tour-storage.ts",
+        "guided-tour.ts",
+        "guided-tour-coach.tsx",
+      ].map((name) => `packages/daemon/src/tui/mirror/runtime/${name}`),
+    ];
+    for (const path of learningModules) {
+      expect(authorityDataPathFiles).toContain(path);
+      expect(productionGraph.sourceByFile.get(path)).not.toMatch(
+        /\b(?:createWorkspaceClient|createTerminalFastLane|createOpenTuiSessionOwner|TerminalFastLaneRendererAdapter|openSshDaemonTransport)\s*\(/u,
+      );
+    }
+    // Sidebar key routing and scoped host Shift capture reuse existing owners.
+    // Neither may introduce daemon, transport, replica, or scheduling authority.
+    const inputHelpers = [
+      "application-sidebar-shortcuts.ts",
+      "host-shift-capture.ts",
+      "application-new-agent-owner.ts",
+      "application-new-agent-dialog.tsx",
+    ].map((name) => `packages/daemon/src/tui/mirror/runtime/${name}`);
+    for (const path of inputHelpers) {
+      expect(authorityDataPathFiles).toContain(path);
+      expect(productionGraph.sourceByFile.get(path)).not.toMatch(
+        /\b(?:createWorkspaceClient|createTerminalFastLane|openSshDaemonTransport|setInterval|setTimeout)\s*\(/u,
+      );
+    }
+    // Team grouping only rearranges existing observed rows; it owns no IO,
+    // subscription, clock, or terminal authority.
+    const teamPresentationHelpers = [
+      "packages/daemon/src/tui/mirror/runtime/application-team-groups.ts",
+    ];
+    for (const path of teamPresentationHelpers) {
+      expect(authorityDataPathFiles).toContain(path);
+      expect(productionGraph.sourceByFile.get(path)).not.toMatch(
+        /node:|\b(?:process|fetch|setInterval|setTimeout|createWorkspaceClient|createTerminalFastLane|createSignal|createEffect)\b/u,
+      );
+    }
+    expect(authorityDataPathFiles.length).toBeLessThanOrEqual(
+      154 + learningModules.length + inputHelpers.length + teamPresentationHelpers.length,
+    );
   });
 });

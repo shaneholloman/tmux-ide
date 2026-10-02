@@ -152,6 +152,8 @@ export function mountAppWindowCanvasGroupedFixture(
     activeResourceId: "terminal.grid.0",
     resources: [
       ...Array.from({ length: GROUPED_PANE_COUNT }, (_unused, index) => ({
+        interactionEndpoint: null,
+        nativeIdentity: null,
         id: `terminal.grid.${index}`,
         title: `Pane ${index}`,
         kind: "terminal" as const,
@@ -163,6 +165,8 @@ export function mountAppWindowCanvasGroupedFixture(
         windowResourceId: GROUPED_WINDOW_ID,
       })),
       {
+        interactionEndpoint: null,
+        nativeIdentity: null,
         id: "terminal.solo",
         title: "Solo shell",
         kind: "terminal" as const,

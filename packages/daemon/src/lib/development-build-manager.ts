@@ -29,6 +29,9 @@ import {
 } from "./development-instance.ts";
 import {
   readDevelopmentBuild,
+  developmentNativeObservationMode,
+  developmentNativeObservationOption,
+  type DevelopmentNativeObservation,
   developmentFileHash,
   developmentTreeHash,
   verifyDevelopmentBuild,
@@ -263,6 +266,7 @@ export async function buildDevelopmentInstance(
   instance: DevelopmentInstance,
   options: {
     bun: string;
+    nativeObservation?: DevelopmentNativeObservation;
     onlyIfSelectionAbsent?: boolean;
     node?: string;
     signal?: AbortSignal;
@@ -270,6 +274,7 @@ export async function buildDevelopmentInstance(
     beforePublish?: () => void | Promise<void>;
   },
 ): Promise<DevelopmentBuildManifest> {
+  developmentNativeObservationOption(options.nativeObservation);
   if (discoverDevelopmentWorktree(instance.worktree) !== instance.worktree)
     throw new Error("Build root is not the exact Git worktree");
   return withDevelopmentLock(
@@ -286,6 +291,12 @@ export async function buildDevelopmentInstance(
         }
         if (!missing) return readDevelopmentBuild(instance, {});
       }
+      const nativeObservation = developmentNativeObservationMode(
+        options.nativeObservation,
+        options.nativeObservation === undefined && existsSync(join(instance.root, "build.json"))
+          ? readDevelopmentBuild(instance, {})
+          : null,
+      );
       let phase = "source-and-toolchain";
       const operationId = randomUUID();
       try {
@@ -466,6 +477,7 @@ export async function buildDevelopmentInstance(
             source,
             packageVersion,
             execution: "packaged-development",
+            nativeObservation,
             capabilities,
             host: {
               platform: process.platform,

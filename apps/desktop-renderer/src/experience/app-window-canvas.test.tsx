@@ -199,6 +199,8 @@ const inventory: ApplicationShellTerminalInventory = {
   activeResourceId: "terminal.lead",
   resources: [
     {
+      interactionEndpoint: null,
+      nativeIdentity: null,
       id: "terminal.lead",
       title: "Lead terminal",
       kind: "agent",
@@ -254,6 +256,8 @@ const multiPaneInventory: ApplicationShellTerminalInventory = {
   activeResourceId: "terminal.pane.1",
   resources: [
     {
+      interactionEndpoint: null,
+      nativeIdentity: null,
       id: "terminal.pane.0",
       title: "Pane 0",
       kind: "agent",
@@ -262,6 +266,8 @@ const multiPaneInventory: ApplicationShellTerminalInventory = {
       windowResourceId: WINDOW_GROUP_ID,
     },
     {
+      interactionEndpoint: null,
+      nativeIdentity: null,
       id: "terminal.pane.1",
       title: "Pane 1",
       kind: "terminal",

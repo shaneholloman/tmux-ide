@@ -59,6 +59,10 @@ const { positionals, values } = parseArgs({
     daemon: { type: "boolean" },
     "if-running": { type: "boolean" },
     ssh: { type: "string", multiple: true },
+    server: { type: "string" },
+    "socket-name": { type: "string" },
+    "session-name": { type: "string" },
+    "socket-path": { type: "string" },
     row: { type: "string" },
     pane: { type: "string" },
     title: { type: "string" },
@@ -121,6 +125,7 @@ const { positionals, values } = parseArgs({
 const knownCommands = new Set([
   "daemon",
   "machines",
+  "servers",
   "start",
   "init",
   "stop",
@@ -138,6 +143,8 @@ const knownCommands = new Set([
   "config",
   "setup",
   "send",
+  "automation",
+  "mcp",
   "settings",
   "team",
   "app",
@@ -200,7 +207,7 @@ const bold = (s: string) => (noColor ? s : `\x1b[1m${s}\x1b[22m`);
 const cyan = (s: string) => (noColor ? s : `\x1b[36m${s}\x1b[39m`);
 const dim = (s: string) => (noColor ? s : `\x1b[2m${s}\x1b[22m`);
 
-if (values.help) {
+if (values.help && command !== "automation") {
   printHelp();
   process.exit(0);
 }
@@ -227,6 +234,7 @@ ${bold("Usage:")}
                               ${dim("Rebuild the fleet from the last snapshot after a tmux crash")}
                               ${dim("(--resume-agents revives claude conversations via claude --resume)")}
   ${cyan("tmux-ide attach")}             ${dim("Reattach to a running session")}
+  ${cyan("tmux-ide team assign")} %PANE TEAM ${dim("Group a pane; unassign removes membership")}
   ${cyan("tmux-ide team")} [--json]      ${dim("TUI over all tmux sessions (--json prints fleet state)")}
   ${cyan("tmux-ide app")} [session]      ${dim("Unified app: fleet home + live session mirror (bare = home)")}
   ${cyan("tmux-ide app --ssh <host>")}   ${dim("Open an existing remote daemon through your SSH configuration")}
@@ -262,6 +270,10 @@ ${bold("Usage:")}
   ${cyan("tmux-ide status")} [--json]    ${dim("Show session status")}
   ${cyan("tmux-ide inspect")} [--json]   ${dim("Show effective config and runtime state")}
   ${cyan("tmux-ide doctor")}             ${dim("Check system requirements")}
+  ${cyan("tmux-ide app --server <id>")} [session] [--ssh HOST] ${dim("Select an exact registered tmux server")}
+  ${cyan("tmux-ide servers")} list|sessions <id>|remove <id> [--ssh HOST] [--json]
+  ${cyan("tmux-ide servers create <id>")} --session-name NAME [--dir PATH] [--ssh HOST] [--json]
+  ${cyan("tmux-ide servers add")} --socket-name NAME|--socket-path /PATH [--name LABEL] [--ssh HOST]
   ${cyan("tmux-ide machines")} ls|export|import <file>|add <alias> [--write] [--json]
   ${cyan("tmux-ide machines start <alias> --write")} ${dim("Start the installed remote daemon explicitly")}
   ${cyan("tmux-ide update")} [--dry-run] ${dim("Update tmux-ide (detects dev checkout vs npm/pnpm/bun global)")}
@@ -284,6 +296,8 @@ ${bold("Pane Messaging:")}
   ${cyan("tmux-ide send")} <target> <message>     ${dim("Send message to a pane")}
   ${cyan("tmux-ide send")} --to <name> <message>   ${dim("Target by name, title, role, or ID")}
   ${cyan("tmux-ide send")} <target> --no-enter msg  ${dim("Send text without pressing Enter")}
+  ${cyan("tmux-ide automation")} <command> --json  ${dim("Scoped pane discovery, reads, sends, status and events")}
+  ${cyan("tmux-ide mcp")}                         ${dim("Serve scoped automation tools over MCP stdio")}
 
 ${bold("Server:")}
   ${cyan("tmux-ide serve")} [socket-path]         ${dim("Foreground owner-only local NDJSON control socket")}
@@ -584,6 +598,20 @@ async function launchTeamCockpit(): Promise<void> {
 // app INSIDE the host session from re-hosting itself.
 async function runApp(appArgs: string[]): Promise<void> {
   const ssh = values.ssh;
+  if (values.server !== undefined) {
+    const { TmuxServerIdSchemaZ } = await import("../packages/contracts/src/tmux-server-scope.ts");
+    if (!TmuxServerIdSchemaZ.safeParse(values.server).success || (ssh?.length ?? 0) > 1)
+      throw new IdeError(
+        "--server requires an opaque server ID and at most one --ssh destination",
+        { code: "USAGE", exitCode: 2 },
+      );
+    if (values.hosted === true || values.detachable === true)
+      throw new IdeError(
+        "Explicit server selection currently runs in the foreground; omit --hosted and --detachable",
+        { code: "USAGE", exitCode: 2 },
+      );
+    appArgs = [...appArgs, `--server=${values.server}`];
+  }
   if (ssh !== undefined) {
     const { SavedMachineSchema } = await import("../packages/contracts/src/saved-machines.ts");
     if (ssh.some((alias) => !SavedMachineSchema.shape.sshTarget.safeParse(alias).success))
@@ -623,6 +651,7 @@ async function runApp(appArgs: string[]): Promise<void> {
       await import("../packages/daemon/src/lib/canonical-daemon-bootstrap.ts")
     ).ensureCanonicalDaemon({
       entryPath: nodeCliPath,
+      ...(values.server !== undefined ? { tmuxServerIntent: null } : {}),
       expectedProductVersion: (await import("../package.json")).version,
     });
   } catch (error) {
@@ -632,6 +661,7 @@ async function runApp(appArgs: string[]): Promise<void> {
     );
   }
   const hosted =
+    values.server === undefined &&
     ssh === undefined &&
     wantsHostedApp({
       flagDetachable: values.detachable === true,
@@ -653,10 +683,32 @@ function launchApp(): Promise<void> {
 }
 
 try {
+  if (values["session-name"] !== undefined && command !== "servers")
+    throw new IdeError("--session-name requires tmux-ide servers create", {
+      code: "USAGE",
+      exitCode: 2,
+    });
+  if (values.server !== undefined && (command !== "app" || values.headless))
+    throw new IdeError("--server is supported only by tmux-ide app", {
+      code: "USAGE",
+      exitCode: 2,
+    });
+  if (
+    (values["socket-name"] !== undefined || values["socket-path"] !== undefined) &&
+    command !== "servers" &&
+    !(command === "team" && ["assign", "unassign"].includes(positionals[1] ?? ""))
+  )
+    throw new IdeError("Socket selector flags require servers add or team assign/unassign", {
+      code: "USAGE",
+      exitCode: 2,
+    });
   if (values.supervised !== undefined && !values.headless)
     throw new IdeError("--supervised requires --headless", { code: "USAGE", exitCode: 2 });
-  if (values.ssh !== undefined && (command !== "app" || values.headless))
-    throw new IdeError("--ssh is supported only by tmux-ide app", { code: "USAGE", exitCode: 2 });
+  if (values.ssh !== undefined && (!["app", "servers"].includes(command ?? "") || values.headless))
+    throw new IdeError("--ssh is supported only by tmux-ide app or servers", {
+      code: "USAGE",
+      exitCode: 2,
+    });
   if ((values.daemon || values["if-running"]) && command !== "update")
     throw new IdeError("--daemon and --if-running are supported only by tmux-ide update", {
       code: "USAGE",
@@ -878,6 +930,32 @@ try {
       break;
     }
 
+    case "servers": {
+      const { runTmuxServersCli, connectTmuxServersCli } =
+        await import("../packages/daemon/src/lib/tmux-servers-cli.ts");
+      if (positionals.length > 3 || (values.ssh?.length ?? 0) > 1)
+        throw new IdeError("servers accepts at most one server ID and one --ssh destination", {
+          code: "USAGE",
+          exitCode: 2,
+        });
+      const ssh = values.ssh?.[0];
+      const result = await runTmuxServersCli(
+        {
+          command: positionals[1],
+          serverId: positionals[2],
+          ssh,
+          socketName: values["socket-name"],
+          socketPath: values["socket-path"],
+          label: values.name,
+          sessionName: values["session-name"],
+          cwd: values.dir,
+        },
+        () => connectTmuxServersCli({ ssh, entryPath: nodeCliPath }),
+      );
+      process.stdout.write(`${JSON.stringify(result, null, json ? undefined : 2)}\n`);
+      break;
+    }
+
     case "machines": {
       const { machines } = await import("../packages/daemon/src/machines.ts");
       const result = await machines(positionals[1], positionals[2], {
@@ -969,6 +1047,14 @@ try {
       break;
     }
 
+    case "automation":
+      await (
+        await import("../packages/daemon/src/automation.ts")
+      ).runAutomationCli(process.argv.slice(3));
+      break;
+    case "mcp":
+      await (await import("../packages/daemon/src/mcp.ts")).runMcp();
+      break;
     case "send": {
       const target = values.to ?? positionals[1];
       const messageStart = values.to ? 1 : 2;
@@ -995,6 +1081,29 @@ try {
     }
 
     case "team": {
+      if (positionals[1] === "assign" || positionals[1] === "unassign") {
+        const assign = positionals[1] === "assign";
+        if (positionals.length !== (assign ? 4 : 3))
+          throw new IdeError(
+            "Usage: tmux-ide team assign %PANE TEAM | team unassign %PANE [--socket-path PATH | --socket-name NAME]",
+            { code: "USAGE", exitCode: 2 },
+          );
+        const { assignPaneTeam } = await import("../packages/daemon/src/pane-team.ts");
+        const result = assignPaneTeam({
+          paneId: positionals[2]!,
+          name: assign ? positionals[3]! : null,
+          socketPath: values["socket-path"],
+          socketName: values["socket-name"],
+        });
+        console.log(
+          json
+            ? JSON.stringify(result)
+            : assign
+              ? `Assigned ${result.paneId} to ${result.team}`
+              : `Removed explicit team from ${result.paneId}`,
+        );
+        break;
+      }
       // `--json` is the scriptable control surface: print the fleet state and
       // exit without spawning the (bun/OpenTUI) TUI.
       if (json) {

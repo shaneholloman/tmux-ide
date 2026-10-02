@@ -155,3 +155,30 @@ function exact(actual, expected, label) {
   if (actual !== expected)
     throw new TypeError(`${label} mismatch: expected ${String(expected)}, got ${String(actual)}`);
 }
+
+export function validateReferenceStageEvent(event) {
+  for (const field of ["traceId", "stage", "processId", "clockId", "clockKind"])
+    if (typeof event[field] !== "string" || event[field].length === 0)
+      throw new TypeError(`Trace event ${field} must be a non-empty string`);
+  // Client diagnostics are point events, not duration spans. Retain them in
+  // the raw trace, but never use them as input/paint endpoints or stage timings.
+  if (event.stage === "client") {
+    if (
+      typeof event.operation !== "string" ||
+      !event.operation ||
+      !Number.isSafeInteger(event.atMicros) ||
+      event.atMicros < 0
+    )
+      throw new TypeError("Invalid client trace point");
+    return false;
+  }
+  if (!PERFORMANCE_STAGES.includes(event.stage)) throw new TypeError("Unknown trace stage");
+  if (
+    !Number.isSafeInteger(event.startedAtMicros) ||
+    !Number.isSafeInteger(event.endedAtMicros) ||
+    event.startedAtMicros < 0 ||
+    event.endedAtMicros < event.startedAtMicros
+  )
+    throw new TypeError("Trace event endpoints must be ordered safe monotonic microseconds");
+  return true;
+}

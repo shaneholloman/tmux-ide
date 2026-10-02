@@ -6,6 +6,13 @@ import { hostname, arch, cpus, platform, release, tmpdir, version as osVersion }
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { referenceWorkspaceIntent } from "./lib/performance-reference-workspace.mjs";
+import { frameShowsTerminalFocus } from "./lib/packed-opentui-frame.mjs";
+import { referenceTarget } from "./lib/performance-reference-target.mjs";
+import {
+  parseStartupLaunchDiagnostic,
+  validateStartupParentWitness,
+} from "./lib/startup-launch-diagnostic.mjs";
 
 import {
   PERFORMANCE_STAGES,
@@ -15,6 +22,7 @@ import {
   summarize,
   theilSenSlope,
   validateReferenceReport,
+  validateReferenceStageEvent,
 } from "./lib/performance-reference-report.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -23,8 +31,9 @@ const budgets = JSON.parse(
 );
 const options = parseOptions(process.argv.slice(2));
 const reportPath = resolve(root, options.report);
-const lifecyclePath = resolve(root, ".tasks/tui-testdrive/performance.jsonl");
-const testdriveStatePath = resolve(root, ".tasks/tui-testdrive/home/app-state.json");
+const reference = referenceTarget(root);
+const lifecyclePath = join(reference.runtimeDir, "performance.jsonl");
+const testdriveStatePath = join(reference.runtimeDir, "home/app-state.json");
 const target = `tmux-ide-reference-${process.pid}`;
 const referenceProjectDir = mkdtempSync(join(tmpdir(), `${target}-`));
 const source = gitSourceIdentity(root);
@@ -78,18 +87,23 @@ try {
   await registerReferenceProject();
   const readiness = await launchReferenceWorkspace();
   qualifyBunPaneStream(readiness);
-  const startup = await measureStartup();
-  const inputTrace = options.inputTrace ?? (await collectInputTrace());
-  measurements = {
-    startup,
-    inputToPaint: measureInputToPaint(inputTrace),
-    memory: measureMemory(),
-  };
+  if (options.preflightOnly) await collectInputTrace(1);
+  if (!options.preflightOnly) {
+    const startup = await measureStartup();
+    const inputTrace = options.inputTrace ?? (await collectInputTrace());
+    measurements = {
+      startup,
+      inputToPaint: measureInputToPaint(inputTrace),
+      memory: measureMemory(),
+    };
+  }
   succeeded = true;
 } finally {
   if (!options.keepOnFailure || succeeded) {
     spawnSync("node", ["scripts/tui-testdrive.mjs", "stop"], { cwd: root, stdio: "ignore" });
-    spawnSync("tmux", ["kill-session", "-t", `=${target}`], { stdio: "ignore" });
+    spawnSync("tmux", [...reference.socketArgs, "kill-session", "-t", `=${target}`], {
+      stdio: "ignore",
+    });
     await unregisterReferenceProject().catch(() => undefined);
     rmSync(referenceProjectDir, { recursive: true, force: true });
   } else {
@@ -154,10 +168,7 @@ async function launchReferenceWorkspace() {
     );
     const catalog = await responseJson(catalogResponse);
     lastCatalog = { status: catalogResponse.status, body: catalog };
-    const published = catalog?.intents?.some(
-      ({ workspaceName, sessionName, availability }) =>
-        workspaceName === target && sessionName === target && availability === "live",
-    );
+    const published = catalogResponse.ok ? referenceWorkspaceIntent(catalog, target) : null;
     if (published) {
       const panesResponse = await fetch(
         `http://${daemon.bindHostname}:${daemon.port}/api/project/${encodeURIComponent(target)}/panes`,
@@ -191,10 +202,7 @@ async function launchReferenceWorkspace() {
           attachable.length > 0
         ) {
           return {
-            catalogWorkspace: catalog.workspaces.find(
-              ({ workspaceName, sessionName }) =>
-                workspaceName === target && sessionName === target,
-            ),
+            catalogWorkspace: published,
             panes: paneResource.panes,
             terminalResources: attachable,
           };
@@ -259,7 +267,7 @@ function qualifyBunPaneStream(readiness) {
 }
 
 function readDaemonInfo() {
-  const path = resolve(process.env.HOME ?? "", ".tmux-ide/daemon.json");
+  const path = reference.daemonInfoPath;
   const daemon = JSON.parse(readFileSync(path, "utf8"));
   if (!daemon.authToken || !daemon.port || !daemon.bindHostname)
     throw new Error("Reference qualification requires the canonical daemon");
@@ -282,38 +290,59 @@ function preflightCanonicalDaemon() {
       "Canonical daemon predates the measured commit. Rebuild/restart the daemon from this clean checkout before running reference qualification.",
     );
 }
-const report = {
-  version: REFERENCE_REPORT_VERSION,
-  measuredAt: new Date().toISOString(),
-  status: Object.values(measurements).some(({ status }) => status === "failed")
-    ? "failed"
-    : Object.values(measurements).every(({ status }) => status === "passed")
-      ? "passed"
-      : "incomplete",
-  provenance,
-  measurements,
-};
-validateReferenceReport(report, source);
-mkdirSync(dirname(reportPath), { recursive: true });
-writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
-process.stdout.write(`Reference qualification: ${report.status}\nReport: ${reportPath}\n`);
-if (report.status === "failed" || (options.requireComplete && report.status !== "passed"))
-  process.exitCode = 1;
+if (options.preflightOnly) {
+  mkdirSync(dirname(reportPath), { recursive: true });
+  writeFileSync(
+    reportPath,
+    JSON.stringify(
+      {
+        version: 1,
+        kind: "reference-preflight",
+        passed: true,
+        provenance,
+        timingQualification: false,
+      },
+      null,
+      2,
+    ),
+  );
+} else {
+  const report = {
+    version: REFERENCE_REPORT_VERSION,
+    measuredAt: new Date().toISOString(),
+    status: Object.values(measurements).some(({ status }) => status === "failed")
+      ? "failed"
+      : Object.values(measurements).every(({ status }) => status === "passed")
+        ? "passed"
+        : "incomplete",
+    provenance,
+    measurements,
+    ...(options.startupDiagnosticRoot
+      ? { timingQualification: false, purpose: "startup-launch-diagnostic" }
+      : {}),
+  };
+  validateReferenceReport(report, source);
+  mkdirSync(dirname(reportPath), { recursive: true });
+  writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+  process.stdout.write(`Reference qualification: ${report.status}\nReport: ${reportPath}\n`);
+  if (report.status === "failed" || (options.requireComplete && report.status !== "passed"))
+    process.exitCode = 1;
+}
 
 async function measureStartup() {
   const rawSamples = [];
   for (let ordinal = 0; ordinal < options.startupSamples; ordinal += 1) {
     rmSync(lifecyclePath, { force: true });
-    run("node", [
-      "scripts/tui-testdrive.mjs",
-      "start",
-      "--target",
-      target,
-      "--cols",
-      "160",
-      "--rows",
-      "44",
-    ]);
+    run(
+      "node",
+      ["scripts/tui-testdrive.mjs", "start", "--target", target, "--cols", "160", "--rows", "44"],
+      options.startupDiagnosticRoot
+        ? {
+            ...process.env,
+            TMUX_IDE_TESTDRIVE_STARTUP_DIAGNOSTIC_ROOT: options.startupDiagnosticRoot,
+          }
+        : process.env,
+    );
     const marks = await waitForLifecycleMarks([
       "entry-start",
       "root-import-end",
@@ -322,10 +351,40 @@ async function measureStartup() {
       "first-frame",
       "first-terminal-frame",
     ]);
+    const startupDiagnostic = options.startupDiagnosticRoot
+      ? (() => {
+          const state = JSON.parse(readFileSync(join(reference.runtimeDir, "state.json"), "utf8"));
+          const expectedPath = join(options.startupDiagnosticRoot, `${state.launchId}.jsonl`);
+          if (state.startupDiagnosticPath !== expectedPath)
+            throw new Error("Startup diagnostic path mismatch");
+          // Preserve clocks even if parsing or a later sample/measurement fails.
+          writeFileSync(
+            join(options.startupDiagnosticRoot, `${state.launchId}.lifecycle.json`),
+            JSON.stringify({ ordinal, launchId: state.launchId, lifecycleMarks: marks }),
+            { mode: 0o600, flag: "wx" },
+          );
+          const diagnostic = parseStartupLaunchDiagnostic(readFileSync(expectedPath, "utf8"), {
+            launchId: state.launchId,
+            lifecycleMarks: marks,
+          });
+          const parentState = JSON.parse(
+            readFileSync(
+              join(options.startupDiagnosticRoot, `${state.launchId}.parent.json`),
+              "utf8",
+            ),
+          );
+          return validateStartupParentWitness(diagnostic, parentState, state);
+        })()
+      : null;
     rawSamples.push({
       ordinal,
       class: ordinal === 0 ? "process-cold" : "warm-repeat",
       phases: Object.fromEntries(marks.map((mark) => [mark.phase, mark.elapsedMs])),
+      // Preserve clock/process context so pre-entry delays can be investigated
+      // without relabeling a later warmed process as the first cold launch.
+      lifecycleMarks: marks,
+      ...(startupDiagnostic ? { startupDiagnostic } : {}),
+
       firstUsableMs: Math.max(
         ...marks
           .filter(({ phase }) => phase === "first-frame" || phase === "first-terminal-frame")
@@ -360,8 +419,11 @@ async function measureStartup() {
   };
 }
 
-async function collectInputTrace() {
-  const tracePath = resolve(root, "artifacts/performance-reference-trace.jsonl");
+async function collectInputTrace(sampleCount = options.inputSamples) {
+  const tracePath = join(
+    reference.runtimeDir,
+    options.preflightOnly ? "diagnostic-input-trace.jsonl" : "input-trace.jsonl",
+  );
   rmSync(tracePath, { force: true });
   const traceEnvironment = {
     ...process.env,
@@ -391,23 +453,27 @@ async function collectInputTrace() {
     // terminal-focus command; a pointer coordinate would couple this gate to
     // adaptive sidebar, dock, and one-pane geometry.
     const canvasFrame = await waitForCapturedFrame(
-      (frame) =>
-        frame.includes(target) && frame.includes("TERMINAL INPUT") && frame.includes("Echo"),
+      (frame) => frame.includes(target) && frameShowsTerminalFocus(frame) && frame.includes("Echo"),
       10_000,
     );
-    tmux(["send-keys", "-t", "=_tmux-ide-testdrive:0.0", "F2"]);
+    tmux(["send-keys", "-t", `=${reference.hostSession}:0.0`, "F2"]);
     await waitForCapturedFrame(
-      (frame) =>
-        frame.includes(target) && frame.includes("TERMINAL INPUT") && frame.includes("Echo"),
+      (frame) => frame.includes(target) && frameShowsTerminalFocus(frame) && frame.includes("Echo"),
       2_000,
     );
     await delay(50);
-    for (let ordinal = 0; ordinal < options.inputSamples; ordinal += 1) {
+    for (let ordinal = 0; ordinal < sampleCount; ordinal += 1) {
       const prior = countCompletedLocalTraces(tracePath);
       // Keep the measured host free of a second Node startup/teardown per
       // keystroke. The trace clock begins inside OpenTUI, but that short-lived
       // wrapper still competes with the render process after injecting input.
-      tmux(["send-keys", "-t", "=_tmux-ide-testdrive:0.0", "-l", ordinal % 2 === 0 ? "x" : "y"]);
+      tmux([
+        "send-keys",
+        "-t",
+        `=${reference.hostSession}:0.0`,
+        "-l",
+        ordinal % 2 === 0 ? "x" : "y",
+      ]);
       const deadline = Date.now() + 2_000;
       while (Date.now() < deadline && countCompletedLocalTraces(tracePath) <= prior) await delay(5);
       if (countCompletedLocalTraces(tracePath) <= prior)
@@ -415,7 +481,7 @@ async function collectInputTrace() {
           `Timed out waiting for input-to-paint sample ${ordinal + 1}\n\n` +
             `--- initial canvas ---\n${canvasFrame}\n\n` +
             `--- current frame ---\n${captureTestdrive()}\n\n` +
-            `--- stderr ---\n${readFileSync(resolve(root, ".tasks/tui-testdrive/stderr.log"), "utf8")}`,
+            `--- stderr ---\n${readFileSync(join(reference.runtimeDir, "stderr.log"), "utf8")}`,
         );
     }
   } finally {
@@ -467,7 +533,7 @@ function measureInputToPaint(inputPath) {
   const groups = new Map();
   for (const event of events) {
     if (event.type !== "performance.stage") continue;
-    validateStageEvent(event);
+    if (!validateReferenceStageEvent(event)) continue;
     const group = groups.get(event.traceId) ?? [];
     group.push(event);
     groups.set(event.traceId, group);
@@ -610,20 +676,6 @@ function readJsonLines(path) {
     });
 }
 
-function validateStageEvent(event) {
-  for (const field of ["traceId", "stage", "processId", "clockId", "clockKind"])
-    if (typeof event[field] !== "string" || event[field].length === 0)
-      throw new TypeError(`Trace event ${field} must be a non-empty string`);
-  if (!PERFORMANCE_STAGES.includes(event.stage)) throw new TypeError("Unknown trace stage");
-  if (
-    !Number.isSafeInteger(event.startedAtMicros) ||
-    !Number.isSafeInteger(event.endedAtMicros) ||
-    event.startedAtMicros < 0 ||
-    event.endedAtMicros < event.startedAtMicros
-  )
-    throw new TypeError("Trace event endpoints must be ordered safe monotonic microseconds");
-}
-
 function parseOptions(args) {
   const parsed = {
     report: "artifacts/performance-reference.json",
@@ -633,7 +685,9 @@ function parseOptions(args) {
     inputTrace: null,
     build: true,
     requireComplete: false,
+    preflightOnly: false,
     keepOnFailure: false,
+    startupDiagnosticRoot: null,
   };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -642,11 +696,16 @@ function parseOptions(args) {
     else if (arg === "--memory-samples") parsed.memorySamples = Number(args[++index]);
     else if (arg === "--input-samples") parsed.inputSamples = Number(args[++index]);
     else if (arg === "--input-trace") parsed.inputTrace = args[++index];
+    else if (arg === "--preflight-only") parsed.preflightOnly = true;
     else if (arg === "--no-build") parsed.build = false;
     else if (arg === "--require-complete") parsed.requireComplete = true;
     else if (arg === "--keep-on-failure") parsed.keepOnFailure = true;
+    else if (arg === "--startup-diagnostic-root")
+      parsed.startupDiagnosticRoot = resolve(args[++index]);
     else throw new Error(`Unknown option ${arg}`);
   }
+  if (parsed.startupDiagnosticRoot && (parsed.startupSamples !== 6 || parsed.preflightOnly))
+    throw new Error("Startup diagnostics require exactly one cold and five warm samples");
   for (const field of ["startupSamples", "memorySamples", "inputSamples"])
     if (
       !Number.isSafeInteger(parsed[field]) ||
@@ -661,7 +720,7 @@ function run(command, args, env = process.env) {
 }
 
 function tmux(args) {
-  execFileSync("tmux", args, {
+  execFileSync("tmux", [...reference.socketArgs, ...args], {
     cwd: root,
     env: { ...process.env, TMUX: "", TMUX_TMPDIR: "" },
     stdio: "pipe",

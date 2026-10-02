@@ -1,3 +1,4 @@
+import { WorkspaceCatalogLiveSessionIdSchemaZ } from "./workspace-catalog-resource.ts";
 import { z } from "zod";
 import {
   FleetAgentIdSchemaZ,
@@ -29,6 +30,8 @@ const OwnerPathSchemaZ = z
 export const WorkspaceSessionCreateArgumentsSchemaZ = z
   .object({
     displayName: SafeDisplayNameSchemaZ,
+    /** Opt in to an incarnation-bearing receipt; legacy clients keep their strict result shape. */
+    includeLiveSessionId: z.boolean().optional(),
     cwd: OwnerPathSchemaZ.optional(),
     expectedDaemonInstanceId: z.uuid().optional(),
   })
@@ -42,6 +45,8 @@ export const WorkspaceSessionCreateResultSchemaZ = z
     operationId: z.uuid(),
     daemonInstanceId: z.uuid(),
     outcome: z.enum(["created", "adopted", "replayed"]),
+    /** Captured atomically by new-session; absent from older daemons and adopted routes. */
+    liveSessionId: WorkspaceCatalogLiveSessionIdSchemaZ.optional(),
     fleetSessionId: FleetSessionIdSchemaZ,
     /** Canonical registered route; displayName is presentation only. */
     workspaceName: DesktopWorkspaceNameSchemaZ,

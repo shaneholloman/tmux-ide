@@ -1,3 +1,5 @@
+import { mountAutomationRoutes } from "./automation.ts";
+import { mountTmuxServerRoutes } from "./tmux-servers.ts";
 import { streamBoundedLogs } from "./log-stream.ts";
 import { mountWorkspaceAdmissionRoute } from "./resources/workspace-admission-route.ts";
 import { mountFleetPreviewRoute } from "./resources/fleet-preview-route.ts";
@@ -162,6 +164,11 @@ import {
 } from "./resources/startup-readiness-route.ts";
 import { readWidgetAsset } from "../lib/widget-asset-store.ts";
 export interface CreateAppOptions {
+  tmuxServerOwners?: import("../lib/tmux-server-owners.ts").TmuxServerOwners<
+    import("../lib/tmux-server-owner.ts").NativeTmuxServerOwner
+  >;
+  /** Fresh, credential-free proof of this owner's pinned tmux server. */
+  tmuxServerProof?: () => Promise<import("../lib/tmux-server-proof.ts").TmuxServerProof | null>;
   authService?: AuthService;
   authConfig?: AuthConfig;
   remoteAccess?: {
@@ -212,7 +219,7 @@ export interface CreateAppOptions {
     readonly paneCount: number;
   }[];
   /** Injectable daemon-generation-pinned adopted fleet projection. */
-  catalogFleet?: () => FleetSessionFacts[] | null;
+  catalogFleet?: () => FleetSessionFacts[] | null | Promise<FleetSessionFacts[] | null>;
   fleetPreviewCapture?: (
     liveSessionId: string,
     signal?: AbortSignal,
@@ -533,6 +540,17 @@ export function createApp(options: CreateAppOptions = {}): Hono {
   // Allow cross-origin (Next.js dashboard, Tailscale, etc.)
   app.use("/*", cors());
 
+  if (options.tmuxServerOwners) {
+    mountAutomationRoutes(app, {
+      ownerToken: options.remoteAccess?.ownerToken ?? null,
+      owners: options.tmuxServerOwners,
+    });
+    mountTmuxServerRoutes(app, {
+      ownerToken: options.remoteAccess?.ownerToken ?? null,
+      owners: options.tmuxServerOwners,
+    });
+  }
+
   // Owner-only reads use the same early routing boundary as issuance below:
   // remote/project credentials neither authorize nor block the owner bearer.
   mountDiagnosticsRoute(app, {
@@ -743,10 +761,26 @@ export function createApp(options: CreateAppOptions = {}): Hono {
   // Credential-free endpoint binding. A desktop host reads the nonce from the
   // owner-only canonical record, probes this endpoint, and compares before it
   // sends any remote-access or local-bypass credential.
-  app.get("/identity", (c) => {
+  // Coalesce concurrent probes, but never reuse a completed server proof.
+  let pendingTmuxProof: Promise<
+    import("../lib/tmux-server-proof.ts").TmuxServerProof | null
+  > | null = null;
+  app.get("/identity", async (c) => {
+    const wantsTmuxProof = c.req.query("tmuxServerProof") === "1";
+    let tmuxServerProof = null;
+    if (wantsTmuxProof && options.tmuxServerProof) {
+      pendingTmuxProof ??= Promise.resolve()
+        .then(options.tmuxServerProof)
+        .catch(() => null)
+        .finally(() => {
+          pendingTmuxProof = null;
+        });
+      tmuxServerProof = await pendingTmuxProof;
+    }
     return c.json({
       ok: true,
       pid: process.pid,
+      ...(wantsTmuxProof && options.tmuxServerProof ? { tmuxServerProof } : {}),
       protocolVersion: DAEMON_WIRE_PROTOCOL_VERSION,
       productVersion: daemonIdentity.productVersion,
       instanceId: daemonIdentity.instanceId,
@@ -1779,7 +1813,6 @@ export function createApp(options: CreateAppOptions = {}): Hono {
   });
 
   // -------------------------------------------------------------------------
-  // POST /api/filesystem/inspect — registry-agnostic directory inspection.
   // POST /api/projects/onboard   — generate workspace.yml + register the project.
   // -------------------------------------------------------------------------
 

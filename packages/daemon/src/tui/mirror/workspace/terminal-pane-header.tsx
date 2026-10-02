@@ -1,12 +1,19 @@
+import type { PaneInteractionEndpoint } from "../ui/pane-interaction-presentation.ts";
+import { PaneModeControl } from "../ui/pane-mode-control.tsx";
 /* @jsxImportSource @opentui/solid */
 import { paneInteractionPresence, type PaneInteractionProjection } from "@tmux-ide/core";
-import { Badge } from "../ui/badge.tsx";
+import { statusPresentation } from "../ui/status-presentation.ts";
+import { PaneInteraction } from "../ui/pane-interaction.tsx";
+import {
+  paneInteractionPresentation,
+  paneInteractionIsHeaderWorthy,
+} from "../ui/pane-interaction-presentation.ts";
 import type { AgentActivity } from "@tmux-ide/contracts";
 import { createMemo, createSignal, Show } from "solid-js";
 
 import type { SemanticThemeSnapshot } from "../theme.ts";
 import { clipTerminal, terminalDisplayWidth } from "../terminal-text.ts";
-import { AgentBadge, IconButton, componentPalette, type AgentBadgeStatus } from "../ui/index.ts";
+import { AgentBadge, IconButton, componentPalette } from "../ui/index.ts";
 
 type PaneHeaderPointerEvent = {
   readonly button?: number;
@@ -26,9 +33,15 @@ export interface PaneTitleBarProps {
   readonly keyboardFocused: boolean;
   readonly hovered?: boolean;
   readonly zoomed?: boolean;
+  readonly scrollback?: boolean;
+  readonly linesAboveLive?: number;
+  readonly connectionStatus?: string;
+  readonly onBackToLiveIntent?: () => void;
   readonly onRestoreIntent?: () => void;
   readonly activity?: AgentActivity;
   readonly interaction?: PaneInteractionProjection;
+  readonly paneName?: (endpoint: PaneInteractionEndpoint) => string | undefined;
+  readonly onInteractionDetails?: () => void;
   readonly attention?: boolean;
   /** Renderer-global anchor used by the keyboard-operable overflow control. */
   readonly menuAnchor: Readonly<{ x: number; y: number }>;
@@ -55,25 +68,6 @@ export interface TerminalPaneHeaderProps {
   onOpenMenu: (event: PaneHeaderPointerEvent) => void;
 }
 
-function agentStatus(activity: AgentActivity | undefined): AgentBadgeStatus | undefined {
-  switch (activity) {
-    case "running":
-      return "working";
-    case "waiting":
-      return "blocked";
-    case "complete":
-      return "done";
-    case "idle":
-      return "idle";
-    case "failed":
-      return "blocked";
-    case "disconnected":
-      return "unknown";
-    default:
-      return undefined;
-  }
-}
-
 function badgeWidth(status: string | undefined): number {
   return status ? terminalDisplayWidth(status) + 4 : 0;
 }
@@ -84,25 +78,41 @@ function badgeWidth(status: string | undefined): number {
  */
 export function PaneTitleBar(props: PaneTitleBarProps) {
   const [pointerInside, setPointerInside] = createSignal(false);
+  const [menuHovered, setMenuHovered] = createSignal(false);
   const hovered = () => props.hovered ?? pointerInside();
   const safeWidth = () => Math.max(1, Math.floor(props.width));
-  const status = () => agentStatus(props.activity);
-  const statusLabel = () =>
-    props.activity === "failed"
-      ? "failed"
-      : props.activity === "disconnected"
-        ? "disconnected"
-        : status();
-  const presence = () => (props.interaction ? paneInteractionPresence(props.interaction) : null);
+  const presentation = () =>
+    statusPresentation({
+      activity: props.activity,
+      attention: props.attention,
+      connection: props.connectionStatus,
+      scrollback: props.scrollback,
+      expanded: props.zoomed,
+    });
+  const viewMode = () =>
+    statusPresentation({ scrollback: props.scrollback, expanded: props.zoomed });
+  const status = () => presentation()?.tone;
+  const statusLabel = () => (presentation()?.action ? undefined : presentation()?.label);
+  const presence = () =>
+    props.interaction && paneInteractionIsHeaderWorthy(props.interaction)
+      ? paneInteractionPresence(props.interaction)
+      : null;
   const activityLabel = () =>
-    presence()
-      ? `${presence()!.badge}${props.interaction?.origin === "external" ? " · External tmux" : ""}`
-      : "";
+    props.interaction ? paneInteractionPresentation(props.interaction, props.paneName).label : "";
   const activityWidth = () => {
     const available =
-      safeWidth() - markerGutterWidth() - markerWidth() - actionWidth() - zoomWidth() - 4;
+      safeWidth() -
+      markerGutterWidth() -
+      markerWidth() -
+      actionWidth() -
+      zoomWidth() -
+      badgeWidth(statusLabel()) -
+      12;
     if (!presence() || available < presence()!.badge.length + 2) return 0;
-    return Math.min(available, terminalDisplayWidth(activityLabel()) + 2);
+    return Math.min(
+      available,
+      terminalDisplayWidth(activityLabel()) + 4 + (props.onInteractionDetails ? 9 : 0),
+    );
   };
   // Keep the state glyph out of the first two inline cells. OpenTUI can repaint
   // those cells from the clipped parent during nested workspace composition.
@@ -111,21 +121,16 @@ export function PaneTitleBar(props: PaneTitleBarProps) {
   // Reserve these cells even when the control is quiet or unavailable. Hover
   // and menu lifetime must never change title clipping or terminal geometry.
   const actionWidth = () => (safeWidth() >= 7 ? 3 : 0);
-  const actionsVisible = () =>
-    props.selected ||
-    props.keyboardFocused ||
-    props.terminalFocused ||
-    hovered() ||
-    props.menuFocused ||
-    props.menuOpen;
-  const zoomLabel = () =>
-    !props.zoomed
-      ? ""
-      : safeWidth() >= 32
-        ? " Zoomed · Restore "
-        : safeWidth() >= 16
-          ? " Zoomed "
-          : " Z ";
+  const zoomLabel = () => {
+    const value = viewMode();
+    if (!value?.action) return "";
+    const action = value.action === "restore" ? "Restore" : "Back to live";
+    if (value.action === "back-to-live" && props.linesAboveLive && safeWidth() >= 100)
+      return ` Scrollback · ${props.linesAboveLive} lines up  Back to live `;
+    return safeWidth() >= (value.action === "restore" ? 32 : 48)
+      ? ` ${value.label} · ${action} `
+      : ` ${value.label} `;
+  };
   const zoomWidth = () =>
     Math.min(
       terminalDisplayWidth(zoomLabel()),
@@ -133,7 +138,7 @@ export function PaneTitleBar(props: PaneTitleBarProps) {
     );
   const showBadge = () =>
     Boolean(
-      status() &&
+      statusLabel() &&
       safeWidth() >=
         markerGutterWidth() +
           markerWidth() +
@@ -159,7 +164,7 @@ export function PaneTitleBar(props: PaneTitleBarProps) {
       selected: props.selected,
       focused: props.keyboardFocused || props.terminalFocused,
       hovered: hovered(),
-      attention: props.attention,
+      attention: presentation()?.activity === "waiting",
       status: status(),
     });
   // Hierarchy belongs to the title, not the status badge: an inactive pane is
@@ -186,7 +191,9 @@ export function PaneTitleBar(props: PaneTitleBarProps) {
     () => {
       const current = presence();
       const width = activityWidth();
-      return current && width > 0 ? { presence: current, width, label: activityLabel() } : null;
+      return current && width > 0
+        ? { presence: current, width, label: activityLabel(), event: props.interaction! }
+        : null;
     },
     undefined,
     {
@@ -251,64 +258,64 @@ export function PaneTitleBar(props: PaneTitleBarProps) {
         </text>
       ) : null}
       {zoomWidth() > 0 ? (
-        <text
-          width={zoomWidth()}
-          height={1}
-          flexShrink={0}
-          fg={palette().accent}
-          bg={palette().background}
-          onMouseDown={(event: PaneHeaderPointerEvent) => {
-            if (event.button !== 0) return;
-            event.preventDefault?.();
-            event.stopPropagation?.();
-            props.onRestoreIntent?.();
-          }}
-        >
-          {clipTerminal(zoomLabel(), zoomWidth())}
-        </text>
-      ) : null}
-      <Show when={activityBadge()} keyed>
-        {(activity) => (
-          <Badge
-            theme={props.theme}
-            label={activity.label}
-            width={activity.width}
-            tone={
-              activity.presence.tone === "danger"
-                ? "destructive"
-                : activity.presence.tone === "info"
-                  ? "accent"
-                  : "done"
-            }
-            selected={props.selected}
-            focused={props.keyboardFocused || props.terminalFocused}
-          />
-        )}
-      </Show>
-      {showBadge() ? (
-        <AgentBadge
+        <PaneModeControl
           theme={props.theme}
-          label={statusLabel()!}
-          status={status()!}
-          width={badgeWidth(statusLabel())}
-          selected={props.selected}
-          focused={props.keyboardFocused || props.terminalFocused}
-          hovered={hovered()}
-          attention={props.attention}
+          width={zoomWidth()}
+          scrollback={viewMode()?.action === "back-to-live"}
+          linesAboveLive={props.linesAboveLive}
+          onBackToLive={props.onBackToLiveIntent}
+          onRestore={props.onRestoreIntent}
         />
       ) : null}
+      <box
+        id={`pane-header-status:${props.paneId}`}
+        width={activityWidth() + (showBadge() ? badgeWidth(statusLabel()) : 0)}
+        height={1}
+        flexShrink={0}
+        flexDirection="row"
+        backgroundColor={props.theme.roles.surfaces.panel}
+      >
+        <Show when={activityBadge()} keyed>
+          {(activity) => (
+            <PaneInteraction
+              theme={props.theme}
+              event={props.interaction ?? activity.event}
+              paneName={props.paneName}
+              width={activity.width}
+              onDetails={props.onInteractionDetails}
+            />
+          )}
+        </Show>
+        {showBadge() ? (
+          <AgentBadge
+            theme={props.theme}
+            label={statusLabel()!}
+            status={status()!}
+            activity={presentation()?.activity}
+            width={badgeWidth(statusLabel())}
+            attention={presentation()?.activity === "waiting"}
+          />
+        ) : null}
+      </box>
       {actionWidth() > 0 ? (
-        <box width={actionWidth()} height={1} flexShrink={0}>
+        <box
+          width={actionWidth()}
+          height={1}
+          flexShrink={0}
+          onMouseOver={() => setMenuHovered(true)}
+          onMouseOut={() => setMenuHovered(false)}
+        >
           <IconButton
             theme={props.theme}
-            icon={actionsVisible() ? "⋯" : " "}
+            icon="⋯"
             label="Pane actions"
-            variant="ghost"
+            variant="secondary"
             width={actionWidth()}
+            hovered={menuHovered()}
             focused={props.menuFocused}
             selected={props.menuOpen}
             disabled={props.menuDisabled}
-            background={palette().background}
+            background={props.theme.roles.surfaces.panelRaised}
             onPress={() => activateMenu()}
           />
         </box>

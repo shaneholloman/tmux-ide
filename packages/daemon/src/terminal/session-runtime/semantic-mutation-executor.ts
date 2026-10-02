@@ -1,12 +1,24 @@
+import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
+import {
+  isOwnedNativePlanCompletion,
+  type OwnedNativePlanCompletion,
+} from "../../lib/owned-native-interaction-bindings.ts";
 import {
   InteractionReceiptSchemaZ,
   SessionRuntimeSemanticIntentSchemaZ,
   type AuthoredInteractionOrigin,
   type InteractionReceipt,
+  type InteractionPaneEndpoint,
   type SessionRuntimeSemanticIntent,
+  type SessionRuntimePaneReadResult,
   type WorkspaceMultiplexerMutationResult,
 } from "@tmux-ide/contracts";
 import { z } from "zod";
+import {
+  authoredInteractionEvidence,
+  type CapturedInteractionContext,
+} from "./interaction-evidence-facts.ts";
 import {
   sessionRuntimeInteractionFacts,
   sessionRuntimeIntentNeedsTmuxObservation,
@@ -28,7 +40,10 @@ import {
   type SemanticMutationResourceChange,
 } from "./semantic-mutation-resource-changes.ts";
 
-export type SessionRuntimeIntentResult = WorkspaceMultiplexerMutationResult | void;
+export type SessionRuntimeIntentResult =
+  | WorkspaceMultiplexerMutationResult
+  | SessionRuntimePaneReadResult
+  | void;
 export type ExecutableSessionRuntimeIntent = SessionRuntimeSemanticIntent;
 
 export interface SessionRuntimeTmuxObservation {
@@ -38,7 +53,21 @@ export interface SessionRuntimeTmuxObservation {
   readonly operationKind: "workspace.pane.send" | "workspace.pane.read";
 }
 
+export interface SessionRuntimeInteractionContext {
+  readonly destination: Extract<InteractionPaneEndpoint, { kind: "pane" }>;
+  readonly source: {
+    readonly endpoint: Extract<InteractionPaneEndpoint, { kind: "pane" }>;
+    readonly bindingId: string;
+  } | null;
+}
+export interface SessionRuntimeAutomationAuthority extends SessionRuntimeInteractionContext {
+  readonly origin: "cli" | "sdk" | "mcp";
+  readonly authorizeBeforeEffect: () => void;
+}
+
 export interface SessionRuntimeSubmissionAuthority {
+  readonly interactionContext?: SessionRuntimeInteractionContext;
+  readonly authenticatedSourceBinding?: SessionRuntimeInteractionContext["source"];
   /** Trusted submitting surface, established outside caller-authored intent JSON. */
   readonly origin: AuthoredInteractionOrigin;
   readonly authenticatedSourceSemanticPaneId?: string | null;
@@ -47,7 +76,19 @@ export interface SessionRuntimeSubmissionAuthority {
 
 export type SessionRuntimeReceiptInput = Omit<InteractionReceipt, "type" | "sequence">;
 
+/** Internal execution authority; never accepted from intent JSON. */
+export interface AuthoredExecutionContext {
+  readonly executionId: string;
+  readonly authoredReceiptAdmissionSequence: number;
+  readonly interactionContext: CapturedInteractionContext;
+  readonly origin: AuthoredInteractionOrigin;
+}
+
 export interface SessionSemanticMutationExecutorOptions {
+  readonly captureInteractionContext?: (
+    intent: SessionRuntimeSemanticIntent,
+  ) => CapturedInteractionContext;
+  readonly validateInteractionContext?: (context: CapturedInteractionContext) => void;
   readonly resolveSession: (workspaceName: string) => string | null;
   readonly execute: (
     operationId: string,
@@ -56,7 +97,8 @@ export interface SessionSemanticMutationExecutorOptions {
       nowMicros(): number;
       record(operation: string, startedAtMicros: number, endedAtMicros: number): void;
     }>,
-  ) => SessionRuntimeIntentResult;
+    execution?: AuthoredExecutionContext,
+  ) => SessionRuntimeIntentResult | Promise<SessionRuntimeIntentResult>;
   /** Publishes through the daemon's existing replayable interaction journal. */
   readonly publishReceipt: (receipt: SessionRuntimeReceiptInput) => InteractionReceipt;
   /** Publishes the same replayable invalidation contract as HTTP semantic actions. */
@@ -90,7 +132,10 @@ export class SessionRuntimeIntentError extends Error {
 }
 
 interface PendingObservation {
+  readonly executionId: string;
   readonly expected: SessionRuntimeTmuxObservation;
+  readonly interactionContext: CapturedInteractionContext | null;
+  readonly nativeCommands: readonly string[];
   resolve(): void;
   reject(error: Error): void;
 }
@@ -109,7 +154,16 @@ const MISSING_SESSION_LEDGER = Symbol("missing-session-ledger");
 type SessionLedgerKey = string | typeof MISSING_SESSION_LEDGER;
 
 function replayedResult(result: SessionRuntimeIntentResult): SessionRuntimeIntentResult {
-  return result === undefined ? undefined : { ...result, outcome: "replayed" };
+  if (result === undefined) return undefined;
+  if (result.verb === "workspace.pane.read") return retainedResult(result);
+  return { ...result, outcome: "replayed" };
+}
+
+/** Terminal contents belong only to the first caller, never the operation ledger. */
+function retainedResult(result: SessionRuntimeIntentResult): SessionRuntimeIntentResult {
+  return result?.verb === "workspace.pane.read"
+    ? { ...result, availability: "replay-unavailable", text: null }
+    : result;
 }
 
 /**
@@ -181,7 +235,28 @@ export class SessionSemanticMutationExecutor {
     // retain an attacker-controlled workspace-name alias as a ledger key.
     const ledger = this.#ledger(session ?? MISSING_SESSION_LEDGER);
     const origin = authority.origin;
-    const fingerprint = JSON.stringify([intent, authenticatedSourceSemanticPaneId, origin]);
+    const paneInteraction =
+      intent.verb === "workspace.pane.send" || intent.verb === "workspace.pane.read";
+    let interactionContext = paneInteraction
+      ? structuredClone(
+          authority.interactionContext ?? this.#options.captureInteractionContext?.(intent) ?? null,
+        )
+      : null;
+    if (interactionContext && authority.authenticatedSourceBinding)
+      interactionContext = {
+        ...interactionContext,
+        source: structuredClone(authority.authenticatedSourceBinding),
+      };
+    if (paneInteraction && !interactionContext)
+      return Promise.reject(
+        new SessionRuntimeIntentError("rejected", "Scoped interaction evidence is unavailable"),
+      );
+    const fingerprint = JSON.stringify([
+      intent,
+      authenticatedSourceSemanticPaneId,
+      origin,
+      interactionContext,
+    ]);
     const existing = ledger.get(operationId);
     if (existing) {
       if (existing.fingerprint !== fingerprint) {
@@ -204,13 +279,21 @@ export class SessionSemanticMutationExecutor {
         ),
       );
     }
-    this.#publish(operationId, intent, "accepted", null, undefined, origin);
+    const accepted = this.#publish(
+      operationId,
+      intent,
+      "accepted",
+      null,
+      undefined,
+      origin,
+      interactionContext,
+    );
     if (session === null) {
       const error = new SessionRuntimeIntentError(
         "rejected",
         `Workspace ${intent.workspaceName} has no live tmux session`,
       );
-      this.#publish(operationId, intent, "rejected", null, undefined, origin);
+      this.#publish(operationId, intent, "rejected", null, undefined, origin, interactionContext);
       const rejected = Promise.reject<SessionRuntimeIntentResult>(error);
       this.#remember(ledger, operationId, fingerprint, rejected);
       return rejected;
@@ -224,8 +307,10 @@ export class SessionSemanticMutationExecutor {
           operationId,
           intent,
           authenticatedSourceSemanticPaneId,
+          accepted.sequence,
           authority.authorizeBeforeEffect,
           origin,
+          interactionContext,
         ),
       () =>
         this.#run(
@@ -233,8 +318,10 @@ export class SessionSemanticMutationExecutor {
           operationId,
           intent,
           authenticatedSourceSemanticPaneId,
+          accepted.sequence,
           authority.authorizeBeforeEffect,
           origin,
+          interactionContext,
         ),
     );
     const tail = result.then(
@@ -242,7 +329,7 @@ export class SessionSemanticMutationExecutor {
       () => undefined,
     );
     this.#tails.set(session, tail);
-    this.#remember(ledger, operationId, fingerprint, result);
+    this.#remember(ledger, operationId, fingerprint, result, intent.verb === "workspace.pane.read");
     void tail.finally(() => {
       if (this.#tails.get(session) === tail) this.#tails.delete(session);
     });
@@ -262,6 +349,37 @@ export class SessionSemanticMutationExecutor {
     ) {
       return false;
     }
+    pending.resolve();
+    return true;
+  }
+
+  /** Only the same owner's proof authority can release the existing observation barrier. */
+  observeOwnedNativePlan(proof: OwnedNativePlanCompletion): boolean {
+    if (this.#disposed || !isOwnedNativePlanCompletion(proof)) return false;
+    const destination = proof.authoredDestination;
+    const session = this.#options.resolveSession(destination.workspaceName);
+    if (session === null) return false;
+    const pending = this.#pending.get(session)?.get(proof.acknowledgement.operationId);
+    const context = pending?.interactionContext;
+    if (
+      !pending ||
+      !context ||
+      pending.executionId !== proof.executionId ||
+      !isDeepStrictEqual(context.destination, destination)
+    )
+      return false;
+    const source = proof.source
+      ? { endpoint: proof.source.endpoint, bindingId: proof.source.bindingId }
+      : null;
+    if (
+      !isDeepStrictEqual(context.source, source) ||
+      !isDeepStrictEqual(
+        pending.nativeCommands,
+        proof.commands.map((command) => command.kind),
+      )
+    )
+      return false;
+    // Completion still requires the primitive result and semantic readback in #run.
     pending.resolve();
     return true;
   }
@@ -301,10 +419,12 @@ export class SessionSemanticMutationExecutor {
     operationId: string,
     fingerprint: string,
     promise: Promise<SessionRuntimeIntentResult>,
+    containsSnapshot = false,
   ) {
-    const record: OperationRecord = { fingerprint, promise, status: "active" };
+    const retainedPromise = containsSnapshot ? promise.then(retainedResult) : promise;
+    const record: OperationRecord = { fingerprint, promise: retainedPromise, status: "active" };
     ledger.set(operationId, record);
-    void promise.then(
+    void retainedPromise.then(
       () => {
         record.status = "settled";
       },
@@ -335,18 +455,21 @@ export class SessionSemanticMutationExecutor {
     operationId: string,
     intent: ExecutableSessionRuntimeIntent,
     authenticatedSourceSemanticPaneId: string | null,
+    authoredReceiptAdmissionSequence: number,
     authorizeBeforeEffect?: () => void,
     origin: AuthoredInteractionOrigin = "sdk",
+    interactionContext: CapturedInteractionContext | null = null,
   ): Promise<SessionRuntimeIntentResult> {
     if (this.#disposed) {
       const error = new SessionRuntimeIntentError(
         "rejected",
         "Session semantic mutation executor shut down before execution",
       );
-      this.#publish(operationId, intent, "rejected", null, undefined, origin);
+      this.#publish(operationId, intent, "rejected", null, undefined, origin, interactionContext);
       throw error;
     }
 
+    const executionId = randomUUID();
     const needsTmuxObservation = sessionRuntimeIntentNeedsTmuxObservation(intent);
     let observed: Promise<void> | null = null;
     if (needsTmuxObservation) {
@@ -362,6 +485,14 @@ export class SessionSemanticMutationExecutor {
         this.#pending.set(session, sessionPending);
       }
       sessionPending.set(operationId, {
+        executionId,
+        interactionContext: interactionContext ? structuredClone(interactionContext) : null,
+        nativeCommands:
+          intent.verb === "workspace.pane.read"
+            ? ["capture-pane"]
+            : intent.verb === "workspace.pane.send" && intent.submit
+              ? ["paste-buffer", "send-keys"]
+              : ["send-keys"],
         expected: {
           operationId,
           workspaceName: intent.workspaceName,
@@ -415,8 +546,16 @@ export class SessionSemanticMutationExecutor {
     try {
       // Admission can wait behind prior work. Revalidate the opaque principal
       // at the last synchronous boundary before tmux receives any effect.
+      if (interactionContext) this.#options.validateInteractionContext?.(interactionContext);
       authorizeBeforeEffect?.();
-      result = this.#options.execute(operationId, intent, timing);
+      result = await this.#options.execute(
+        operationId,
+        intent,
+        timing,
+        interactionContext
+          ? { interactionContext, origin, executionId, authoredReceiptAdmissionSequence }
+          : undefined,
+      );
     } catch (cause) {
       if (needsTmuxObservation) this.#deletePending(session, operationId);
       const error = new SessionRuntimeIntentError(
@@ -424,7 +563,7 @@ export class SessionSemanticMutationExecutor {
         "tmux rejected the semantic interaction",
         { cause },
       );
-      this.#publish(operationId, intent, "rejected", null, undefined, origin);
+      this.#publish(operationId, intent, "rejected", null, undefined, origin, interactionContext);
       throw error;
     } finally {
       if (tmuxStarted !== null)
@@ -453,7 +592,7 @@ export class SessionSemanticMutationExecutor {
         "tmux returned invalid semantic mutation proof",
         { cause },
       );
-      this.#publish(operationId, intent, "rejected", null, undefined, origin);
+      this.#publish(operationId, intent, "rejected", null, undefined, origin, interactionContext);
       throw error;
     }
 
@@ -484,7 +623,15 @@ export class SessionSemanticMutationExecutor {
             : new SessionRuntimeIntentError("rejected", "Interaction observation was cancelled", {
                 cause,
               });
-        this.#publish(operationId, intent, error.outcome, null, undefined, origin);
+        this.#publish(
+          operationId,
+          intent,
+          error.outcome,
+          null,
+          undefined,
+          origin,
+          interactionContext,
+        );
         throw error;
       } finally {
         timeout?.cancel();
@@ -499,6 +646,7 @@ export class SessionSemanticMutationExecutor {
       authenticatedSourceSemanticPaneId,
       result,
       origin,
+      interactionContext,
     );
     for (const change of semanticMutationResourceChanges(result)) {
       try {
@@ -520,24 +668,40 @@ export class SessionSemanticMutationExecutor {
     operationId: string,
     intent: ExecutableSessionRuntimeIntent,
     phase: "accepted" | "observed" | "rejected" | "timed-out",
-    authenticatedSourceSemanticPaneId: string | null = null,
+    _authenticatedSourceSemanticPaneId: string | null = null,
     result?: SessionRuntimeIntentResult,
     authenticatedOrigin?: AuthoredInteractionOrigin,
-  ): void {
+    interactionContext: CapturedInteractionContext | null = null,
+  ): InteractionReceipt {
     const facts = sessionRuntimeInteractionFacts(intent);
     const origin = authenticatedOrigin ?? ("origin" in intent ? intent.origin : "sdk");
+    const at = (this.#options.now ?? (() => new Date()))().toISOString();
     const receipt = InteractionReceiptSchemaZ.parse(
       this.#options.publishReceipt({
+        evidence: interactionContext
+          ? authoredInteractionEvidence(operationId, intent, phase, interactionContext, at, result)
+          : null,
         operationId,
         origin,
         workspaceName: intent.workspaceName,
-        sourceSemanticPaneId: phase === "observed" ? authenticatedSourceSemanticPaneId : null,
+        sourceSemanticPaneId:
+          phase === "observed" &&
+          intent.verb === "workspace.pane.send" &&
+          interactionContext?.source?.endpoint.workspaceName === intent.workspaceName &&
+          interactionContext.source.endpoint.serverScope.serverId ===
+            interactionContext.destination.serverScope.serverId &&
+          interactionContext.source.endpoint.serverScope.generation ===
+            interactionContext.destination.serverScope.generation &&
+          interactionContext.source.endpoint.environmentId ===
+            interactionContext.destination.environmentId
+            ? interactionContext.source.endpoint.semanticPaneId
+            : null,
         target: facts.target,
         operationKind: intent.verb,
         phase,
         summary: facts.summary,
         proof: phase === "observed" ? sessionRuntimeObservedProof(intent, result) : null,
-        at: (this.#options.now ?? (() => new Date()))().toISOString(),
+        at,
         resourceRevision: null,
       }),
     );
@@ -554,5 +718,6 @@ export class SessionSemanticMutationExecutor {
         }
       });
     }
+    return receipt;
   }
 }

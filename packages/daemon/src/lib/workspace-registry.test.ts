@@ -82,6 +82,39 @@ describe("WorkspaceRegistry — add/list/get/remove round-trip", () => {
     expect(fresh.has("benchmark")).toBe(false);
   });
 
+  it("persists explicit promotion of a volatile identity and preserves it on reload", async () => {
+    const reg = new WorkspaceRegistry({ dir, listSessions: () => ["alpha"] });
+    await reg.load();
+    const original = reg.add({
+      name: "alpha",
+      projectDir: "/tmp/alpha",
+      persistence: "volatile",
+      now,
+    });
+    expect(reg.persist("alpha")).toBe(original);
+    expect(reg.isVolatile("alpha")).toBe(false);
+    expect(reg.persist("alpha")).toBe(original);
+    const fresh = new WorkspaceRegistry({ dir, listSessions: () => ["alpha"] });
+    await fresh.load();
+    expect(fresh.get("alpha")).toEqual(original);
+  });
+
+  it("retains volatile state if promotion persistence fails", async () => {
+    const reg = new WorkspaceRegistry({ dir, listSessions: () => ["alpha"] });
+    await reg.load();
+    const original = reg.add({
+      name: "alpha",
+      projectDir: "/tmp/alpha",
+      persistence: "volatile",
+      now,
+    });
+    rmSync(dir, { recursive: true });
+    writeFileSync(dir, "blocks directory recreation");
+    expect(() => reg.persist("alpha")).toThrow();
+    expect(reg.isVolatile("alpha")).toBe(true);
+    expect(reg.get("alpha")).toBe(original);
+  });
+
   it("add() rejects duplicates", async () => {
     const reg = new WorkspaceRegistry({ dir, listSessions: () => ["alpha"] });
     await reg.load();

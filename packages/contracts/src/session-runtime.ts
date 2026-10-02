@@ -314,6 +314,53 @@ export const SessionRuntimePaneReadIntentSchemaZ = z
   .strict();
 export type SessionRuntimePaneReadIntent = z.infer<typeof SessionRuntimePaneReadIntentSchemaZ>;
 
+/** Private owner response only. Text must never enter receipt/resource journals. */
+export const SESSION_RUNTIME_PANE_READ_MAX_BYTES = 16 * 1024;
+export const SESSION_RUNTIME_PANE_CAPTURE_MAX_BYTES = 64 * 1024;
+const paneReadResultShape = {
+  verb: z.literal("workspace.pane.read"),
+  operationId: z.uuid(),
+  daemonInstanceId: z.uuid(),
+  workspaceName: WorkspaceIdSchemaZ,
+  semanticPaneId: TerminalAttachmentSemanticPaneIdSchemaZ,
+  format: z.literal("ansi"),
+  byteCount: z.number().int().min(0).max(SESSION_RUNTIME_PANE_READ_MAX_BYTES),
+  capturedByteCount: z.number().int().min(0).max(SESSION_RUNTIME_PANE_CAPTURE_MAX_BYTES),
+  truncated: z.boolean(),
+};
+export const SessionRuntimePaneReadResultSchemaZ = z
+  .discriminatedUnion("availability", [
+    z
+      .object({
+        ...paneReadResultShape,
+        availability: z.literal("available"),
+        text: z.string().max(SESSION_RUNTIME_PANE_READ_MAX_BYTES),
+      })
+      .strict(),
+    // The serialized executor retains metadata only. Retry never captures again.
+    z
+      .object({
+        ...paneReadResultShape,
+        availability: z.literal("replay-unavailable"),
+        text: z.null(),
+      })
+      .strict(),
+  ])
+  .superRefine((result, context) => {
+    const bytes =
+      result.availability === "available"
+        ? new TextEncoder().encode(result.text).byteLength
+        : result.byteCount;
+    if (
+      bytes !== result.byteCount ||
+      bytes > SESSION_RUNTIME_PANE_READ_MAX_BYTES ||
+      result.capturedByteCount < bytes ||
+      result.truncated !== result.capturedByteCount > bytes
+    )
+      context.addIssue({ code: "custom", message: "Invalid bounded pane snapshot metadata" });
+  });
+export type SessionRuntimePaneReadResult = z.infer<typeof SessionRuntimePaneReadResultSchemaZ>;
+
 /** The only intents a client may submit: semantic identity, never tmux addresses. */
 export const SessionRuntimeSemanticIntentSchemaZ = z.union([
   WorkspaceMultiplexerIntentSchemaZ,

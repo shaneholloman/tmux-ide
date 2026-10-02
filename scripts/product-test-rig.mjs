@@ -16977,6 +16977,7 @@ async function owner() {
           if (down.requestedAction !== "down")
             throw new Error("resize pointer-down delivery receipt was invalid");
           const samples = [];
+          let previousPanes = panes;
           let lastX = x;
           for (let ordinal = 0; ordinal < 30; ordinal += 1) {
             lastX = x + 1 + (ordinal % 2);
@@ -16997,30 +16998,52 @@ async function owner() {
             );
             if (delivery.requestedAction !== "drag")
               throw new Error("resize pointer-drag delivery receipt was invalid");
+            // The guide follows tmux's rendered border now. Qualify the full
+            // pointer -> receipt -> layout -> canonical frame boundary, rather
+            // than comparing a later capture with an earlier preview position.
             const settled = await waitForResizeLifecycleRecord(
               state,
               (record) =>
-                record?.phase === "resize-guide-settled" &&
+                record?.phase === "pane-resize-fence" &&
+                record.source === "pointer" &&
                 record.semanticPaneId === baseline.semanticPaneId,
               baselineCount,
               2_000,
             );
-            const record = settled.record;
-            const fences = settled.records
-              .slice(baselineCount)
-              .filter(
-                (candidate) =>
-                  candidate?.phase === "resize-guide-fence" && candidate.traceId === record.traceId,
-              );
+            const joined = exactResizeFence(
+              settled.records.slice(baselineCount),
+              settled.record.operationId,
+              baseline.semanticPaneId,
+            );
+            const frame = joined.settled;
+            const nativePanes = await readExactResizeTmuxPanes(state);
+            const nativePane = nativePanes.find(
+              ({ semanticPaneId }) => semanticPaneId === baseline.semanticPaneId,
+            );
             if (
-              fences.length !== 1 ||
-              record.identityExact !== true ||
-              record.presentationChanged !== true ||
-              !/^[0-9a-f]{64}$/u.test(record.presentationDigest ?? "")
+              !nativePane ||
+              nativePane.cols !== joined.receipt.receiptCells ||
+              nativePane.rows !== 40 ||
+              nativePane.top !== 1 ||
+              frame.axis !== "cols" ||
+              frame.pointerIngress?.action !== "drag"
             )
-              throw new Error("resize guide actual-frame evidence was not exact");
+              throw new Error("resize canonical frame did not match native geometry");
+            // This fixture has a 28-column sidebar and a 2-row header; the
+            // independently observed native content has one top border row.
+            const guide = { x: 28 + nativePane.left + nativePane.cols, y: 2, width: 1, height: 41 };
+            const guideDigest = createHash("sha256").update(JSON.stringify(guide)).digest("hex");
+            const record = {
+              ...frame,
+              traceId: frame.pointerIngress.traceId,
+              cells: frame.requestedCells,
+              identityExact: frame.identityLineageExact,
+              guide,
+              guideDigest,
+              durationMicros: frame.monotonicMicros - frame.pointerIngress.atMicros,
+            };
             if (!Number.isSafeInteger(record.durationMicros) || record.durationMicros < 0)
-              throw new Error("resize guide duration was unavailable");
+              throw new Error("resize canonical frame duration was unavailable");
             const captureEnvelope = JSON.parse(
               await tuiCommandAsync(state, ["capture", "--ansi", "--json"], {
                 timeout: 1_500,
@@ -17055,6 +17078,7 @@ async function owner() {
                 incarnation: record.incarnation,
                 axis: record.axis,
                 cells: record.cells,
+                measurement: "pointer-to-canonical-frame",
                 durationMs: record.durationMicros / 1_000,
                 guide: Object.freeze({
                   ...record.guide,
@@ -17074,11 +17098,21 @@ async function owner() {
                     marker: namespace.marker,
                   }),
                 }),
-                fence: Object.freeze({ writerHealth: fences[0].writerHealth }),
+                fence: Object.freeze({ writerHealth: joined.fence.writerHealth }),
                 delivery,
                 pointerIngress: record.pointerIngress,
+                dividerEvidence: Object.freeze({
+                  before: previousPanes,
+                  after: nativePanes,
+                  operationId: settled.record.operationId,
+                  records: settled.records
+                    .slice(baselineCount)
+                    .filter((entry) => entry.operationId === settled.record.operationId),
+                  host: captureEnvelope.hostIdentity,
+                }),
               }),
             );
+            previousPanes = nativePanes;
           }
           activeDrag = Object.freeze({
             x: lastX,
@@ -17087,6 +17121,7 @@ async function owner() {
             lifecycleBefore,
             watermark,
             finalSample: samples.at(-1),
+            downDelivery: down,
           });
           event("resize-pointer-preview-distribution", { samples: samples.length });
           return Object.freeze(samples);
@@ -17100,7 +17135,7 @@ async function owner() {
           keyboard,
         ) => {
           if (!activeDrag) throw new Error("resize pointer drag ownership was unavailable");
-          const { lifecycleBefore, watermark, finalSample } = activeDrag;
+          const { lifecycleBefore, watermark, finalSample, downDelivery } = activeDrag;
           const delivery = await driveExactHostedInput(
             state,
             {
@@ -17236,6 +17271,11 @@ async function owner() {
             pointerIngress: releaseRecord.pointerIngress,
             operationPointerIngress: joined.settled.pointerIngress,
             releaseProof: finalOperation.releaseProof,
+            dividerEvidence: Object.freeze({
+              downDelivery,
+              releaseRecord,
+              records: gestureRecords,
+            }),
           });
           event("resize-pointer-release-proved", { axis: "cols" });
           return evidence;
@@ -17372,7 +17412,7 @@ async function owner() {
           operation: "keyboard-pointer-resize-assessment",
           firstFailedPredicate: assessment.firstFailedPredicate,
           sampleCount: assessment.metrics.sampleCount,
-          previewP95Ms: assessment.metrics.previewP95Ms,
+          canonicalFrameP95Ms: assessment.metrics.canonicalFrameP95Ms,
         });
         throw error;
       }

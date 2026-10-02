@@ -60,6 +60,8 @@ const KNOWN_INVERSIONS: readonly string[] = [
   "terminal/attachments/agent-status-probe.ts -> tui/detect/manifest.ts",
   "terminal/attachments/agent-status-probe.ts -> tui/detect/process-tree.ts",
   "terminal/attachments/agent-status-probe.ts -> tui/detect/snapshot.ts",
+  // Beta.48 Claude naming uses the same legacy process-tree engine as status probing.
+  "terminal/attachments/claude-team-names.ts -> tui/detect/process-tree.ts",
   // Temporary test-only differential oracle; production imports remain adapter -> engine.
 ];
 

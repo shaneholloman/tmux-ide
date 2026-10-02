@@ -1,3 +1,10 @@
+import { dispatchOwnerAction } from "@tmux-ide/daemon-client/owner-action-client";
+export {
+  createAutomationClient as createTmuxIdeAutomationSdk,
+  AutomationInvocationError,
+  type AutomationClient as TmuxIdeAutomationSdk,
+  type AutomationClientOptions as TmuxIdeAutomationSdkOptions,
+} from "@tmux-ide/daemon-client/automation-client";
 import {
   DAEMON_RESOURCE_KINDS,
   DAEMON_RESOURCE_RESULT_SCHEMAS,
@@ -16,7 +23,6 @@ import {
   WorkspaceOpenCancelledHostResultSchemaZ,
   WorkspaceOpenDecisionArgumentsSchemaZ,
   WorkspacePaneSendArgumentsSchemaZ,
-  WorkspacePaneSendResultSchemaZ,
   createDaemonResourceMethods,
   type DaemonResourceKind,
   type DaemonResourceMethods,
@@ -97,56 +103,26 @@ function ownerOperationId(value?: string): string {
 /**
  * Build the explicit owner/automation SDK. Unlike renderer capability hosts,
  * this client may perform reviewed semantic mutations and therefore requires
- * the daemon's owner token. Retries retain one operation id so terminal input
- * can never be applied twice after a lost response.
+ * the daemon's owner token. Retries retain one operation id within the daemon's
+ * bounded replay horizon. A lost response is uncertain; callers must not create
+ * a fresh operation id to retry it or assume replay survives daemon restart.
  */
 export function createTmuxIdeOwnerSdk(options: TmuxIdeOwnerSdkOptions): TmuxIdeOwnerSdk {
-  const request = options.fetch ?? fetch;
-  const baseUrl = new URL(options.baseUrl);
-  const timeoutMs = options.timeoutMs ?? 2_000;
   return {
     async sendPane(intent, sendOptions = {}) {
-      const input = WorkspacePaneSendArgumentsSchemaZ.parse({ ...intent, origin: "sdk" });
       const operationId = ownerOperationId(sendOptions.operationId);
-      let lastError: unknown = null;
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
-        try {
-          const response = await request(new URL("api/v2/action/workspace.pane.send", baseUrl), {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${options.ownerToken}`,
-              "X-Tmux-Ide-Operation-Id": operationId,
-            },
-            body: JSON.stringify(input),
-            signal: controller.signal,
-          });
-          const body = (await response.json()) as unknown;
-          if (body && typeof body === "object" && "ok" in body) {
-            if (body.ok === true && "result" in body) {
-              return WorkspacePaneSendResultSchemaZ.parse(body.result);
-            }
-            if (body.ok === false && "error" in body) {
-              const error = body.error as { code?: unknown; message?: unknown };
-              throw new Error(
-                `${typeof error.code === "string" ? `${error.code}: ` : ""}${
-                  typeof error.message === "string" ? error.message : "Owner action failed"
-                }`,
-              );
-            }
-          }
-          lastError = new Error("Daemon returned an invalid owner action response");
-        } catch (error) {
-          lastError = error;
-        } finally {
-          clearTimeout(timer);
-        }
+      const result = await dispatchOwnerAction({
+        ...options,
+        name: "workspace.pane.send",
+        input: WorkspacePaneSendArgumentsSchemaZ.parse({ ...intent, origin: "sdk" }),
+        operationId,
+      });
+      if (result === null) {
+        throw new Error(
+          `Pane delivery ${operationId} was not confirmed; delivery was not repeated outside daemon authority`,
+        );
       }
-      throw lastError instanceof Error
-        ? lastError
-        : new Error(`Pane delivery ${operationId} was not confirmed`);
+      return result;
     },
   };
 }

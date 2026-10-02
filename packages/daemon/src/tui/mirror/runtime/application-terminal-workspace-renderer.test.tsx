@@ -1,4 +1,4 @@
-import type { PaneInteractionProjection } from "@tmux-ide/core";
+import { interactionPaneEndpointKey, type PaneInteractionProjection } from "@tmux-ide/core";
 /* @jsxImportSource @opentui/solid */
 import { describe, expect, it } from "bun:test";
 import { MouseButtons } from "@opentui/core/testing";
@@ -67,6 +67,85 @@ function adapter(
 }
 
 describe("ApplicationTerminalWorkspace", () => {
+  it("retains one framebuffer and subscription when selecting another link to the same backing", async () => {
+    registerPaneSurface();
+    const theme = createSemanticThemeSnapshot({ mode: "dark" });
+    const base = layout();
+    const links = ["a", "b"].map((letter, index) => ({
+      linkId: `window-link.${letter.repeat(32)}`,
+      semanticWindowId: "window.main",
+      displayIndex: index * 9,
+    }));
+    const topology = {
+      liveSessionId: `live-session.${"a".repeat(20)}`,
+      linkRevision: 1,
+      activeLinkId: links[0]!.linkId,
+      links,
+    };
+    const [snapshot, setSnapshot] = createSignal({ ...base, windowLinks: topology });
+    const blits: string[] = [];
+    let subscriptions = 0;
+    let unsubscriptions = 0;
+    const source = adapter({ "pane.a": "A", "pane.b": "B", "pane.c": "C" }, blits);
+    source.subscribePaneVersion = () => {
+      subscriptions++;
+      return () => {
+        unsubscriptions++;
+      };
+    };
+    const selected: unknown[] = [];
+    const unlinked: unknown[] = [];
+    let keyHandler: PaneMenuKeyHandler | null = null;
+    const setup = await renderForTest(
+      () => (
+        <ApplicationTerminalWorkspace
+          layout={snapshot}
+          adapter={source}
+          rendererEpoch={1}
+          width={50}
+          height={10}
+          focusedPane="pane.a"
+          theme={theme}
+          palette={createTerminalPaletteProjection(theme)}
+          onSelectPane={() => undefined}
+          onSelectWindowLink={(target) => selected.push(target)}
+          onUnlinkWindowLink={(target) => unlinked.push(target)}
+          onSelectionKeyOwner={(handler) => {
+            keyHandler = handler;
+          }}
+        />
+      ),
+      { width: 50, height: 12 },
+    );
+    await setup.renderOnce();
+    expect(subscriptions).toBe(3);
+    blits.length = 0;
+    setSnapshot({ ...base, windowLinks: { ...topology, activeLinkId: links[1]!.linkId } });
+    await setup.renderOnce();
+    expect(blits).toEqual([]);
+    expect(subscriptions).toBe(3);
+    expect(unsubscriptions).toBe(0);
+    expect(snapshot().windows).toHaveLength(1);
+    expect(setup.captureCharFrame()).toContain("main");
+    const secondTab = setup.renderer.root.findDescendantById(`window-tab:${links[1]!.linkId}`)!;
+    await setup.mockMouse.click(secondTab.x + 2, secondTab.y, MouseButtons.LEFT);
+    expect(selected).toEqual([
+      {
+        liveSessionId: topology.liveSessionId,
+        linkRevision: 1,
+        linkId: links[1]!.linkId,
+        expectedSemanticWindowId: "window.main",
+      },
+    ]);
+    // The trailing tab action opens a captured-link menu, never a backing kill.
+    await setup.mockMouse.click(secondTab.x + secondTab.width - 2, secondTab.y, MouseButtons.LEFT);
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).toContain("Unlink this tab");
+    keyHandler?.("u");
+    expect(unlinked).toEqual(selected);
+    setup.renderer.destroy();
+  });
+
   it("follows local focus in compact view and restores the tiled view when enlarged", async () => {
     registerPaneSurface();
     const theme = createSemanticThemeSnapshot({ mode: "dark" });
@@ -477,7 +556,8 @@ describe("ApplicationTerminalWorkspace", () => {
       ]),
     );
     await setup.renderOnce();
-    expect(setup.captureCharFrame()).toContain("READ");
+    // Narrow headers retain the pane name rather than squeezing in a receipt.
+    expect(setup.captureCharFrame()).toContain("Claude Code");
     expect(blits).toEqual([]);
     setPaneInteractions(new Map());
     setIndicators(new Map());
@@ -973,6 +1053,11 @@ describe("ApplicationTerminalWorkspace", () => {
       axis: "cols",
       cells: 12,
     });
+    // The pointer is ahead of tmux: highlight stays on the rendered pane edge.
+    const guide = setup.renderer.root.findDescendantById("terminal-resize-guide");
+    expect(guide).toBeDefined();
+    expect(setup.captureCharFrame().split("\n")[5]?.[10]).toBe("╎");
+    expect(setup.captureCharFrame().split("\n")[5]?.[12]).not.toBe("╎");
     const current = {
       ...layout().current!,
       panes: layout().current!.panes.map((pane, index) =>
@@ -981,9 +1066,20 @@ describe("ApplicationTerminalWorkspace", () => {
     };
     setObservedLayout({ current, windows: [current] });
     await setup.renderOnce();
+    expect(setup.renderer.root.findDescendantById("terminal-resize-guide")).toBe(guide);
+    expect(setup.captureCharFrame().split("\n")[5]?.[12]).toBe("╎");
+    expect(setup.captureCharFrame().split("\n")[5]?.[10]).not.toBe("╎");
+    // Reversing direction must not pull the highlight away from the pane either.
+    await setup.mockMouse.moveTo(8, 5);
+    await setup.renderOnce();
+    expect(previews.at(-1)).toMatchObject({ cells: 8 });
+    expect(setup.captureCharFrame().split("\n")[5]?.[12]).toBe("╎");
+    expect(setup.captureCharFrame().split("\n")[5]?.[8]).not.toBe("╎");
+    expect(setup.renderer.root.findDescendantById("terminal-resize-guide")).toBe(guide);
     await setup.mockMouse.release(10, 5, MouseButtons.LEFT);
     await setup.renderOnce();
     expect(submissions).toHaveLength(1);
+    expect(setup.captureCharFrame()).not.toContain("╎");
     expect(submissions[0]).toMatchObject({
       semanticPaneId: "pane.a",
       axis: "cols",
@@ -992,6 +1088,45 @@ describe("ApplicationTerminalWorkspace", () => {
     await setup.mockMouse.release(10, 5, MouseButtons.LEFT);
     expect(submissions).toHaveLength(1);
     setup.renderer.destroy();
+  });
+
+  it("paints one continuous horizontal resize guide and clears it on release", async () => {
+    registerPaneSurface();
+    const theme = createSemanticThemeSnapshot({ mode: "light" });
+    const current = {
+      ...layout().current!,
+      panes: [
+        { pane: "pane.a", left: 0, top: 0, width: 30, height: 4, active: true },
+        { pane: "pane.b", left: 0, top: 5, width: 30, height: 4, active: false },
+      ],
+    };
+    const setup = await renderForTest(
+      () => (
+        <ApplicationTerminalWorkspace
+          layout={() => ({ current, windows: [current] })}
+          adapter={adapter({ "pane.a": "A", "pane.b": "B" }, [])}
+          rendererEpoch={1}
+          width={30}
+          height={10}
+          focusedPane="pane.a"
+          theme={theme}
+          palette={createTerminalPaletteProjection(theme)}
+          onSelectPane={() => undefined}
+        />
+      ),
+      { width: 30, height: 12 },
+    );
+    try {
+      await setup.renderOnce();
+      await setup.mockMouse.pressDown(0, 7, MouseButtons.LEFT);
+      await setup.renderOnce();
+      expect(setup.captureCharFrame().split("\n")[7]).toBe("╌".repeat(30));
+      await setup.mockMouse.release(0, 7, MouseButtons.LEFT);
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).not.toContain("╌");
+    } finally {
+      setup.renderer.destroy();
+    }
   });
 
   it.each(["emacs", "vi"] as const)("supports local keyboard copy in %s mode", async (mode) => {
@@ -1630,6 +1765,7 @@ it("keeps history local through app-mode changes and fences automatic wheel deli
   const connection = {};
   const client = {};
   let staleRuntime = false;
+  const historyStates: boolean[] = [];
   const events: Readonly<Record<string, unknown>>[] = [];
   const inputs: Array<{ paneId: string; data: string }> = [];
   const selected: string[] = [];
@@ -1639,6 +1775,7 @@ it("keeps history local through app-mode changes and fences automatic wheel deli
   const setup = await renderForTest(
     () => (
       <ApplicationTerminalWorkspace
+        onScrollbackChange={(active) => historyStates.push(active)}
         layout={layout}
         adapter={live}
         rendererEpoch={1}
@@ -1671,8 +1808,11 @@ it("keeps history local through app-mode changes and fences automatic wheel deli
   );
   try {
     await setup.renderOnce();
+    expect(historyStates.at(-1)).toBe(false);
     // A shell gesture starts in host history, then the app enables mouse mode.
     await setup.mockMouse.scroll(2, 3, "up");
+    await setup.renderOnce();
+    expect(historyStates.at(-1)).toBe(true);
     expect(events.at(-1)).toMatchObject({ route: "local-history", offsetAfter: 5 });
     replica = {
       ...replica,
@@ -1807,6 +1947,19 @@ it("routes raw mouse multi-click, wheel-drag, edge scrolling and Ctrl-link activ
     expect(copied.at(-1)).toBe("hello world https://a.test");
     await setup.mockMouse.click(16, 4, MouseButtons.LEFT, { modifiers: { ctrl: true } });
     expect(opened).toEqual(["https://a.test/"]);
+    await setup.mockMouse.pressDown(16, 4, MouseButtons.LEFT, { modifiers: { shift: true } });
+    expect(opened).toHaveLength(1);
+    await setup.mockMouse.release(16, 4, MouseButtons.LEFT, { modifiers: { shift: true } });
+    expect(opened).toHaveLength(2);
+    await setup.mockMouse.release(16, 4, MouseButtons.LEFT, { modifiers: { shift: true } });
+    expect(opened).toHaveLength(2);
+    await setup.mockMouse.pressDown(16, 4, MouseButtons.LEFT, { modifiers: { shift: true } });
+    await setup.mockMouse.moveTo(23, 4);
+    await setup.mockMouse.release(23, 4, MouseButtons.LEFT, { modifiers: { shift: true } });
+    expect(opened).toHaveLength(2);
+    expect(copied.at(-1)).toBe("s://a.te");
+    opened.pop(); // Keep the existing compatibility-route assertions below.
+
     // Exercise the workspace fallback hit surface through real OpenTUI dispatch.
     // Pane surfaces normally cover it; lifting its hit layer deterministically
     // covers the same routing when the compositor selects the background.
@@ -2113,3 +2266,87 @@ it.each([12, 30])(
     }
   },
 );
+
+const endpoint = (semanticPaneId: string) => ({
+  kind: "pane" as const,
+  environmentId: "00000000-0000-4000-8000-000000000001",
+  serverScope: {
+    serverId: `tmux-server.${"a".repeat(32)}`,
+    generation: "00000000-0000-4000-8000-000000000001",
+  },
+  workspaceName: "research",
+  paneLifetimeId: "00000000-0000-4000-8000-000000000002",
+  semanticPaneId,
+});
+
+it("interaction details own terminal keys and retire with the renderer generation", async () => {
+  registerPaneSurface();
+  const theme = createSemanticThemeSnapshot({ mode: "dark" });
+  const [epoch, setEpoch] = createSignal(1);
+  let keyOwner: PaneMenuKeyHandler | null = null;
+  let owns: (() => boolean) | undefined;
+  const liveAdapter = adapter({ "pane.a": "A" }, []);
+  const current = {
+    ...layout().current!,
+    cols: 80,
+    rows: 20,
+    panes: [{ pane: "pane.a", left: 0, top: 0, width: 80, height: 20, active: true }],
+  };
+  const event: PaneInteractionProjection = {
+    paneId: "pane.a",
+    endpoint: endpoint("pane.a"),
+    sourceEndpoint: endpoint("pane.reader"),
+    destinationEndpoint: endpoint("pane.a"),
+    effect: { kind: "input-enqueued" },
+    operationKey: "input",
+    operationId: "input",
+    operationKind: "workspace.pane.send",
+    phase: "observed",
+    origin: "external",
+    direction: "incoming",
+    sourcePaneId: "pane.reader",
+    destinationPaneId: "pane.a",
+    at: new Date().toISOString(),
+    sequence: 1,
+    label: "input observed",
+  };
+  const setup = await renderForTest(
+    () => (
+      <ApplicationTerminalWorkspace
+        layout={() => ({ current, windows: [current] })}
+        adapter={liveAdapter}
+        rendererEpoch={epoch()}
+        width={80}
+        height={22}
+        focusedPane="pane.a"
+        theme={theme}
+        palette={createTerminalPaletteProjection(theme)}
+        interactionPaneName={(source) =>
+          source.semanticPaneId === "pane.reader" ? "Codex" : undefined
+        }
+        interactionEndpoints={() => new Map([["pane.a", endpoint("pane.a")]])}
+        paneInteractions={() => new Map([[interactionPaneEndpointKey(endpoint("pane.a")), event]])}
+        onSelectPane={() => {}}
+        onSelectionKeyOwner={(handler, owner) => {
+          keyOwner = handler;
+          owns = owner;
+        }}
+      />
+    ),
+    { width: 80, height: 24 },
+  );
+  await setup.renderOnce();
+  expect(setup.captureCharFrame()).toContain("Input from Codex");
+  const rows = setup.captureCharFrame().split("\n");
+  const y = rows.findIndex((line) => line.includes("Details"));
+  expect(y).toBeGreaterThanOrEqual(0);
+  await setup.mockMouse.click(rows[y]!.indexOf("Details"), y, MouseButtons.LEFT);
+  await setup.renderOnce();
+  expect(setup.captureCharFrame()).toContain("Input delivered");
+  expect(owns?.()).toBe(true);
+  expect((keyOwner as PaneMenuKeyHandler | null)?.("x")).toBe(true);
+  setEpoch(2);
+  await setup.renderOnce();
+  expect(setup.captureCharFrame()).not.toContain("Input delivered");
+  expect(owns?.()).toBe(false);
+});

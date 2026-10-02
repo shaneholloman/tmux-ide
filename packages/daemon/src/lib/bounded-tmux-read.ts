@@ -1,3 +1,4 @@
+import { withBundledTmuxResources } from "./bundled-tmux.ts";
 import { execFile } from "node:child_process";
 /** Read-only child ownership: TERM at deadline/abort, KILL after grace; settle after close. */
 export function boundedTmuxRead(
@@ -20,7 +21,7 @@ export function boundedTmuxRead(
       [...args],
       {
         encoding: "utf8",
-        env: options.env,
+        env: withBundledTmuxResources(executable, options.env),
         maxBuffer: options.maxBuffer ?? 1024 * 1024,
         windowsHide: true,
       },

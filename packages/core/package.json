@@ -10,7 +10,8 @@
     "directory": "packages/core"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./interaction-evidence": "./src/interaction-evidence.ts"
   },
   "main": "src/index.ts",
   "files": [

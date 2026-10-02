@@ -49,7 +49,7 @@ export default [
   {
     files: [
       "bin/**/*.ts",
-      "scripts/**/*.ts",
+      "scripts/**/*.{ts,tsx}",
       "src/**/*.ts",
       "packages/contracts/src/**/*.ts",
       "packages/core/src/**/*.ts",
@@ -237,8 +237,10 @@ export default [
         {
           patterns: [
             {
-              group: ["@tmux-ide/*", "!@tmux-ide/contracts"],
-              message: "sdk is host-neutral and may only import @tmux-ide/contracts",
+              regex:
+                "^@tmux-ide/(?!contracts(?:/|$)|daemon-client/(?:owner-action-client|automation-client)$)",
+              message:
+                "sdk may import contracts and the host-neutral owner-action-client and automation-client subpaths only",
             },
             {
               group: ["**/packages/*/src/**", "!**/packages/sdk/src/**"],

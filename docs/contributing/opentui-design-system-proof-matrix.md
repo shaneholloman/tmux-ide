@@ -83,3 +83,28 @@ pnpm exec vitest run packages/daemon/src/tui/mirror/runtime/production-design-sy
 pnpm test:tui-renderer
 pnpm --filter @tmux-ide/daemon typecheck
 ```
+
+## Working-session components
+
+`ui/WorkingSessions` (implemented in `ui/working-sessions.tsx`) owns bounded,
+keyed selection and viewport projection. `ui/SessionRow` composes the existing
+`NavigationRow`, close button and a secondary identity line. Both the machine
+sidebar and gallery story 6 import this implementation; the gallery must not
+maintain a separate visual copy.
+
+Rows accept semantic `SessionRowModel` data and emit open/close intents. They
+must not discover machines, subscribe to terminal streams or infer agent
+activity. The fleet navigation owner supplies availability and observed state;
+the retained-tab owner tracks unseen running-to-complete transitions and clears
+them on a successful open. Observation gaps reset the transition baseline.
+
+Use `ui/icons.ts` for shared semantic status/close glyphs, the theme for
+configurable active/idle/check glyphs, and `createAgentStatusMarker` for its
+shared, reduced-motion-aware animation clock. Keep labels beside status glyphs.
+Do not introduce a timer or hardcoded colors per session row.
+
+Proof lives in the sidebar renderer suite (section focus, exact identity,
+offline protection and close), the fleet-tab unit suite (unseen results and
+observation gaps), and gallery renderer tests (themes, widths, state and
+keyboard/pointer parity). `component-chrome-contract.test.ts` checks shared
+adoption and presentation boundaries.

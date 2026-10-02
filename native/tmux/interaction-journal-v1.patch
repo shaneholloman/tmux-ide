@@ -1,0 +1,2554 @@
+diff --git a/Makefile.am b/Makefile.am
+index ba9142f..e56a4fc 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -124,6 +124,9 @@ dist_tmux_SOURCES = \
+ 	cmd-paste-buffer.c \
+ 	cmd-pipe-pane.c \
+ 	cmd-queue.c \
++	tmux-ide-journal.c \
++	tmux-ide-journal.h \
++	tmux-ide-snapshot-buffer.h \
+ 	cmd-refresh-client.c \
+ 	cmd-rename-session.c \
+ 	cmd-rename-window.c \
+diff --git a/cmd-capture-pane.c b/cmd-capture-pane.c
+index ee91f05..e2bd33e 100644
+--- a/cmd-capture-pane.c
++++ b/cmd-capture-pane.c
+@@ -22,6 +22,7 @@
+ #include <string.h>
+ 
+ #include "tmux.h"
++#include "tmux-ide-snapshot-buffer.h"
+ 
+ /*
+  * Write the entire contents of a pane to a buffer or stdout.
+@@ -42,7 +43,7 @@ const struct cmd_entry cmd_capture_pane_entry = {
+ 	.name = "capture-pane",
+ 	.alias = "capturep",
+ 
+-	.args = { "ab:CeE:FHJLMNpPqRS:Tt:V", 0, 0, NULL },
++	.args = { "ab:CDeE:FHJLMNpPqQRS:Tt:U:V", 0, 0, NULL },
+ 	.usage = "[-aCeFHJLMNpPqT] " CMD_BUFFER_USAGE " [-E end-line] "
+ 		 "[-S start-line] " CMD_TARGET_PANE_USAGE,
+ 
+@@ -147,6 +148,74 @@ cmd_capture_pane_hyperlinks(struct grid *gd, struct screen *s, u_int py,
+ 	return (line);
+ }
+ 
++/* Shared physical-grid serializer. Bounded callers supply their payload cap.
++ * Ordinary -R retains its existing output and no new size policy. */
++static char *
++cmd_capture_pane_native(struct cmdq_item *item, struct window_pane *wp,
++    struct screen *s, struct grid *gd, u_int top, u_int bottom,
++    size_t limit, const char *prefix, size_t *len)
++{
++	struct grid_cell cell;
++	const struct grid_line *gl;
++	struct ti_snapshot_buffer buffer = { .limit = limit };
++	u_int i;
++	int n;
++	u_int x, k;
++	char record[512], hex[sizeof cell.data.data * 2 + 1], attrs[128];
++
++	if (prefix != NULL &&
++	    ti_snapshot_append(&buffer, prefix, strlen(prefix)) != 0)
++		goto fail;
++	if (s == &wp->base) {
++		input_current_cell(wp->ictx, &cell);
++		snprintf(attrs, sizeof attrs, "[%u,%d,%d,%d]",
++		    cell.attr, cell.fg, cell.bg, cell.us);
++	} else
++		snprintf(attrs, sizeof attrs, "null");
++	n = snprintf(record, sizeof record,
++	    "{\"version\":2,\"cols\":%u,\"rows\":%u,"
++	    "\"history\":%u,\"hscrolled\":%u,\"limit\":%u,"
++	    "\"cursor\":[%u,%u],\"currentAttributes\":%s}\n",
++	    gd->sx, gd->sy, gd->hsize, gd->hscrolled, gd->hlimit,
++	    s->cx, s->cy, attrs);
++	if (n < 0 || (size_t)n >= sizeof record ||
++	    ti_snapshot_append(&buffer, record, (size_t)n) != 0)
++		goto fail;
++	for (i = top; i <= bottom; i++) {
++		gl = grid_peek_line(gd, i);
++		n = snprintf(record, sizeof record,
++		    "{\"row\":%u,\"flags\":%d,\"used\":%u,\"cells\":[",
++		    i, gl->flags, gl->cellused);
++		if (n < 0 || (size_t)n >= sizeof record ||
++		    ti_snapshot_append(&buffer, record, (size_t)n) != 0)
++			goto fail;
++		for (x = 0; x < gl->cellsize; x++) {
++			grid_get_cell(gd, x, i, &cell);
++			for (k = 0; k < cell.data.size; k++)
++				snprintf(hex + k * 2, 3, "%02x", cell.data.data[k]);
++			hex[cell.data.size * 2] = '\0';
++			n = snprintf(record, sizeof record,
++			    "%s[%d,%u,\"%s\",%u,%d,%d,%d,%u,%d]",
++			    x ? "," : "", cell.flags, cell.data.width, hex,
++			    cell.attr, cell.fg, cell.bg, cell.us, cell.link,
++			    gl->celldata[x].flags);
++			if (n < 0 || (size_t)n >= sizeof record ||
++			    ti_snapshot_append(&buffer, record, (size_t)n) != 0)
++				goto fail;
++		}
++		if (ti_snapshot_append(&buffer, "]}\n", 3) != 0)
++			goto fail;
++	}
++	*len = buffer.length;
++	return (buffer.data);
++
++fail:
++	free(buffer.data);
++	*len = 0;
++	cmdq_error(item, "native snapshot exceeds budget or allocation failed");
++	return (NULL);
++}
++
+ static char *
+ cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
+     struct window_pane *wp, size_t *len)
+@@ -235,46 +304,9 @@ cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
+ 
+ 
+ 	/* Read-only physical grid export for tmux-ide replica backing. */
+-	if (args_has(args, 'R')) {
+-		struct grid_cell cell;
+-		u_int x, k;
+-		char record[512], hex[sizeof cell.data.data * 2 + 1], attrs[128];
+-
+-		if (s == &wp->base) {
+-			input_current_cell(wp->ictx, &cell);
+-			snprintf(attrs, sizeof attrs, "[%u,%d,%d,%d]",
+-			    cell.attr, cell.fg, cell.bg, cell.us);
+-		} else
+-			snprintf(attrs, sizeof attrs, "null");
+-		n = snprintf(record, sizeof record,
+-		    "{\"version\":2,\"cols\":%u,\"rows\":%u,"
+-		    "\"history\":%u,\"hscrolled\":%u,\"limit\":%u,"
+-		    "\"cursor\":[%u,%u],\"currentAttributes\":%s}\n",
+-		    gd->sx, gd->sy, gd->hsize, gd->hscrolled, gd->hlimit,
+-		    s->cx, s->cy, attrs);
+-		buf = cmd_capture_pane_append(buf, len, record, n);
+-		for (i = top; i <= bottom; i++) {
+-			gl = grid_peek_line(gd, i);
+-			n = snprintf(record, sizeof record,
+-			    "{\"row\":%u,\"flags\":%d,\"used\":%u,\"cells\":[",
+-			    i, gl->flags, gl->cellused);
+-			buf = cmd_capture_pane_append(buf, len, record, n);
+-			for (x = 0; x < gl->cellsize; x++) {
+-				grid_get_cell(gd, x, i, &cell);
+-				for (k = 0; k < cell.data.size; k++)
+-					snprintf(hex + k * 2, 3, "%02x", cell.data.data[k]);
+-				hex[cell.data.size * 2] = '\0';
+-				n = snprintf(record, sizeof record,
+-				    "%s[%d,%u,\"%s\",%u,%d,%d,%d,%u,%d]",
+-				    x ? "," : "", cell.flags, cell.data.width, hex,
+-				    cell.attr, cell.fg, cell.bg, cell.us, cell.link,
+-				    gl->celldata[x].flags);
+-				buf = cmd_capture_pane_append(buf, len, record, n);
+-			}
+-			buf = cmd_capture_pane_append(buf, len, "]}\n", 3);
+-		}
+-		return (buf);
+-	}
++	if (args_has(args, 'R'))
++		return (cmd_capture_pane_native(item, wp, s, gd, top, bottom,
++		    SIZE_MAX - 1, NULL, len));
+ 
+ 	join_lines = args_has(args, 'J');
+ 	if (args_has(args, 'e'))
+@@ -350,6 +382,253 @@ cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
+ 	return (buf);
+ }
+ 
++/* v2 counts every JSON record, excluding the final control continuation. */
++#define TI_SNAPSHOT_RECORD_MAX 100000
++#define TI_SNAPSHOT_ANSI_CHUNK 4096
++
++struct ti_snapshot_ansi {
++	struct ti_snapshot_buffer *buffer;
++	unsigned char pending[TI_SNAPSHOT_ANSI_CHUNK];
++	size_t used, bytes, chunks, records;
++};
++
++static int
++cmd_capture_ansi_flush(struct ti_snapshot_ansi *ansi)
++{
++	static const char digits[] = "0123456789abcdef";
++	char hex[TI_SNAPSHOT_ANSI_CHUNK * 2];
++	size_t i;
++
++	if (ansi->used == 0)
++		return (0);
++	if (ansi->records >= TI_SNAPSHOT_RECORD_MAX)
++		return (-1);
++	for (i = 0; i < ansi->used; i++) {
++		hex[i * 2] = digits[ansi->pending[i] >> 4];
++		hex[i * 2 + 1] = digits[ansi->pending[i] & 15];
++	}
++	if (ti_snapshot_append(ansi->buffer, "{\"ansiHex\":\"", 12) != 0 ||
++	    ti_snapshot_append(ansi->buffer, hex, ansi->used * 2) != 0 ||
++	    ti_snapshot_append(ansi->buffer, "\"}\n", 3) != 0)
++		return (-1);
++	ansi->records++;
++	ansi->chunks++;
++	ansi->used = 0;
++	return (0);
++}
++
++static int
++cmd_capture_ansi_append(struct ti_snapshot_ansi *ansi, const char *data,
++    size_t length)
++{
++	size_t n;
++
++	while (length != 0) {
++		n = sizeof ansi->pending - ansi->used;
++		if (n > length)
++			n = length;
++		memcpy(ansi->pending + ansi->used, data, n);
++		ansi->used += n;
++		ansi->bytes += n;
++		data += n;
++		length -= n;
++		if (ansi->used == sizeof ansi->pending &&
++		    cmd_capture_ansi_flush(ansi) != 0)
++			return (-1);
++	}
++	return (0);
++}
++
++/* Reuse the stock -e -J traversal and last-cell continuity. One row is
++ * bounded before allocation, then encoded in fixed chunks; there is never
++ * an unbounded or full raw-ANSI intermediate. */
++static char *
++cmd_capture_pane_dual(char *native, size_t *length, size_t limit,
++    struct screen *screen, struct grid *gd, u_int top, u_int bottom)
++{
++	struct ti_snapshot_buffer buffer = {
++	    .data = native, .length = *length, .capacity = *length + 1,
++	    .limit = limit
++	};
++	struct ti_snapshot_ansi ansi = { .buffer = &buffer,
++	    .records = (size_t)bottom - top + 3 };
++	struct grid_cell last = grid_default_cell, *gc = &last;
++	const struct grid_line *gl;
++	char *line, end[128];
++	u_int y;
++	int n;
++
++	for (y = top; y <= bottom; y++) {
++		line = grid_string_cells_bounded(gd, 0, y, gd->sx, &gc,
++		    GRID_STRING_WITH_SEQUENCES, screen,
++		    (buffer.limit - buffer.length) / 2);
++		if (line == NULL)
++			goto fail;
++		n = cmd_capture_ansi_append(&ansi, line, strlen(line));
++		free(line);
++		if (n != 0)
++			goto fail;
++		gl = grid_peek_line(gd, y);
++		if (!(gl->flags & GRID_LINE_WRAPPED) &&
++		    cmd_capture_ansi_append(&ansi, "\n", 1) != 0)
++			goto fail;
++	}
++	if (cmd_capture_ansi_flush(&ansi) != 0 ||
++	    ansi.records >= TI_SNAPSHOT_RECORD_MAX)
++		goto fail;
++	n = snprintf(end, sizeof end,
++	    "{\"ansiEnd\":true,\"bytes\":%zu,\"chunks\":%zu}\n",
++	    ansi.bytes, ansi.chunks);
++	if (n < 0 || (size_t)n >= sizeof end ||
++	    ti_snapshot_append(&buffer, end, (size_t)n) != 0)
++		goto fail;
++	*length = buffer.length;
++	return (buffer.data);
++
++fail:
++	free(buffer.data);
++	return (NULL);
++}
++
++/* No caller-provided format or script is evaluated by atomic recovery. */
++static const char *cmd_capture_snapshot_modes =
++	"#{?#{==:#{cursor_x},},unknown,#{cursor_x}}"
++	" #{?#{==:#{cursor_y},},unknown,#{cursor_y}}"
++	" #{?#{==:#{pane_width},},unknown,#{pane_width}}"
++	" #{?#{==:#{pane_height},},unknown,#{pane_height}}"
++	" #{?#{==:#{alternate_on},},unknown,#{alternate_on}}"
++	" #{?#{==:#{cursor_flag},},unknown,#{cursor_flag}}"
++	" #{?#{==:#{insert_flag},},unknown,#{insert_flag}}"
++	" #{?#{==:#{keypad_cursor_flag},},unknown,#{keypad_cursor_flag}}"
++	" #{?#{==:#{keypad_flag},},unknown,#{keypad_flag}}"
++	" #{?#{==:#{mouse_any_flag},},unknown,#{mouse_any_flag}}"
++	" #{?#{==:#{mouse_button_flag},},unknown,#{mouse_button_flag}}"
++	" #{?#{==:#{mouse_standard_flag},},unknown,#{mouse_standard_flag}}"
++	" #{?#{==:#{origin_flag},},unknown,#{origin_flag}}"
++	" #{?#{==:#{wrap_flag},},unknown,#{wrap_flag}}"
++	" #{?#{==:#{history_size},},unknown,#{history_size}}"
++	" #{?#{==:#{history_limit},},unknown,#{history_limit}}"
++	" #{?#{==:#{bracket_paste_flag},},unknown,#{bracket_paste_flag}}"
++	" #{?#{==:#{mouse_all_flag},},unknown,#{mouse_all_flag}}"
++	" #{?#{==:#{mouse_sgr_flag},},unknown,#{mouse_sgr_flag}}"
++	" #{?#{==:#{mouse_utf8_flag},},unknown,#{mouse_utf8_flag}}"
++	" #{?#{==:#{scroll_region_upper},},unknown,#{scroll_region_upper}}"
++	" #{?#{==:#{scroll_region_lower},},unknown,#{scroll_region_lower}}"
++	" #{?#{==:#{scroll-on-clear},},unknown,#{scroll-on-clear}}";
++
++static int
++cmd_capture_snapshot_decimal(const char *text, size_t maximum, size_t *value)
++{
++	size_t n = 0;
++	const char *p;
++
++	if (text == NULL || *text == '\0' || (text[0] == '0' && text[1] != '\0'))
++		return (0);
++	for (p = text; *p != '\0'; p++) {
++		if (*p < '0' || *p > '9' || n > (maximum - (*p - '0')) / 10)
++			return (0);
++		n = n * 10 + (*p - '0');
++		if (n > maximum)
++			return (0);
++	}
++	*value = n;
++	return (1);
++}
++
++static enum cmd_retval
++cmd_capture_pane_snapshot(struct args *args, struct cmdq_item *item,
++    struct window_pane *wp)
++{
++	struct client *c = cmdq_get_origin_client(item);
++	struct args_entry *entry;
++	struct cmd_find_state *target = cmdq_get_target(item);
++	struct format_tree *ft;
++	struct grid *gd = wp->base.grid;
++	const char *history = args_get(args, 'S'), *p;
++	char *modes, *snapshot, header[1536], continued[64];
++	size_t limit = 16 * 1024 * 1024, lines = 0, length;
++	u_int top, bottom;
++	u_char flag;
++	int n, dual = args_has(args, 'D');
++
++	for (flag = args_first(args, &entry); flag; flag = args_next(&entry)) {
++		if (strchr("pRQUDSt", flag) == NULL || args_has(args, flag) != 1)
++			goto invalid;
++	}
++	if (!args_has(args, 'p') || !args_has(args, 'R') ||
++	    !args_has(args, 't') || history == NULL || *history != '-' ||
++	    (history[1] != '\0' &&
++	    !cmd_capture_snapshot_decimal(history + 1, 1000000, &lines)) ||
++	    (args_has(args, 'U') &&
++	    (!cmd_capture_snapshot_decimal(args_get(args, 'U'), limit, &limit) || !limit)))
++		goto invalid;
++	if (!cmdq_guarded_snapshot_origin(item) || c == NULL ||
++	    !control_snapshot_ready(c, wp) || !input_snapshot_ready(wp->ictx)) {
++		cmdq_error(item, "atomic snapshot needs a paused guarded issuer and complete input state");
++		return (CMD_RETURN_ERROR);
++	}
++	ft = format_create(c, item, FORMAT_NONE, 0);
++	format_defaults(ft, c, target->s, target->wl, wp);
++	modes = format_expand(ft, cmd_capture_snapshot_modes);
++	format_free(ft);
++	if (strlen(modes) > 1024) {
++		free(modes);
++		goto invalid;
++	}
++	/* The fixed fields contain only scalar mode values. Reject unexpected
++	 * output rather than placing unescaped text into the private JSON header. */
++	for (p = modes; *p; p++) {
++		if (!(*p == ' ' || *p == '-' || (*p >= '0' && *p <= '9') ||
++		    (*p >= 'a' && *p <= 'z'))) {
++			free(modes);
++			goto invalid;
++		}
++	}
++	n = snprintf(header, sizeof header,
++	    "{\"snapshotVersion\":%d,%s\"serverEpoch\":\"%s\","
++	    "\"paneId\":\"%%%u\",\"paneBirthId\":\"%llu\","
++	    "\"cursor\":\"%s\",\"resumed\":true}\n",
++	    dual ? 2 : 1, dual ? "\"representation\":\"dual\"," : "",
++	    tmux_ide_server_epoch(), wp->id,
++	    (unsigned long long)wp->tmux_ide_birth_id, modes);
++	free(modes);
++	if (n < 0 || (size_t)n >= sizeof header)
++		goto invalid;
++	top = history[1] == '\0' || lines > gd->hsize ? 0 : gd->hsize - lines;
++	bottom = gd->hsize + gd->sy - 1;
++	if (dual) {
++		n = snprintf(continued, sizeof continued, "%%continue %%%u\n", wp->id);
++		if (n < 0 || (size_t)n >= sizeof continued || (size_t)n >= limit ||
++		    (size_t)bottom - top + 4 > TI_SNAPSHOT_RECORD_MAX)
++			goto invalid;
++		limit -= (size_t)n;
++	}
++	snapshot = cmd_capture_pane_native(item, wp, &wp->base, gd, top,
++	    bottom, limit, header, &length);
++	if (snapshot == NULL)
++		return (CMD_RETURN_ERROR);
++	if (dual) {
++		snapshot = cmd_capture_pane_dual(snapshot, &length, limit,
++		    &wp->base, gd, top, bottom);
++		if (snapshot == NULL) {
++			cmdq_error(item, "dual snapshot exceeds budget or allocation failed");
++			return (CMD_RETURN_ERROR);
++		}
++	}
++	if (control_snapshot_commit(c, wp, snapshot, length) != 0) {
++		free(snapshot);
++		cmdq_error(item, "atomic snapshot output budget unavailable");
++		return (CMD_RETURN_ERROR);
++	}
++	free(snapshot);
++	tmux_ide_interaction_effect(wp->id, wp->tmux_ide_birth_id, 6, length);
++	return (CMD_RETURN_NORMAL);
++
++invalid:
++	cmdq_error(item, "invalid atomic snapshot arguments or mode state");
++	return (CMD_RETURN_ERROR);
++}
++
+ static enum cmd_retval
+ cmd_capture_pane_exec(struct cmd *self, struct cmdq_item *item)
+ {
+@@ -360,6 +639,13 @@ cmd_capture_pane_exec(struct cmd *self, struct cmdq_item *item)
+ 	const char		*bufname;
+ 	size_t			 len;
+ 
++	if (args_has(args, 'Q'))
++		return (cmd_capture_pane_snapshot(args, item, wp));
++	if (args_has(args, 'U') || args_has(args, 'D')) {
++		cmdq_error(item, "-U and -D require atomic snapshot mode");
++		return (CMD_RETURN_ERROR);
++	}
++
+ 	if (cmd_get_entry(self) == &cmd_clear_history_entry) {
+ 		window_pane_reset_mode_all(wp);
+ 		grid_clear_history(wp->base.grid);
+@@ -404,5 +690,6 @@ cmd_capture_pane_exec(struct cmd *self, struct cmdq_item *item)
+ 		}
+ 	}
+ 
++	tmux_ide_interaction_effect(wp->id, wp->tmux_ide_birth_id, 6, len);
+ 	return (CMD_RETURN_NORMAL);
+ }
+diff --git a/cmd-if-shell.c b/cmd-if-shell.c
+index f0c3637..585e6b7 100644
+--- a/cmd-if-shell.c
++++ b/cmd-if-shell.c
+@@ -53,6 +53,7 @@ const struct cmd_entry cmd_if_shell_entry = {
+ };
+ 
+ struct cmd_if_shell_data {
++	struct ti_origin origin;
+ 	struct args_command_state	*cmd_if;
+ 	struct args_command_state	*cmd_else;
+ 
+@@ -102,6 +103,7 @@ cmd_if_shell_exec(struct cmd *self, struct cmdq_item *item)
+ 	}
+ 
+ 	cdata = xcalloc(1, sizeof *cdata);
++	cdata->origin = cmdq_origin_child(item, TI_BACKGROUND);
+ 
+ 	cdata->cmd_if = args_make_commands_prepare(self, item, 1, NULL, wait,
+ 	    0);
+@@ -163,6 +165,7 @@ cmd_if_shell_callback(struct job *job)
+ 		free(error);
+ 	} else if (item == NULL) {
+ 		new_item = cmdq_get_command(cmdlist, NULL);
++		cmdq_set_origin(new_item, &cdata->origin);
+ 		cmdq_append(c, new_item);
+ 	} else {
+ 		new_item = cmdq_get_command(cmdlist, cmdq_get_state(item));
+diff --git a/cmd-parse.y b/cmd-parse.y
+index 0b32f5d..213f1dc 100644
+--- a/cmd-parse.y
++++ b/cmd-parse.y
+@@ -785,6 +785,11 @@ cmd_parse_expand_alias(struct cmd_parse_command *cmd,
+ 	}
+ 	name = first->string;
+ 
++	/* Reserved native protocol names cannot be rewritten by user aliases. */
++	if (strcmp(name, "tmux-ide-events") == 0 ||
++	    strcmp(name, "tmux-ide-run") == 0)
++		return (0);
++
+ 	alias = cmd_get_alias(name);
+ 	if (alias == NULL)
+ 		return (0);
+diff --git a/cmd-paste-buffer.c b/cmd-paste-buffer.c
+index 7233b7d..6487b7d 100644
+--- a/cmd-paste-buffer.c
++++ b/cmd-paste-buffer.c
+@@ -64,12 +64,16 @@ cmd_paste_buffer_exec(struct cmd *self, struct cmdq_item *item)
+ 	const char		*sepstr, *bufname, *bufdata, *bufend, *line;
+ 	size_t			 seplen, bufsize, len;
+ 	int			 bracket = args_has(args, 'p');
++	size_t before = 0, after;
++	int measure = tmux_ide_interaction_measuring();
+ 
+ 	if (window_pane_exited(wp)) {
+ 		cmdq_error(item, "target pane has exited");
+ 		return (CMD_RETURN_ERROR);
+ 	}
+ 
++	if (measure)
++		before = EVBUFFER_LENGTH(wp->event->output);
+ 	bufname = NULL;
+ 	if (args_has(args, 'b'))
+ 		bufname = args_get(args, 'b');
+@@ -125,6 +129,11 @@ cmd_paste_buffer_exec(struct cmd *self, struct cmdq_item *item)
+ 			bufferevent_write(wp->event, "\033[201~", 6);
+ 	}
+ 
++	if (measure) {
++		after = EVBUFFER_LENGTH(wp->event->output);
++		if (after > before)
++			tmux_ide_interaction_effect(wp->id, wp->tmux_ide_birth_id, 5, after - before);
++	}
+ 	if (pb != NULL && args_has(args, 'd'))
+ 		paste_free(pb);
+ 
+diff --git a/cmd-queue.c b/cmd-queue.c
+index 2a22151..51bfe4e 100644
+--- a/cmd-queue.c
++++ b/cmd-queue.c
+@@ -38,7 +38,20 @@ enum cmdq_type {
+ };
+ 
+ /* Command queue item. */
++/* A single immutable, bounded name snapshot shared only by direct children. */
++struct ti_session_guard {
++	unsigned references;
++	u_int id;
++	uint64_t created;
++	char name[];
++};
++
+ struct cmdq_item {
++	struct client *origin_client;
++	struct ti_origin origin;
++	int origin_fixed;
++	uint64_t interaction_command_id;
++	struct ti_session_guard *session_guard;
+ 	char			*name;
+ 	struct cmdq_list	*queue;
+ 	struct cmdq_item	*next;
+@@ -76,6 +89,7 @@ TAILQ_HEAD(cmdq_item_list, cmdq_item);
+  * default target.
+  */
+ struct cmdq_state {
++	struct ti_origin origin;
+ 	int			 references;
+ 	int			 flags;
+ 
+@@ -154,7 +168,24 @@ cmdq_get_client(struct cmdq_item *item)
+ 	return (item->client);
+ }
+ 
++/* A snapshot may resume only the actual issuer of a direct guarded child. */
++int
++cmdq_guarded_snapshot_origin(struct cmdq_item *item)
++{
++	struct client *c = item->origin_client;
++
++	return (c != NULL && c->tmux_ide_connection_id != 0 &&
++	    item->origin.issuer_id == c->tmux_ide_connection_id &&
++	    item->origin.guard_wrapper_id != 0 &&
++	    item->origin.parent_id == item->origin.guard_wrapper_id);
++}
++
+ /* Get item target client. */
++struct client *cmdq_get_origin_client(struct cmdq_item *item)
++{
++	return (item->origin_client);
++}
++
+ struct client *
+ cmdq_get_target_client(struct cmdq_item *item)
+ {
+@@ -226,6 +257,91 @@ cmdq_new_state(struct cmd_find_state *current, struct key_event *event,
+ 	return (state);
+ }
+ 
++static int
++cmdq_session_guard_valid(const struct ti_session_guard *guard)
++{
++	struct session *session = session_find(guard->name);
++	return session && session->id == guard->id &&
++	    session->creation_time.tv_sec >= 0 &&
++	    (uint64_t)session->creation_time.tv_sec == guard->created;
++}
++
++struct ti_session_guard *
++cmdq_session_guard_new(const char *name, u_int id, uint64_t created)
++{
++	struct ti_session_guard *guard;
++	size_t length = strlen(name);
++	if (!length || length > 4096)
++		return NULL;
++	guard = calloc(1, sizeof *guard + length + 1);
++	if (!guard)
++		return NULL;
++	guard->references = 1;
++	guard->id = id;
++	guard->created = created;
++	memcpy(guard->name, name, length + 1);
++	return guard;
++}
++
++void
++cmdq_session_guard_free(struct ti_session_guard *guard)
++{
++	if (guard && --guard->references == 0)
++		free(guard);
++}
++
++void
++cmdq_set_session_guard(struct cmdq_item *item, struct ti_session_guard *guard)
++{
++	if (!guard)
++		return;
++	/* Caller bounds the original direct command chain to at most 64 items. */
++	for (; item != NULL; item = item->next) {
++		item->session_guard = guard;
++		guard->references++;
++	}
++}
++
++/* Immutable observation context: deliberately independent of target state. */
++void cmdq_set_origin(struct cmdq_item *item, const struct ti_origin *origin)
++{
++	for (; item != NULL; item = item->next) {
++		item->origin = *origin;
++		item->origin_fixed = 1;
++	}
++}
++
++static struct ti_origin cmdq_client_origin(struct client *client,
++					   unsigned transport)
++{
++	struct ti_origin origin = {0};
++	origin.issuer_id = client ? client->tmux_ide_connection_id : 0;
++	origin.request_id = tmux_ide_interaction_request();
++	origin.transport = transport;
++	return origin;
++}
++
++void cmdq_set_origin_client(struct cmdq_item *item, struct client *client,
++			    unsigned transport)
++{
++	struct ti_origin origin = cmdq_client_origin(client, transport);
++	cmdq_set_origin(item, &origin);
++}
++
++void cmdq_set_state_origin_client(struct cmdq_state *state,
++				  struct client *client, unsigned transport)
++{
++	state->origin = cmdq_client_origin(client, transport);
++}
++
++struct ti_origin cmdq_origin_child(struct cmdq_item *item, unsigned derivation)
++{
++	struct ti_origin origin = item->origin;
++	origin.parent_id = item->interaction_command_id;
++	origin.derivation = derivation;
++	return origin;
++}
++
+ /* Add a reference to a state. */
+ struct cmdq_state *
+ cmdq_link_state(struct cmdq_state *state)
+@@ -238,9 +354,11 @@ cmdq_link_state(struct cmdq_state *state)
+ struct cmdq_state *
+ cmdq_copy_state(struct cmdq_state *state, struct cmd_find_state *current)
+ {
+-	if (current != NULL)
+-		return (cmdq_new_state(current, &state->event, state->flags));
+-	return (cmdq_new_state(&state->current, &state->event, state->flags));
++	struct cmdq_state *copy;
++	copy = cmdq_new_state(current != NULL ? current : &state->current,
++			      &state->event, state->flags);
++	copy->origin = state->origin;
++	return copy;
+ }
+ 
+ /* Free a state. */
+@@ -324,11 +442,14 @@ cmdq_append(struct client *c, struct cmdq_item *item)
+ struct cmdq_item *
+ cmdq_insert_after(struct cmdq_item *after, struct cmdq_item *item)
+ {
++	struct ti_origin origin = cmdq_origin_child(after, TI_CHILD);
+ 	struct client		*c = after->client;
+ 	struct cmdq_list	*queue = after->queue;
+ 	struct cmdq_item	*next;
+ 
+ 	do {
++		if (!item->origin_fixed)
++			item->origin = origin;
+ 		next = item->next;
+ 		item->next = after->next;
+ 		after->next = item;
+@@ -353,6 +474,7 @@ void
+ cmdq_insert_hook(struct session *s, struct cmdq_item *item,
+     struct cmd_find_state *current, const char *fmt, ...)
+ {
++	struct ti_origin origin = cmdq_origin_child(item, TI_HOOK);
+ 	struct cmdq_state		*state = item->state;
+ 	struct cmd			*cmd = item->cmd;
+ 	struct args			*args = cmd_get_args(cmd);
+@@ -430,6 +552,7 @@ cmdq_insert_hook(struct session *s, struct cmdq_item *item,
+ 		cmdlist = options_array_item_value(a)->cmdlist;
+ 		if (cmdlist != NULL) {
+ 			new_item = cmdq_get_command(cmdlist, new_state);
++			cmdq_set_origin(new_item, &origin);
+ 			if (item != NULL)
+ 				item = cmdq_insert_after(item, new_item);
+ 			else
+@@ -453,6 +576,8 @@ cmdq_continue(struct cmdq_item *item)
+ static void
+ cmdq_remove(struct cmdq_item *item)
+ {
++	cmdq_session_guard_free(item->session_guard);
++	tmux_ide_interaction_forget(item);
+ 	if (item->client != NULL)
+ 		server_client_unref(item->client);
+ 	if (item->cmdlist != NULL)
+@@ -515,6 +640,7 @@ cmdq_get_command(struct cmd_list *cmdlist, struct cmdq_state *state)
+ 
+ 		item->group = cmd_get_group(cmd);
+ 		item->state = cmdq_link_state(state);
++		item->origin = state->origin;
+ 
+ 		item->cmdlist = cmdlist;
+ 		item->cmd = cmd;
+@@ -607,6 +733,9 @@ cmdq_fire_command(struct cmdq_item *item)
+ 	int			 flags, quiet = 0;
+ 	char			*tmp;
+ 
++	/* Capture the real queue issuer before target-client fallback. */
++	item->origin_client = saved;
++	item->interaction_command_id = tmux_ide_interaction_command();
+ 	if (cfg_finished)
+ 		cmdq_add_message(item);
+ 	if (log_get_level() > 1) {
+@@ -646,7 +775,41 @@ cmdq_fire_command(struct cmdq_item *item)
+ 	if (retval == CMD_RETURN_ERROR)
+ 		goto out;
+ 
+-	retval = entry->exec(cmd, item);
++	if (item->session_guard && !cmdq_session_guard_valid(item->session_guard)) {
++		cmdq_error(item, "operation session lifetime mismatch");
++		retval = CMD_RETURN_ERROR;
++		goto out;
++	}
++
++	/* Guard only direct children of the strict owned wrapper. Hook and
++	 * background descendants retain ordinary tmux semantics. No yield occurs
++	 * between this check and the command's synchronous execution. */
++	if (item->origin.guard_wrapper_id != 0 &&
++	    item->origin.parent_id == item->origin.guard_wrapper_id) {
++		struct window_pane *guard_pane =
++		    window_pane_find_by_id(item->origin.guard_pane_id);
++		if (!guard_pane || guard_pane->tmux_ide_birth_id !=
++		    item->origin.guard_birth_id ||
++		    (entry->target.flag && entry->target.type == CMD_FIND_PANE &&
++		    item->target.wp != guard_pane) ||
++		    (strcmp(entry->name, "send-keys") == 0 &&
++		    (args_has(args, 'K') || args_has(args, 'M')))) {
++			cmdq_error(item, "operation pane lifetime or target mismatch");
++			retval = CMD_RETURN_ERROR;
++			goto out;
++		}
++	}
++
++	if (strcmp(entry->name, "send-keys") == 0 ||
++	    strcmp(entry->name, "capture-pane") == 0 ||
++	    strcmp(entry->name, "paste-buffer") == 0 ||
++	    strcmp(entry->name, "send-prefix") == 0) {
++		tmux_ide_interaction_begin(item->interaction_command_id,
++					   &item->origin);
++		retval = entry->exec(cmd, item);
++		tmux_ide_interaction_end();
++	} else
++		retval = entry->exec(cmd, item);
+ 	if (retval == CMD_RETURN_ERROR)
+ 		goto out;
+ 
+@@ -663,6 +826,43 @@ cmdq_fire_command(struct cmdq_item *item)
+ 	}
+ 
+ out:
++	if (tmux_ide_interaction_enabled()) {
++		unsigned kind = 0, variant = 0, target_id = 0;
++		uint64_t target_birth = 0;
++		if (strcmp(entry->name, "send-keys") == 0)
++			kind = 1;
++		else if (strcmp(entry->name, "capture-pane") == 0)
++			kind = 2;
++		else if (strcmp(entry->name, "paste-buffer") == 0)
++			kind = 3;
++		else if (strcmp(entry->name, "send-prefix") == 0)
++			kind = 4;
++		if (kind != 0) {
++			if (cmd_find_valid_state(&item->target)) {
++				target_id = item->target.wp->id;
++				target_birth = item->target.wp->tmux_ide_birth_id;
++				variant |= 1;
++			}
++			if (kind == 1) {
++				if (args_has(args, 'X'))
++					variant |= 2;
++				if (args_has(args, 'K'))
++					variant |= 4;
++				if (args_has(args, 'R'))
++					variant |= 8;
++				if (args_has(args, 'M'))
++					variant |= 16;
++			}
++			if (kind == 2 && args_has(args, 'R'))
++				variant |= 32;
++			tmux_ide_interaction_done(
++			    item->interaction_command_id, &item->origin, kind,
++			    retval == CMD_RETURN_ERROR	? 2
++			    : retval == CMD_RETURN_WAIT ? 3
++							: 1,
++			    target_id, target_birth, variant);
++		}
++	}
+ 	item->client = saved;
+ 	if (retval == CMD_RETURN_ERROR) {
+ 		fsp = NULL;
+@@ -672,10 +872,12 @@ out:
+ 			fsp = &item->state->current;
+ 		else if (cmd_find_from_client(&fs, item->client, 0) == 0)
+ 			fsp = &fs;
+-		cmdq_insert_hook(fsp != NULL ? fsp->s : NULL, item, fsp,
+-		    "command-error");
++		if (saved == NULL || !(saved->flags & CLIENT_JOURNAL_READER))
++			cmdq_insert_hook(fsp != NULL ? fsp->s : NULL, item, fsp,
++			    "command-error");
+ 		cmdq_guard(item, "error", flags);
+-	} else
++	} else if (!(retval == CMD_RETURN_WAIT && saved != NULL &&
++	    (saved->flags & CLIENT_JOURNAL_READER)))
+ 		cmdq_guard(item, "end", flags);
+ 	return (retval);
+ }
+diff --git a/cmd-run-shell.c b/cmd-run-shell.c
+index 6114f68..0caa94f 100644
+--- a/cmd-run-shell.c
++++ b/cmd-run-shell.c
+@@ -55,6 +55,7 @@ const struct cmd_entry cmd_run_shell_entry = {
+ };
+ 
+ struct cmd_run_shell_data {
++	struct ti_origin origin;
+ 	struct client			*client;
+ 	char				*cmd;
+ 	struct args_command_state	*state;
+@@ -132,6 +133,7 @@ cmd_run_shell_exec(struct cmd *self, struct cmdq_item *item)
+ 		return (CMD_RETURN_NORMAL);
+ 
+ 	cdata = xcalloc(1, sizeof *cdata);
++	cdata->origin = cmdq_origin_child(item, TI_BACKGROUND);
+ 	if (!args_has(args, 'C')) {
+ 		cmd = args_string(args, 0);
+ 		if (cmd != NULL) {
+@@ -231,6 +233,7 @@ cmd_run_shell_timer(__unused int fd, __unused short events, void* arg)
+ 		free(error);
+ 	} else if (item == NULL) {
+ 		new_item = cmdq_get_command(cmdlist, NULL);
++		cmdq_set_origin(new_item, &cdata->origin);
+ 		cmdq_append(c, new_item);
+ 	} else {
+ 		new_item = cmdq_get_command(cmdlist, cmdq_get_state(item));
+diff --git a/cmd.c b/cmd.c
+index 6916da7..9619bf2 100644
+--- a/cmd.c
++++ b/cmd.c
+@@ -118,6 +118,8 @@ extern const struct cmd_entry cmd_switch_client_entry;
+ extern const struct cmd_entry cmd_unbind_key_entry;
+ extern const struct cmd_entry cmd_unlink_window_entry;
+ extern const struct cmd_entry cmd_wait_for_entry;
++extern const struct cmd_entry cmd_tmux_ide_events_entry;
++extern const struct cmd_entry cmd_tmux_ide_run_entry;
+ 
+ const struct cmd_entry *cmd_table[] = {
+ 	&cmd_attach_session_entry,
+@@ -211,6 +213,8 @@ const struct cmd_entry *cmd_table[] = {
+ 	&cmd_unbind_key_entry,
+ 	&cmd_unlink_window_entry,
+ 	&cmd_wait_for_entry,
++	&cmd_tmux_ide_events_entry,
++	&cmd_tmux_ide_run_entry,
+ 	NULL
+ };
+ 
+diff --git a/control-notify.c b/control-notify.c
+index 151f959..8524b3f 100644
+--- a/control-notify.c
++++ b/control-notify.c
+@@ -25,7 +25,7 @@
+ 
+ #define CONTROL_SHOULD_NOTIFY_CLIENT(c) \
+ 	((c) != NULL && ((c)->flags & CLIENT_CONTROL) && \
+-	 (c)->control_state != NULL)
++	 (c)->control_state != NULL && !((c)->flags & CLIENT_JOURNAL_READER))
+ 
+ void
+ control_notify_pane_mode_changed(int pane)
+diff --git a/control.c b/control.c
+index b88072d..1fe24ff 100644
+--- a/control.c
++++ b/control.c
+@@ -113,6 +113,7 @@ RB_HEAD(control_subs, control_sub);
+ 
+ /* Control client state. */
+ struct control_state {
++	int journal_busy;
+ 	struct control_panes		 panes;
+ 
+ 	TAILQ_HEAD(, control_pane)	 pending_list;
+@@ -376,6 +377,63 @@ control_continue_pane(struct client *c, struct window_pane *wp)
+ 	}
+ }
+ 
++/* Snapshot reply is prepared before changing offsets. Refuse a pending block
++ * queue rather than bypassing its existing output ordering. */
++int
++control_snapshot_ready(struct client *c, struct window_pane *wp)
++{
++	struct control_state *cs;
++	struct control_pane *cp;
++
++	if (!(c->flags & CLIENT_CONTROL) ||
++	    (c->flags & (CLIENT_JOURNAL_READER|CLIENT_DEAD|CLIENT_EXIT|
++	    CLIENT_CONTROL_NOOUTPUT)) || c->session == NULL ||
++	    c->control_state == NULL)
++		return (0);
++	cs = c->control_state;
++	cp = control_get_pane(c, wp);
++	return (cp != NULL && (cp->flags & CONTROL_PANE_PAUSED) &&
++	    !(cp->flags & CONTROL_PANE_OFF) &&
++	    winlink_find_by_window(&c->session->windows, wp->window) != NULL &&
++	    TAILQ_EMPTY(&cs->all_blocks) &&
++	    EVBUFFER_LENGTH(cs->write_event->output) <= 65536);
++}
++
++int
++control_snapshot_commit(struct client *c, struct window_pane *wp,
++    const char *snapshot, size_t length)
++{
++	struct control_state *cs = c->control_state;
++	struct control_pane *cp;
++	struct evbuffer *reply;
++	char continued[64];
++	int n;
++
++	if (!control_snapshot_ready(c, wp) || length > 16 * 1024 * 1024)
++		return (-1);
++	n = snprintf(continued, sizeof continued, "%%continue %%%u\n", wp->id);
++	if (n < 0 || (size_t)n >= sizeof continued)
++		return (-1);
++	reply = evbuffer_new();
++	if (reply == NULL)
++		return (-1);
++	if (evbuffer_add(reply, snapshot, length) != 0 ||
++	    evbuffer_add(reply, continued, (size_t)n) != 0 ||
++	    evbuffer_add_buffer(cs->write_event->output, reply) != 0) {
++		evbuffer_free(reply);
++		return (-1);
++	}
++	evbuffer_free(reply);
++	/* No callbacks or user commands run between this buffer commit and offset
++	 * commit. Later PTY bytes are delivered after this snapshot reply. */
++	cp = control_get_pane(c, wp);
++	cp->flags &= ~CONTROL_PANE_PAUSED;
++	memcpy(&cp->offset, &wp->offset, sizeof cp->offset);
++	memcpy(&cp->queued, &wp->offset, sizeof cp->queued);
++	bufferevent_enable(cs->write_event, EV_WRITE);
++	return (0);
++}
++
+ /* Pause a pane. */
+ void
+ control_pause_pane(struct client *c, struct window_pane *wp)
+@@ -390,6 +448,8 @@ control_pause_pane(struct client *c, struct window_pane *wp)
+ 	}
+ }
+ 
++static void control_journal_close(struct client *);
++
+ /* Write a line. */
+ static void printflike(2, 0)
+ control_vwrite(struct client *c, const char *fmt, va_list ap)
+@@ -398,6 +458,12 @@ control_vwrite(struct client *c, const char *fmt, va_list ap)
+ 	char			*s;
+ 
+ 	xvasprintf(&s, fmt, ap);
++	if ((c->flags & CLIENT_JOURNAL_READER) &&
++	    EVBUFFER_LENGTH(cs->write_event->output) + strlen(s) + 1 > 65536) {
++		free(s);
++		control_journal_close(c);
++		return;
++	}
+ 	log_debug("%s: %s: writing line: %s", __func__, c->name, s);
+ 
+ 	bufferevent_write(cs->write_event, s, strlen(s));
+@@ -539,13 +605,117 @@ control_error(struct cmdq_item *item, void *data)
+ }
+ 
+ /* Control client error callback. */
++static void
++control_journal_close(struct client *c)
++{
++	struct control_state *cs = c->control_state;
++	c->flags |= CLIENT_EXIT;
++	tmux_ide_interaction_client_lost(c);
++	evbuffer_drain(cs->write_event->output, EVBUFFER_LENGTH(cs->write_event->output));
++	bufferevent_disable(cs->read_event, EV_READ);
++}
++
+ static void
+ control_error_callback(__unused struct bufferevent *bufev,
+     __unused short what, void *data)
+ {
+ 	struct client	*c = data;
+ 
+-	c->flags |= CLIENT_EXIT;
++	if (c->flags & CLIENT_JOURNAL_READER)
++		control_journal_close(c);
++	else
++		c->flags |= CLIENT_EXIT;
++}
++
++/* Closed reader grammar; caller text never reaches the general parser. */
++static enum cmd_retval
++control_journal_done(struct cmdq_item *item, __unused void *data)
++{
++	struct client *c = cmdq_get_client(item);
++	c->control_state->journal_busy = 0;
++	control_journal_ready(c);
++	return (CMD_RETURN_NORMAL);
++}
++
++void
++control_journal_ready(struct client *c)
++{
++	struct control_state *cs = c->control_state;
++	if (c->flags & (CLIENT_EXIT|CLIENT_DEAD))
++		return;
++	bufferevent_setwatermark(cs->read_event, EV_READ, 0, 128);
++	bufferevent_setwatermark(cs->write_event, EV_WRITE, 0, 0);
++	if (cs->journal_busy || EVBUFFER_LENGTH(cs->write_event->output) == 0)
++		bufferevent_enable(cs->read_event, EV_READ);
++	else
++		bufferevent_disable(cs->read_event, EV_READ);
++}
++
++static void
++control_journal_read(struct client *c)
++{
++	struct control_state *cs = c->control_state;
++	struct evbuffer *buffer = cs->read_event->input;
++	struct cmdq_state *state;
++	struct cmd_parse_input parse = { .flags = CMD_PARSE_NOALIAS };
++	char *line, *error, epoch[37], cursor[21], limit[3], wait[2];
++	char command[160], extra;
++	size_t i, line_length, length = EVBUFFER_LENGTH(buffer);
++	unsigned long long after;
++	unsigned n;
++	int fields;
++
++	if (length >= 128) {
++		control_journal_close(c);
++		return;
++	}
++	line = evbuffer_readln(buffer, &line_length, EVBUFFER_EOL_LF);
++	if (line == NULL) {
++		if (cs->journal_busy && length)
++			control_journal_close(c);
++		return;
++	}
++	if (strlen(line) != line_length || !*line || cs->journal_busy ||
++	    EVBUFFER_LENGTH(cs->write_event->output) != 0 ||
++	    EVBUFFER_LENGTH(buffer) != 0)
++		goto invalid;
++	fields = sscanf(line, "read %36s %20s %2s %1s %c", epoch, cursor, limit, wait, &extra);
++	if (fields != 4 || strlen(epoch) != 36 || strlen(wait) != 1 ||
++	    (*wait != '0' && *wait != '1'))
++		goto invalid;
++	for (i = 0; i < 36; i++) {
++		if (i == 8 || i == 13 || i == 18 || i == 23) {
++			if (epoch[i] != '-') goto invalid;
++		} else if (!((epoch[i] >= '0' && epoch[i] <= '9') ||
++		    (epoch[i] >= 'a' && epoch[i] <= 'f'))) goto invalid;
++	}
++	if (!*cursor || (cursor[0] == '0' && cursor[1])) goto invalid;
++	for (i = 0; cursor[i]; i++) if (cursor[i] < '0' || cursor[i] > '9') goto invalid;
++	errno = 0;
++	after = strtoull(cursor, NULL, 10);
++	if (errno) goto invalid;
++	if (!*limit || limit[0] == '0') goto invalid;
++	for (i = 0; limit[i]; i++) if (limit[i] < '0' || limit[i] > '9') goto invalid;
++	n = strtoul(limit, NULL, 10);
++	if (n < 1 || n > 64) goto invalid;
++	snprintf(command, sizeof command, "read %s %llu %u %c", epoch, after, n, *wait);
++	if (strcmp(command, line) != 0) goto invalid;
++	snprintf(command, sizeof command, "tmux-ide-events -r %s -E %s -a %llu -n %u",
++	    *wait == '1' ? "-w" : "", epoch, after, n);
++	free(line);
++	cs->journal_busy = 1;
++	state = cmdq_new_state(NULL, NULL, CMDQ_STATE_CONTROL);
++	cmdq_set_state_origin_client(state, c, TI_TRANSPORT_CONTROL);
++	if (cmd_parse_and_append(command, &parse, c, state, &error) == CMD_PARSE_ERROR) {
++		free(error);
++		control_journal_close(c);
++	} else
++		cmdq_append(c, cmdq_get_callback(control_journal_done, NULL));
++	cmdq_free_state(state);
++	return;
++invalid:
++	free(line);
++	control_journal_close(c);
+ }
+ 
+ /* Control client input callback. Read lines and fire commands. */
+@@ -559,6 +729,11 @@ control_read_callback(__unused struct bufferevent *bufev, void *data)
+ 	struct cmdq_state	*state;
+ 	enum cmd_parse_status	 status;
+ 
++	if (c->flags & CLIENT_JOURNAL_READER) {
++		control_journal_read(c);
++		return;
++	}
++
+ 	for (;;) {
+ 		line = evbuffer_readln(buffer, NULL, EVBUFFER_EOL_LF);
+ 		if (line == NULL)
+@@ -571,6 +746,7 @@ control_read_callback(__unused struct bufferevent *bufev, void *data)
+ 		}
+ 
+ 		state = cmdq_new_state(NULL, NULL, CMDQ_STATE_CONTROL);
++		cmdq_set_state_origin_client(state, c, TI_TRANSPORT_CONTROL);
+ 		status = cmd_parse_and_append(line, NULL, c, state, &error);
+ 		if (status == CMD_PARSE_ERROR)
+ 			cmdq_append(c, cmdq_get_callback(control_error, error));
+@@ -739,6 +915,12 @@ control_write_callback(__unused struct bufferevent *bufev, void *data)
+ 	struct evbuffer		*evb = cs->write_event->output;
+ 	size_t			 space, limit;
+ 
++	if (c->flags & CLIENT_JOURNAL_READER) {
++		control_journal_ready(c);
++		if (EVBUFFER_LENGTH(evb) == 0)
++			bufferevent_disable(cs->write_event, EV_WRITE);
++		return;
++	}
+ 	control_flush_all_blocks(c);
+ 
+ 	while (EVBUFFER_LENGTH(evb) < CONTROL_BUFFER_HIGH) {
+diff --git a/format.c b/format.c
+index 1a6d73a..8835742 100644
+--- a/format.c
++++ b/format.c
+@@ -2147,6 +2147,15 @@ format_cb_pane_height(struct format_tree *ft)
+ 	return (NULL);
+ }
+ 
++/* Immutable server-local pane birth identity, zero if unavailable. */
++static void *
++format_cb_pane_birth_id(struct format_tree *ft)
++{
++	if (ft->wp != NULL)
++		return (format_printf("%llu", (unsigned long long)ft->wp->tmux_ide_birth_id));
++	return (NULL);
++}
++
+ /* Callback for pane_id. */
+ static void *
+ format_cb_pane_id(struct format_tree *ft)
+@@ -3416,6 +3425,9 @@ static const struct format_table_entry format_table[] = {
+ 	{ "pane_bg", FORMAT_TABLE_STRING,
+ 	  format_cb_pane_bg
+ 	},
++	{ "pane_birth_id", FORMAT_TABLE_STRING,
++	  format_cb_pane_birth_id
++	},
+ 	{ "pane_bottom", FORMAT_TABLE_STRING,
+ 	  format_cb_pane_bottom
+ 	},
+diff --git a/grid.c b/grid.c
+index 36c9918..2ed73c5 100644
+--- a/grid.c
++++ b/grid.c
+@@ -22,6 +22,7 @@
+ #include <string.h>
+ 
+ #include "tmux.h"
++#include "tmux-ide-snapshot-buffer.h"
+ 
+ /*
+  * Grid data. This is the basic data structure that represents what is shown on
+@@ -1080,10 +1081,12 @@ grid_string_cells_code(const struct grid_cell *lastgc,
+ }
+ 
+ /* Convert cells into a string. */
+-char *
+-grid_string_cells(struct grid *gd, u_int px, u_int py, u_int nx,
+-    struct grid_cell **lastgc, int flags, struct screen *s)
++static char *
++grid_string_cells_impl(struct grid *gd, u_int px, u_int py, u_int nx,
++    struct grid_cell **lastgc, int flags, struct screen *s, int bounded,
++    size_t limit)
+ {
++	struct ti_snapshot_buffer bounded_buf = { .limit = limit };
+ 	struct grid_cell	 gc;
+ 	static struct grid_cell	 lastgc1;
+ 	const char		*data;
+@@ -1099,11 +1102,15 @@ grid_string_cells(struct grid *gd, u_int px, u_int py, u_int nx,
+ 	}
+ 
+ 	len = 128;
+-	buf = xmalloc(len);
++	buf = bounded ? NULL : xmalloc(len);
+ 	off = 0;
+ 
+ 	gl = grid_peek_line(gd, py);
+ 	if (gl == NULL) {
++		if (bounded && ti_snapshot_append(&bounded_buf, "", 0) != 0)
++			return (NULL);
++		if (bounded)
++			buf = bounded_buf.data;
+ 		buf[0] = '\0';
+ 		return (buf);
+ 	}
+@@ -1140,31 +1147,51 @@ grid_string_cells(struct grid *gd, u_int px, u_int py, u_int nx,
+ 			}
+ 		}
+ 
+-		while (len < off + size + codelen + 1) {
+-			buf = xreallocarray(buf, 2, len);
+-			len *= 2;
+-		}
++		if (bounded) {
++			if (ti_snapshot_append(&bounded_buf, code, codelen) != 0 ||
++			    ti_snapshot_append(&bounded_buf, data, size) != 0)
++				goto fail;
++			buf = bounded_buf.data;
++			off = bounded_buf.length;
++		} else {
++			while (len < off + size + codelen + 1) {
++				buf = xreallocarray(buf, 2, len);
++				len *= 2;
++			}
+ 
+-		if (codelen != 0) {
+-			memcpy(buf + off, code, codelen);
+-			off += codelen;
++			if (codelen != 0) {
++				memcpy(buf + off, code, codelen);
++				off += codelen;
++			}
++			memcpy(buf + off, data, size);
++			off += size;
+ 		}
+-		memcpy(buf + off, data, size);
+-		off += size;
+ 	}
+ 
+ 	if (has_link) {
+ 		grid_string_cells_add_hyperlink(code, sizeof code, "", "",
+ 		    flags);
+ 		codelen = strlen(code);
+-		while (len < off + size + codelen + 1) {
+-			buf = xreallocarray(buf, 2, len);
+-			len *= 2;
++		if (bounded) {
++			if (ti_snapshot_append(&bounded_buf, code, codelen) != 0)
++				goto fail;
++			buf = bounded_buf.data;
++			off = bounded_buf.length;
++		} else {
++			while (len < off + size + codelen + 1) {
++				buf = xreallocarray(buf, 2, len);
++				len *= 2;
++			}
++			memcpy(buf + off, code, codelen);
++			off += codelen;
+ 		}
+-		memcpy(buf + off, code, codelen);
+-		off += codelen;
+ 	}
+ 
++	if (bounded && buf == NULL) {
++		if (ti_snapshot_append(&bounded_buf, "", 0) != 0)
++			goto fail;
++		buf = bounded_buf.data;
++	}
+ 	if (flags & GRID_STRING_TRIM_SPACES) {
+ 		while (off > 0 && buf[off - 1] == ' ')
+ 			off--;
+@@ -1172,6 +1199,26 @@ grid_string_cells(struct grid *gd, u_int px, u_int py, u_int nx,
+ 	buf[off] = '\0';
+ 
+ 	return (buf);
++
++fail:
++	free(bounded_buf.data);
++	return (NULL);
++}
++
++/* Ordinary callers retain the stock allocation policy and formatting. */
++char *
++grid_string_cells(struct grid *gd, u_int px, u_int py, u_int nx,
++    struct grid_cell **lastgc, int flags, struct screen *s)
++{
++	return (grid_string_cells_impl(gd, px, py, nx, lastgc, flags, s, 0, 0));
++}
++
++/* Recovery owns lastgc locally and treats allocation/budget failure as retry. */
++char *
++grid_string_cells_bounded(struct grid *gd, u_int px, u_int py, u_int nx,
++    struct grid_cell **lastgc, int flags, struct screen *s, size_t limit)
++{
++	return (grid_string_cells_impl(gd, px, py, nx, lastgc, flags, s, 1, limit));
+ }
+ 
+ /*
+diff --git a/input-keys.c b/input-keys.c
+index fdce540..6aeb4c8 100644
+--- a/input-keys.c
++++ b/input-keys.c
+@@ -397,6 +397,8 @@ input_key_build(void)
+ int
+ input_key_pane(struct window_pane *wp, key_code key, struct mouse_event *m)
+ {
++	int retval = 0, measure = tmux_ide_interaction_measuring();
++	size_t before = measure ? EVBUFFER_LENGTH(wp->event->output) : 0, after;
+ 	if (log_get_level() != 0) {
+ 		log_debug("writing key 0x%llx (%s) to %%%u", key,
+ 		    key_string_lookup_key(key, 1), wp->id);
+@@ -405,9 +407,14 @@ input_key_pane(struct window_pane *wp, key_code key, struct mouse_event *m)
+ 	if (KEYC_IS_MOUSE(key)) {
+ 		if (m != NULL && m->wp != -1 && (u_int)m->wp == wp->id)
+ 			input_key_mouse(wp, m);
+-		return (0);
++	} else
++		retval = input_key(wp->screen, wp->event, key);
++	if (measure) {
++		after = EVBUFFER_LENGTH(wp->event->output);
++		if (after > before)
++			tmux_ide_interaction_effect(wp->id, wp->tmux_ide_birth_id, 5, after - before);
+ 	}
+-	return (input_key(wp->screen, wp->event, key));
++	return retval;
+ }
+ 
+ static void
+diff --git a/input.c b/input.c
+index 21980f1..86725fa 100644
+--- a/input.c
++++ b/input.c
+@@ -939,6 +939,14 @@ input_reset(struct input_ctx *ictx, int clear)
+ 	ictx->flags = 0;
+ }
+ 
++/* A grid bootstrap cannot restore an unfinished parser sequence. */
++int
++input_snapshot_ready(struct input_ctx *ictx)
++{
++	return (ictx->state == &input_state_ground && !ictx->utf8started &&
++	    !(ictx->wp->base.mode & MODE_SYNC));
++}
++
+ /* Return pending data. */
+ struct evbuffer *
+ input_pending(struct input_ctx *ictx)
+diff --git a/notify.c b/notify.c
+index 8605601..b1edb72 100644
+--- a/notify.c
++++ b/notify.c
+@@ -35,9 +35,11 @@ struct notify_entry {
+ 	const char		*pbname;
+ };
+ 
+-static struct cmdq_item *
+-notify_insert_one_hook(struct cmdq_item *item, struct notify_entry *ne,
+-    struct cmd_list *cmdlist, struct cmdq_state *state)
++static struct cmdq_item *notify_insert_one_hook(struct cmdq_item *item,
++						struct notify_entry *ne,
++						struct cmd_list *cmdlist,
++						struct cmdq_state *state,
++						const struct ti_origin *origin)
+ {
+ 	struct cmdq_item	*new_item;
+ 	char			*s;
+@@ -50,12 +52,14 @@ notify_insert_one_hook(struct cmdq_item *item, struct notify_entry *ne,
+ 		free(s);
+ 	}
+ 	new_item = cmdq_get_command(cmdlist, state);
++	cmdq_set_origin(new_item, origin);
+ 	return (cmdq_insert_after(item, new_item));
+ }
+ 
+ static void
+ notify_insert_hook(struct cmdq_item *item, struct notify_entry *ne)
+ {
++	struct ti_origin origin = cmdq_origin_child(item, TI_HOOK);
+ 	struct cmd_find_state		 fs;
+ 	struct options			*oo;
+ 	struct cmdq_state		*state;
+@@ -104,14 +108,16 @@ notify_insert_hook(struct cmdq_item *item, struct notify_entry *ne)
+ 			free(pr->error);
+ 			break;
+ 		case CMD_PARSE_SUCCESS:
+-			notify_insert_one_hook(item, ne, pr->cmdlist, state);
++			notify_insert_one_hook(item, ne, pr->cmdlist, state,
++					       &origin);
+ 			break;
+ 		}
+ 	} else {
+ 		a = options_array_first(o);
+ 		while (a != NULL) {
+ 			cmdlist = options_array_item_value(a)->cmdlist;
+-			item = notify_insert_one_hook(item, ne, cmdlist, state);
++			item = notify_insert_one_hook(item, ne, cmdlist, state,
++						      &origin);
+ 			a = options_array_next(a);
+ 		}
+ 	}
+diff --git a/server-client.c b/server-client.c
+index 52886f0..4890dff 100644
+--- a/server-client.c
++++ b/server-client.c
+@@ -292,6 +292,7 @@ server_client_create(int fd)
+ 
+ 	c = xcalloc(1, sizeof *c);
+ 	c->references = 1;
++	c->tmux_ide_connection_id = tmux_ide_interaction_connection();
+ 	c->peer = proc_add_peer(server_proc, fd, server_client_dispatch, c);
+ 
+ 	if (gettimeofday(&c->creation_time, NULL) != 0)
+@@ -438,6 +439,7 @@ server_client_lost(struct client *c)
+ 	struct client_window	*cw, *cw1;
+ 
+ 	c->flags |= CLIENT_DEAD;
++	tmux_ide_interaction_client_lost(c);
+ 
+ 	server_client_clear_overlay(c);
+ 	status_prompt_clear(c);
+@@ -2347,7 +2349,9 @@ server_client_command_done(struct cmdq_item *item, __unused void *data)
+ {
+ 	struct client	*c = cmdq_get_client(item);
+ 
+-	if (~c->flags & CLIENT_ATTACHED)
++	if (c->flags & CLIENT_JOURNAL_READER)
++		control_journal_ready(c);
++	else if (~c->flags & CLIENT_ATTACHED)
+ 		c->flags |= CLIENT_EXIT;
+ 	else if (~c->flags & CLIENT_EXIT) {
+ 		if (c->flags & CLIENT_CONTROL)
+@@ -2367,10 +2371,11 @@ server_client_dispatch_command(struct client *c, struct imsg *imsg)
+ 	int			  argc = 0;
+ 	char			**argv, *cause;
+ 	struct cmd_parse_result	 *pr;
++	struct cmd_parse_input journal_parse = { .flags = CMD_PARSE_NOALIAS };
+ 	struct args_value	 *values;
+ 	struct cmdq_item	 *new_item;
+ 
+-	if (c->flags & CLIENT_EXIT)
++	if (c->flags & (CLIENT_EXIT|CLIENT_JOURNAL_READER))
+ 		return (0);
+ 
+ 	if (imsg->hdr.len - IMSG_HEADER_SIZE < sizeof data)
+@@ -2388,12 +2393,18 @@ server_client_dispatch_command(struct client *c, struct imsg *imsg)
+ 	}
+ 
+ 	argc = data.argc;
++	/* Only this exact initial command may become a closed reader. */
++	if (argc == 2 && strcmp(argv[0], "tmux-ide-events") == 0 &&
++	    strcmp(argv[1], "-P") == 0 && (c->flags & CLIENT_CONTROL) &&
++	    !(c->flags & CLIENT_CONTROLCONTROL) && c->session == NULL)
++		c->flags |= CLIENT_JOURNAL_READER;
+ 	if (argc == 0) {
+ 		new_item = cmdq_get_callback(server_client_default_command,
+ 		    NULL);
+ 	} else {
+ 		values = args_from_vector(argc, argv);
+-		pr = cmd_parse_from_arguments(values, argc, NULL);
++		pr = cmd_parse_from_arguments(values, argc,
++		    (c->flags & CLIENT_JOURNAL_READER) ? &journal_parse : NULL);
+ 		switch (pr->status) {
+ 		case CMD_PARSE_ERROR:
+ 			cause = pr->error;
+@@ -2412,6 +2423,7 @@ server_client_dispatch_command(struct client *c, struct imsg *imsg)
+ 			new_item = cmdq_get_command(pr->cmdlist, NULL);
+ 		cmd_list_free(pr->cmdlist);
+ 	}
++	cmdq_set_origin_client(new_item, c, TI_TRANSPORT_CLI);
+ 	cmdq_append(c, new_item);
+ 	cmdq_append(c, cmdq_get_callback(server_client_command_done, NULL));
+ 
+@@ -2456,14 +2468,14 @@ server_client_dispatch_identify(struct client *c, struct imsg *imsg)
+ 		if (datalen != sizeof flags)
+ 			return (-1);
+ 		memcpy(&flags, data, sizeof flags);
+-		c->flags |= flags;
++		c->flags |= (uint64_t)flags & ~CLIENT_JOURNAL_READER;
+ 		log_debug("client %p IDENTIFY_FLAGS %#x", c, flags);
+ 		break;
+ 	case MSG_IDENTIFY_LONGFLAGS:
+ 		if (datalen != sizeof longflags)
+ 			return (-1);
+ 		memcpy(&longflags, data, sizeof longflags);
+-		c->flags |= longflags;
++		c->flags |= longflags & ~CLIENT_JOURNAL_READER;
+ 		log_debug("client %p IDENTIFY_LONGFLAGS %#llx", c,
+ 		    (unsigned long long)longflags);
+ 		break;
+diff --git a/server.c b/server.c
+index 49cac8b..d592a11 100644
+--- a/server.c
++++ b/server.c
+@@ -252,6 +252,7 @@ server_start(struct tmuxproc *client, uint64_t flags, struct event_base *base,
+ 
+ 	server_add_accept(0);
+ 	proc_loop(server_proc, server_loop);
++	tmux_ide_interaction_free();
+ 
+ 	job_kill_all();
+ 	status_prompt_save_history();
+@@ -296,8 +297,10 @@ server_loop(void)
+ 	 * clients but don't actually exit until they've gone.
+ 	 */
+ 	cmd_wait_for_flush();
+-	if (!TAILQ_EMPTY(&clients))
+-		return (0);
++	TAILQ_FOREACH(c, &clients, entry) {
++		if (!(c->flags & CLIENT_JOURNAL_READER))
++			return (0);
++	}
+ 
+ 	if (job_still_running())
+ 		return (0);
+diff --git a/tmux-ide-journal.c b/tmux-ide-journal.c
+new file mode 100644
+index 0000000..80f57dc
+--- /dev/null
++++ b/tmux-ide-journal.c
+@@ -0,0 +1,746 @@
++/*
++ * Copyright (c) 2026 wavyrai
++ *
++ * Permission to use, copy, modify, and distribute this software for any
++ * purpose with or without fee is hereby granted, provided that the above
++ * copyright notice and this permission notice appear in all copies.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
++ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
++ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
++ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
++ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
++ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
++ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
++ */
++#include "tmux-ide-journal.h"
++#include "tmux.h"
++#include <errno.h>
++#include <inttypes.h>
++#include <stdarg.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/types.h>
++
++static struct ti_ring *ti_journal;
++static char ti_server_epoch[37], ti_journal_epoch[37];
++static uint64_t ti_connection_counter, ti_request_counter, ti_command_counter;
++static uint64_t ti_pane_birth_counter;
++static unsigned ti_degraded;
++static struct event ti_wakeup;
++static int ti_wakeup_initialized, ti_wakeup_pending;
++struct ti_waiter {
++	struct cmdq_item *item;
++	struct client *client;
++	uint64_t after;
++	unsigned limit;
++	char epoch[37];
++};
++static struct ti_waiter ti_waiters[TI_MAX_WAITERS];
++static enum cmd_retval ti_exec(struct cmd *, struct cmdq_item *);
++static void ti_wake(int, short, void *);
++static void ti_read(struct cmdq_item *, const char *, uint64_t, unsigned);
++
++const struct cmd_entry cmd_tmux_ide_events_entry = {
++    .name = "tmux-ide-events",
++    .alias = NULL,
++#ifdef TMUX_IDE_JOURNAL_TEST
++    .args = {"VPeirwE:a:n:TFXWDB", 0, 0, NULL},
++#else
++    .args = {"VPeirwE:a:n:", 0, 0, NULL},
++#endif
++    .usage = "-V | -e | -i | -r [-w] -E epoch -a cursor [-n limit]",
++    .flags = 0,
++    .exec = ti_exec};
++
++static void
++ti_uuid(char *out)
++{
++	unsigned char b[16];
++	arc4random_buf(b, sizeof b);
++	b[6] = (b[6] & 15) | 64;
++	b[8] = (b[8] & 63) | 128;
++	snprintf(out, 37,
++		 "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%"
++		 "02x%02x",
++		 b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9],
++		 b[10], b[11], b[12], b[13], b[14], b[15]);
++}
++static void
++ti_initialize(void)
++{
++	if (*ti_server_epoch)
++		return;
++	ti_uuid(ti_server_epoch);
++	ti_uuid(ti_journal_epoch);
++	evtimer_set(&ti_wakeup, ti_wake, NULL);
++	ti_wakeup_initialized = 1;
++}
++static void
++ti_degrade(unsigned reason)
++{
++	if (ti_degraded & reason)
++		return;
++	ti_degraded |= reason;
++	if (ti_journal && !ti_wakeup_pending) {
++		ti_wakeup_pending = 1;
++		event_active(&ti_wakeup, EV_TIMEOUT, 1);
++	}
++}
++int
++tmux_ide_interaction_enabled(void)
++{
++	return ti_journal != NULL;
++}
++uint64_t
++tmux_ide_interaction_connection(void)
++{
++	ti_initialize();
++	/* Exhaustion cannot recycle a connection identity within the server
++	 * epoch. */
++	if (ti_connection_counter == UINT64_MAX) {
++		ti_degrade(2);
++		return 0;
++	}
++	return ++ti_connection_counter;
++}
++uint64_t
++tmux_ide_interaction_pane_birth(void)
++{
++	/* Allocate even while observation is disabled; never recycle. */
++	if (ti_pane_birth_counter == UINT64_MAX) {
++		ti_degrade(16);
++		return 0;
++	}
++	return ++ti_pane_birth_counter;
++}
++uint64_t
++tmux_ide_interaction_request(void)
++{
++	if (ti_request_counter == UINT64_MAX) {
++		ti_degrade(4);
++		return 0;
++	}
++	return ++ti_request_counter;
++}
++uint64_t
++tmux_ide_interaction_command(void)
++{
++	if (!ti_journal)
++		return 0;
++	if (ti_command_counter == UINT64_MAX) {
++		ti_degrade(1);
++		return 0;
++	}
++	return ++ti_command_counter;
++}
++void
++tmux_ide_interaction_done(uint64_t id, const struct ti_origin *origin,
++			  unsigned kind, unsigned outcome, unsigned target,
++			  uint64_t target_birth, unsigned flags)
++{
++	struct ti_record record = {0};
++	struct timespec now;
++	record.command_id = id;
++	memcpy(record.correlation, origin->correlation,
++	       sizeof record.correlation);
++	record.issuer_id = origin->issuer_id;
++	record.request_id = origin->request_id;
++	record.parent_id = origin->parent_id;
++	record.transport = origin->transport;
++	record.derivation = origin->derivation;
++	record.kind = kind;
++	record.outcome = outcome;
++	record.target_id = target;
++	record.target_birth_id = target_birth;
++	record.flags = flags;
++	if (clock_gettime(CLOCK_MONOTONIC, &now) == 0)
++		record.monotonic_us =
++		    (uint64_t)now.tv_sec * 1000000 + now.tv_nsec / 1000;
++	tmux_ide_interaction_append(&record);
++}
++/* Fixed synchronous aggregation: never retained across an event-loop yield. */
++#define TI_EFFECT_TARGETS 64
++static struct {
++	unsigned depth, used;
++	uint64_t command;
++	struct ti_origin origin;
++	struct {
++		unsigned pane, kind;
++		uint64_t count, birth_id;
++	} targets[TI_EFFECT_TARGETS];
++} ti_effects;
++void
++tmux_ide_interaction_begin(uint64_t command, const struct ti_origin *origin)
++{
++	if (!ti_journal)
++		return;
++	if (ti_effects.depth++) {
++		ti_degrade(8);
++		return;
++	}
++	ti_effects.used = 0;
++	ti_effects.command = command;
++	ti_effects.origin = *origin;
++}
++int
++tmux_ide_interaction_measuring(void)
++{
++	return ti_effects.depth == 1;
++}
++void
++tmux_ide_interaction_effect(unsigned pane, uint64_t birth, unsigned kind,
++			    uint64_t count)
++{
++	unsigned i;
++	if (ti_effects.depth != 1)
++		return;
++	for (i = 0; i < ti_effects.used; i++)
++		if (ti_effects.targets[i].pane == pane &&
++		    ti_effects.targets[i].birth_id == birth &&
++		    ti_effects.targets[i].kind == kind)
++			break;
++	if (i == TI_EFFECT_TARGETS) {
++		ti_degrade(8);
++		return;
++	}
++	if (i == ti_effects.used) {
++		ti_effects.used++;
++		ti_effects.targets[i].pane = pane;
++		ti_effects.targets[i].birth_id = birth;
++		ti_effects.targets[i].kind = kind;
++		ti_effects.targets[i].count = 0;
++	}
++	if (UINT64_MAX - ti_effects.targets[i].count < count) {
++		ti_degrade(8);
++		return;
++	}
++	ti_effects.targets[i].count += count;
++}
++void
++tmux_ide_interaction_end(void)
++{
++	unsigned i;
++	struct ti_record record = {0};
++	struct timespec now;
++	if (!ti_effects.depth || --ti_effects.depth)
++		return;
++	record.command_id = ti_effects.command;
++	memcpy(record.correlation, ti_effects.origin.correlation,
++	       sizeof record.correlation);
++	record.issuer_id = ti_effects.origin.issuer_id;
++	record.request_id = ti_effects.origin.request_id;
++	record.parent_id = ti_effects.origin.parent_id;
++	record.transport = ti_effects.origin.transport;
++	record.derivation = ti_effects.origin.derivation;
++	record.flags = 1;
++	record.outcome = 1;
++	if (clock_gettime(CLOCK_MONOTONIC, &now) == 0)
++		record.monotonic_us =
++		    (uint64_t)now.tv_sec * 1000000 + now.tv_nsec / 1000;
++	for (i = 0; i < ti_effects.used; i++) {
++		record.kind = ti_effects.targets[i].kind;
++		record.target_id = ti_effects.targets[i].pane;
++		record.target_birth_id = ti_effects.targets[i].birth_id;
++		record.count = ti_effects.targets[i].count;
++		tmux_ide_interaction_append(&record);
++	}
++	ti_effects.used = 0;
++}
++void
++tmux_ide_interaction_forget(struct cmdq_item *item)
++{
++	unsigned i;
++	for (i = 0; i < TI_MAX_WAITERS; i++)
++		if (ti_waiters[i].item == item)
++			memset(&ti_waiters[i], 0, sizeof ti_waiters[i]);
++}
++void
++tmux_ide_interaction_client_lost(struct client *client)
++{
++	unsigned i;
++	for (i = 0; i < TI_MAX_WAITERS; i++) {
++		if (ti_waiters[i].client != client)
++			continue;
++		cmdq_continue(ti_waiters[i].item);
++		memset(&ti_waiters[i], 0, sizeof ti_waiters[i]);
++	}
++}
++void
++tmux_ide_interaction_free(void)
++{
++	if (ti_wakeup_initialized)
++		evtimer_del(&ti_wakeup);
++	memset(ti_waiters, 0, sizeof ti_waiters);
++	free(ti_journal);
++	ti_journal = NULL;
++}
++void
++tmux_ide_interaction_append(const struct ti_record *record)
++{
++	if (ti_journal == NULL)
++		return;
++	if (!ti_append(ti_journal, record)) {
++		memset(ti_journal, 0, sizeof *ti_journal);
++		ti_uuid(ti_journal_epoch);
++		(void)ti_append(ti_journal, record);
++	}
++	/* Serialization occurs on a later event-loop turn, never on the
++	 * producer. */
++	if (!ti_wakeup_pending) {
++		ti_wakeup_pending = 1;
++		event_active(&ti_wakeup, EV_TIMEOUT, 1);
++	}
++}
++static int
++ti_decimal(const char *text, uint64_t *value)
++{
++	char *end;
++	const char *p;
++	unsigned long long parsed;
++	if (text == NULL || !*text || strlen(text) > 20)
++		return 0;
++	for (p = text; *p; p++)
++		if (*p < '0' || *p > '9')
++			return 0;
++	errno = 0;
++	parsed = strtoull(text, &end, 10);
++	if (errno || *end || parsed > UINT64_MAX)
++		return 0;
++	*value = parsed;
++	return 1;
++}
++const char *
++tmux_ide_server_epoch(void)
++{
++	return ti_server_epoch;
++}
++
++static void
++ti_capability(struct cmdq_item *item)
++{
++	unsigned i, waiting = 0;
++	for (i = 0; i < TI_MAX_WAITERS; i++)
++		if (ti_waiters[i].item)
++			waiting++;
++	cmdq_print(
++	    item,
++	    "{\"schemaVersion\":2,\"type\":\"capability\","
++	    "\"serverEpoch\":\"%s\",\"journalEpoch\":\"%s\",\"enabled\":%s,"
++	    "\"coverage\":[\"command-outcome-v1\",\"pty-enqueue-v1\",\"capture-"
++	    "produced-v1\",\"cooperative-operation-v1\",\"pane-identity-v1\"],\"capacity\":%u,"
++	    "\"maxBatch\":%u,\"maxWaiters\":%u,\"waitingReaders\":%u,"
++	    "\"degraded\":%u,\"readerTransport\":\"sessionless-control-v1\",\"ownedOperationTransport\":\"direct-wrapper-v1\",\"ownedOperationEpochGuard\":\"server-epoch-v1\",\"ownedOperationPaneGuard\":\"direct-pane-v1\",\"ownedOperationSessionGuard\":\"direct-session-v1\",\"atomicPaneSnapshot\":\"capture-resume-v1\",\"atomicPaneSnapshotDual\":\"capture-resume-dual-v2\"}",
++	    ti_server_epoch, ti_journal_epoch, ti_journal ? "true" : "false",
++	    TI_CAPACITY, TI_MAX_BATCH, TI_MAX_WAITERS, waiting, ti_degraded);
++}
++/* All fields are numbers/enums or internally minted UUIDs. No arbitrary text.
++ */
++static int
++ti_format(char *out, size_t capacity, size_t *used, const char *fmt, ...)
++{
++	int n;
++	va_list ap;
++	if (*used >= capacity)
++		return 0;
++	va_start(ap, fmt);
++	n = vsnprintf(out + *used, capacity - *used, fmt, ap);
++	va_end(ap);
++	if (n < 0 || (size_t)n >= capacity - *used)
++		return 0;
++	*used += n;
++	return 1;
++}
++static void
++ti_read(struct cmdq_item *item, const char *epoch, uint64_t after,
++	unsigned limit)
++{
++	char out[131072];
++	size_t used = 0;
++	uint64_t oldest, first, last, seq;
++	const struct ti_record *record;
++	if (strcmp(epoch, ti_journal_epoch)) {
++		cmdq_print(item,
++			   "{\"schemaVersion\":2,\"type\":\"reset\","
++			   "\"serverEpoch\":\"%s\",\"journalEpoch\":\"%s\"}",
++			   ti_server_epoch, ti_journal_epoch);
++		return;
++	}
++	if (after > ti_journal->newest) {
++		cmdq_error(item, "invalid journal cursor");
++		return;
++	}
++	oldest = ti_oldest(ti_journal);
++	first = after == UINT64_MAX ? UINT64_MAX : after + 1;
++	if (first < oldest)
++		first = oldest;
++	last = after;
++#define TI_OUT(...)                                                            \
++	do {                                                                   \
++		if (!ti_format(out, sizeof out, &used, __VA_ARGS__))           \
++			goto too_large;                                        \
++	} while (0)
++	TI_OUT("{\"schemaVersion\":2,\"type\":\"batch\",\"serverEpoch\":\"%s\","
++	       "\"journalEpoch\":\"%s\",\"oldest\":\"%" PRIu64
++	       "\",\"newest\":\"%" PRIu64 "\",\"gap\":",
++	       ti_server_epoch, ti_journal_epoch, oldest, ti_journal->newest);
++	if (after < oldest - 1)
++		TI_OUT("{\"from\":\"%" PRIu64 "\",\"through\":\"%" PRIu64 "\"}",
++		       after + 1, oldest - 1);
++	else
++		TI_OUT("null");
++	TI_OUT(",\"records\":[");
++	for (seq = first; seq <= ti_journal->newest && limit && seq > after;
++	     seq++, limit--) {
++		record = ti_at(ti_journal, seq);
++		if (record == NULL)
++			break;
++		TI_OUT(
++		    "%s{\"sequence\":\"%" PRIu64 "\",\"commandId\":\"%" PRIu64
++		    "\",\"issuerId\":\"%" PRIu64 "\",\"monotonicUs\":\"%" PRIu64
++		    "\",\"count\":\"%" PRIu64
++		    "\",\"targetBirthId\":\"%" PRIu64 "\",\"targetId\":%u,\"kind\":%u,\"outcome\":%u,\"flags\":%"
++		    "u,\"requestId\":\"%" PRIu64
++		    "\",\"parentCommandId\":\"%" PRIu64
++		    "\",\"transport\":%u,\"derivation\":%u,\"correlation\":%s%"
++		    "s%s}",
++		    seq == first ? "" : ",", record->sequence,
++		    record->command_id, record->issuer_id, record->monotonic_us,
++		    record->count, record->target_birth_id, record->target_id, record->kind,
++		    record->outcome, record->flags, record->request_id,
++		    record->parent_id, record->transport, record->derivation,
++		    record->correlation[0] ? "\"" : "",
++		    record->correlation[0] ? record->correlation : "null",
++		    record->correlation[0] ? "\"" : "");
++		last = seq;
++		if (seq == UINT64_MAX)
++			break;
++	}
++	TI_OUT("],\"next\":\"%" PRIu64 "\",\"degraded\":%u}", last,
++	       ti_degraded);
++	cmdq_print(item, "%s", out);
++	return;
++too_large:
++	cmdq_error(item, "journal serialization limit exceeded");
++#undef TI_OUT
++}
++static void
++ti_wake(__unused int fd, __unused short events, __unused void *arg)
++{
++	unsigned i;
++	struct ti_waiter waiter;
++	ti_wakeup_pending = 0;
++	for (i = 0; i < TI_MAX_WAITERS; i++) {
++		if (!ti_waiters[i].item)
++			continue;
++		waiter = ti_waiters[i];
++		memset(&ti_waiters[i], 0, sizeof ti_waiters[i]);
++		if (!(waiter.client->flags & CLIENT_DEAD)) {
++			ti_read(waiter.item, waiter.epoch, waiter.after,
++				waiter.limit);
++			if (waiter.client->flags & CLIENT_JOURNAL_READER)
++				cmdq_guard(waiter.item, "end", 1);
++		}
++		cmdq_continue(waiter.item);
++	}
++}
++static enum cmd_retval
++ti_exec(struct cmd *cmd, struct cmdq_item *item)
++{
++	struct args *args = cmd_get_args(cmd);
++	struct client *client = cmdq_get_origin_client(item);
++	uint64_t after, limit = TI_MAX_BATCH;
++	const char *epoch;
++	unsigned i;
++	int modes = args_has(args, 'P') + args_has(args, 'V') + args_has(args, 'e') +
++		    args_has(args, 'i') + args_has(args, 'r');
++	ti_initialize();
++#ifdef TMUX_IDE_JOURNAL_TEST
++	if (args_has(args, 'B')) {
++		ti_pane_birth_counter = UINT64_MAX;
++		return CMD_RETURN_NORMAL;
++	}
++	if (args_has(args, 'D')) {
++		ti_connection_counter = ti_request_counter =
++		    ti_command_counter = UINT64_MAX;
++		ti_degrade(1 | 2 | 4);
++		return CMD_RETURN_NORMAL;
++	}
++	if (args_has(args, 'X')) {
++		struct ti_record record = {0};
++		if (!ti_journal) {
++			cmdq_error(item, "journal disabled");
++			return CMD_RETURN_ERROR;
++		}
++		ti_journal->newest = UINT64_MAX;
++		tmux_ide_interaction_append(&record);
++		return CMD_RETURN_NORMAL;
++	}
++	if (args_has(args, 'T') || args_has(args, 'W')) {
++		struct ti_record record = {0};
++		if (!ti_journal) {
++			cmdq_error(item, "journal disabled");
++			return CMD_RETURN_ERROR;
++		}
++		if (args_has(args, 'W')) {
++			memset(&record, 0xff, sizeof record);
++			memcpy(record.correlation,
++			       "ffffffff-ffff-4fff-bfff-ffffffffffff", 37);
++		}
++		record.kind = 255;
++		record.issuer_id = client ? client->tmux_ide_connection_id : 0;
++		tmux_ide_interaction_append(&record);
++		return CMD_RETURN_NORMAL;
++	}
++#endif
++	if (modes != 1 || (!args_has(args, 'r') &&
++			   (args_has(args, 'w') || args_has(args, 'E') ||
++			    args_has(args, 'a') || args_has(args, 'n')))) {
++		cmdq_error(item, "invalid journal arguments");
++		return CMD_RETURN_ERROR;
++	}
++	if (args_has(args, 'e') && !ti_journal) {
++#ifdef TMUX_IDE_JOURNAL_TEST
++		if (args_has(args, 'F'))
++			ti_journal = NULL;
++		else
++#endif
++			ti_journal = calloc(1, sizeof *ti_journal);
++		if (!ti_journal) {
++			cmdq_error(item, "journal allocation unavailable; "
++					 "terminal operation unaffected");
++			return CMD_RETURN_ERROR;
++		}
++	}
++	if (args_has(args, 'P')) {
++		struct client *other;
++		unsigned readers = 0;
++		TAILQ_FOREACH(other, &clients, entry)
++			if (other->flags & CLIENT_JOURNAL_READER)
++				readers++;
++		if (!client || !(client->flags & CLIENT_JOURNAL_READER) ||
++		    client->session || !client->tmux_ide_connection_id ||
++		    !ti_journal || readers > TI_MAX_WAITERS) {
++			if (client && (client->flags & CLIENT_JOURNAL_READER)) {
++				client->flags |= CLIENT_EXIT;
++			}
++			cmdq_error(item, "sessionless journal reader unavailable");
++			return CMD_RETURN_ERROR;
++		}
++		ti_capability(item);
++		cmdq_print(item, "{\"schemaVersion\":2,\"type\":\"identity\","
++		    "\"serverEpoch\":\"%s\",\"connectionId\":\"%" PRIu64 "\"}",
++		    ti_server_epoch, client->tmux_ide_connection_id);
++		return CMD_RETURN_NORMAL;
++	}
++	if (args_has(args, 'V') || args_has(args, 'e')) {
++		ti_capability(item);
++		return CMD_RETURN_NORMAL;
++	}
++	if (args_has(args, 'i')) {
++		cmdq_print(item,
++			   "{\"schemaVersion\":2,\"type\":\"identity\","
++			   "\"serverEpoch\":\"%s\",\"connectionId\":\"%" PRIu64
++			   "\"}",
++			   ti_server_epoch,
++			   cmdq_origin_child(item, TI_CHILD).issuer_id);
++		return CMD_RETURN_NORMAL;
++	}
++	if (!ti_journal) {
++		cmdq_error(item, "journal disabled");
++		return CMD_RETURN_ERROR;
++	}
++	epoch = args_get(args, 'E');
++	if (!epoch || strlen(epoch) != 36 ||
++	    !ti_decimal(args_get(args, 'a'), &after) ||
++	    (args_has(args, 'n') && (!ti_decimal(args_get(args, 'n'), &limit) ||
++				     limit < 1 || limit > TI_MAX_BATCH))) {
++		cmdq_error(item, "invalid journal cursor arguments");
++		return CMD_RETURN_ERROR;
++	}
++	if (strcmp(epoch, ti_journal_epoch) || !args_has(args, 'w') ||
++	    after != ti_journal->newest || ti_degraded) {
++		ti_read(item, epoch, after, (unsigned)limit);
++		return CMD_RETURN_NORMAL;
++	}
++	if (!client) {
++		cmdq_error(item, "journal wait requires originating client");
++		return CMD_RETURN_ERROR;
++	}
++	for (i = 0; i < TI_MAX_WAITERS; i++)
++		if (!ti_waiters[i].item) {
++			ti_waiters[i].item = item;
++			ti_waiters[i].client = client;
++			ti_waiters[i].after = after;
++			ti_waiters[i].limit = (unsigned)limit;
++			memcpy(ti_waiters[i].epoch, epoch, 37);
++			return CMD_RETURN_WAIT;
++		}
++	cmdq_error(item, "journal waiter limit exceeded");
++	return CMD_RETURN_ERROR;
++}
++
++/* An explicit cooperative assertion, never independently authenticated
++ * identity. */
++static enum args_parse_type
++ti_run_parse(__unused struct args *args, __unused u_int idx,
++	     __unused char **cause)
++{
++	return ARGS_PARSE_COMMANDS_OR_STRING;
++}
++static int
++ti_operation_uuid(const char *value)
++{
++	unsigned i;
++	if (!value || strlen(value) != 36)
++		return 0;
++	for (i = 0; i < 36; i++) {
++		if (i == 8 || i == 13 || i == 18 || i == 23) {
++			if (value[i] != '-')
++				return 0;
++		} else if (!((value[i] >= '0' && value[i] <= '9') ||
++			     (value[i] >= 'a' && value[i] <= 'f') ||
++			     (value[i] >= 'A' && value[i] <= 'F')))
++			return 0;
++	}
++	return value[14] >= '1' && value[14] <= '8' &&
++	       (value[19] == '8' || value[19] == '9' || value[19] == 'a' ||
++		value[19] == 'A' || value[19] == 'b' || value[19] == 'B');
++}
++static enum cmd_retval
++ti_run_exec(struct cmd *self, struct cmdq_item *item)
++{
++	struct args *args = cmd_get_args(self);
++	const char *operation = args_get(args, 'O');
++	const char *expected_epoch = args_get(args, 'E');
++	const char *expected_pane = args_get(args, 't');
++	const char *expected_birth = args_get(args, 'B');
++	const char *expected_name = args_get(args, 's');
++	const char *expected_session = args_get(args, 'S');
++	const char *expected_created = args_get(args, 'C');
++	uint64_t session_id = 0, session_created = 0;
++	struct session *guard_session;
++	struct ti_session_guard *session_guard = NULL;
++	struct cmd *check_command;
++	unsigned command_count = 0;
++	uint64_t pane_id, birth_id;
++	struct window_pane *guard_pane;
++	struct cmd_list *commands;
++	struct cmd_parse_result *parsed;
++	struct cmd_parse_input parse = { .flags = CMD_PARSE_NOALIAS | CMD_PARSE_PARSEONLY };
++	struct args_value *body = args_value(args, 0);
++	struct cmdq_item *child;
++	struct ti_origin origin = cmdq_origin_child(item, TI_CHILD);
++	struct client *client = cmdq_get_origin_client(item);
++	if (expected_epoch && (!args_has(args, 'I') ||
++	    !ti_operation_uuid(expected_epoch) ||
++	    strcmp(expected_epoch, ti_server_epoch) != 0)) {
++		cmdq_error(item, "operation server epoch mismatch");
++		return CMD_RETURN_ERROR;
++	}
++	if (!ti_operation_uuid(operation)) {
++		cmdq_error(item, "operation must be a canonical UUID");
++		return CMD_RETURN_ERROR;
++	}
++	if (expected_pane || expected_birth) {
++		if (!args_has(args, 'I') || !expected_epoch ||
++		    !expected_pane || expected_pane[0] != '%' ||
++		    !ti_decimal(expected_pane + 1, &pane_id) ||
++		    (expected_pane[1] == '0' && expected_pane[2] != '\0') ||
++		    pane_id > UINT32_MAX || !ti_decimal(expected_birth, &birth_id) ||
++		    !birth_id || expected_birth[0] == '0') {
++			cmdq_error(item, "invalid operation pane guard");
++			return CMD_RETURN_ERROR;
++		}
++		guard_pane = window_pane_find_by_id((u_int)pane_id);
++		if (!guard_pane || guard_pane->tmux_ide_birth_id != birth_id) {
++			cmdq_error(item, "operation pane lifetime mismatch");
++			return CMD_RETURN_ERROR;
++		}
++		origin.guard_wrapper_id = origin.parent_id;
++		origin.guard_pane_id = (uint32_t)pane_id;
++		origin.guard_birth_id = birth_id;
++	}
++	if (expected_name || expected_session || expected_created) {
++		if (!args_has(args, 'I') || !expected_epoch || !expected_name ||
++		    !*expected_name || strlen(expected_name) > 4096 ||
++		    !expected_session || expected_session[0] != '$' ||
++		    !ti_decimal(expected_session + 1, &session_id) ||
++		    (expected_session[1] == '0' && expected_session[2] != '\0') ||
++		    session_id > UINT32_MAX ||
++		    !ti_decimal(expected_created, &session_created) ||
++		    (expected_created[0] == '0' && expected_created[1] != '\0')) {
++			cmdq_error(item, "invalid operation session guard");
++			return CMD_RETURN_ERROR;
++		}
++		guard_session = session_find(expected_name);
++		if (!guard_session || guard_session->id != (u_int)session_id ||
++		    guard_session->creation_time.tv_sec < 0 ||
++		    (uint64_t)guard_session->creation_time.tv_sec != session_created) {
++			cmdq_error(item, "operation session lifetime mismatch");
++			return CMD_RETURN_ERROR;
++		}
++	}
++	if (args_has(args, 'I') && (!ti_journal || !origin.parent_id ||
++	    !origin.issuer_id || !client ||
++	    client->tmux_ide_connection_id != origin.issuer_id)) {
++		cmdq_error(item, "operation identity unavailable");
++		return CMD_RETURN_ERROR;
++	}
++	if (args_has(args, 'I')) {
++		if (!body || body->type != ARGS_STRING) {
++			cmdq_error(item, "operation identity requires a string command body");
++			return CMD_RETURN_ERROR;
++		}
++		parse.c = client;
++		cmd_find_copy_state(&parse.fs, cmdq_get_target(item));
++		parsed = cmd_parse_from_string(body->string, &parse);
++		if (parsed->status != CMD_PARSE_SUCCESS) {
++			cmdq_error(item, "%s", parsed->error);
++			free(parsed->error);
++			return CMD_RETURN_ERROR;
++		}
++		commands = parsed->cmdlist;
++	} else {
++		commands = args_make_commands_now(self, item, 0, 0);
++		if (!commands)
++			return CMD_RETURN_ERROR;
++	}
++	if (expected_name) {
++		for (check_command = cmd_list_first(commands); check_command;
++		    check_command = cmd_list_next(check_command)) {
++			if (++command_count > 64)
++				break;
++		}
++		if (command_count <= 64)
++			session_guard = cmdq_session_guard_new(expected_name,
++			    (u_int)session_id, session_created);
++		if (!session_guard) {
++			cmd_list_free(commands);
++			cmdq_error(item, "operation session guard unavailable");
++			return CMD_RETURN_ERROR;
++		}
++	}
++	if (args_has(args, 'I'))
++		cmdq_print(item, "{\"schemaVersion\":2,\"type\":\"operation-identity\","
++		    "\"serverEpoch\":\"%s\",\"connectionId\":\"%" PRIu64
++		    "\",\"wrapperCommandId\":\"%" PRIu64 "\",\"operationId\":\"%s\"}",
++		    ti_server_epoch, origin.issuer_id, origin.parent_id, operation);
++	memcpy(origin.correlation, operation, sizeof origin.correlation);
++	child = cmdq_get_command(commands, cmdq_get_state(item));
++	if (args_has(args, 'I'))
++		cmd_list_free(commands);
++	cmdq_set_origin(child, &origin);
++	cmdq_set_session_guard(child, session_guard);
++	cmdq_session_guard_free(session_guard);
++	cmdq_insert_after(item, child);
++	return CMD_RETURN_NORMAL;
++}
++const struct cmd_entry cmd_tmux_ide_run_entry = {
++    .name = "tmux-ide-run",
++    .alias = NULL,
++    .args = {"B:C:E:IO:S:s:t:", 1, 1, ti_run_parse},
++    .usage = "[-I [-E server-epoch [-t pane-id -B birth-id] [-s session-name -S session-id -C created]]] -O operation-uuid { commands }",
++    .flags = 0,
++    .exec = ti_run_exec};
+diff --git a/tmux-ide-journal.h b/tmux-ide-journal.h
+new file mode 100644
+index 0000000..5fd589b
+--- /dev/null
++++ b/tmux-ide-journal.h
+@@ -0,0 +1,75 @@
++/*
++ * Copyright (c) 2026 wavyrai
++ *
++ * Permission to use, copy, modify, and distribute this software for any
++ * purpose with or without fee is hereby granted, provided that the above
++ * copyright notice and this permission notice appear in all copies.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
++ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
++ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
++ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
++ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
++ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
++ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
++ */
++#ifndef TMUX_IDE_JOURNAL_H
++#define TMUX_IDE_JOURNAL_H
++#include <stddef.h>
++#include <stdint.h>
++#include <string.h>
++#define TI_CAPACITY 4096
++#define TI_MAX_BATCH 256
++#define TI_MAX_WAITERS 4
++enum ti_transport {
++	TI_TRANSPORT_UNKNOWN,
++	TI_TRANSPORT_CLI,
++	TI_TRANSPORT_CONTROL
++};
++enum ti_derivation { TI_DIRECT, TI_CHILD, TI_HOOK, TI_BACKGROUND };
++struct ti_origin {
++	uint64_t issuer_id, request_id, parent_id;
++	uint64_t guard_wrapper_id, guard_birth_id;
++	uint32_t guard_pane_id;
++	uint32_t transport, derivation;
++	char correlation[37];
++};
++/* Metadata only. Zero ids mean unavailable, never an inferred target client. */
++struct ti_record {
++	uint64_t sequence, command_id, issuer_id, monotonic_us, count;
++	uint64_t request_id, parent_id, target_birth_id;
++	uint32_t target_id, kind, outcome, flags, transport, derivation;
++	char correlation[37];
++};
++struct ti_ring {
++	uint64_t newest;
++	struct ti_record records[TI_CAPACITY];
++};
++_Static_assert(sizeof(struct ti_ring) <= 2 * 1024 * 1024,
++	       "journal memory bound");
++static inline uint64_t
++ti_oldest(const struct ti_ring *r)
++{
++	return r->newest < TI_CAPACITY ? 1 : r->newest - TI_CAPACITY + 1;
++}
++/* No allocation, callbacks or I/O. Caller resets epoch on counter exhaustion.
++ */
++static inline int
++ti_append(struct ti_ring *r, const struct ti_record *record)
++{
++	struct ti_record copy;
++	if (r->newest == UINT64_MAX)
++		return 0;
++	copy = *record;
++	copy.sequence = ++r->newest;
++	r->records[(copy.sequence - 1) % TI_CAPACITY] = copy;
++	return 1;
++}
++static inline const struct ti_record *
++ti_at(const struct ti_ring *r, uint64_t seq)
++{
++	if (!seq || seq < ti_oldest(r) || seq > r->newest)
++		return NULL;
++	return &r->records[(seq - 1) % TI_CAPACITY];
++}
++#endif
+diff --git a/tmux-ide-snapshot-buffer.h b/tmux-ide-snapshot-buffer.h
+new file mode 100644
+index 0000000..bc05baa
+--- /dev/null
++++ b/tmux-ide-snapshot-buffer.h
+@@ -0,0 +1,69 @@
++/* $OpenBSD$ */
++
++/*
++ * Copyright (c) 2009 Jonathan Alvarado <radobobo@users.sourceforge.net>
++ *
++ * Permission to use, copy, modify, and distribute this software for any
++ * purpose with or without fee is hereby granted, provided that the above
++ * copyright notice and this permission notice appear in all copies.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
++ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
++ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
++ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
++ * WHATSOEVER RESULTING FROM LOSS OF MIND, USE, DATA OR PROFITS, WHETHER
++ * IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
++ * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
++ */
++
++#ifndef TMUX_IDE_SNAPSHOT_BUFFER_H
++#define TMUX_IDE_SNAPSHOT_BUFFER_H
++
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++
++#ifndef TI_SNAPSHOT_REALLOC
++#define TI_SNAPSHOT_REALLOC realloc
++#endif
++
++/* Payload limit excludes the terminating NUL; allocated capacity includes it. */
++struct ti_snapshot_buffer {
++	char	*data;
++	size_t	 length, capacity, limit;
++};
++
++static inline int
++ti_snapshot_append(struct ti_snapshot_buffer *b, const char *data, size_t length)
++{
++	char	*next;
++	size_t	 needed, capacity;
++
++	if (b->limit == SIZE_MAX || b->length > b->limit ||
++	    length > b->limit - b->length)
++		return (-1);
++	needed = b->length + length + 1;
++	if (needed > b->capacity) {
++		capacity = b->capacity;
++		if (capacity == 0)
++			capacity = b->limit < 4095 ? b->limit + 1 : 4096;
++		while (capacity < needed) {
++			if (capacity > (b->limit + 1) / 2)
++				capacity = b->limit + 1;
++			else
++				capacity *= 2;
++		}
++		next = TI_SNAPSHOT_REALLOC(b->data, capacity);
++		if (next == NULL)
++			return (-1);
++		b->data = next;
++		b->capacity = capacity;
++	}
++	if (length != 0)
++		memcpy(b->data + b->length, data, length);
++	b->length += length;
++	b->data[b->length] = '\0';
++	return (0);
++}
++
++#endif
+diff --git a/tmux.h b/tmux.h
+index c9f8a32..5b03e85 100644
+--- a/tmux.h
++++ b/tmux.h
+@@ -1249,6 +1249,7 @@ struct visible_ranges {
+ 
+ /* Child window structure. */
+ struct window_pane {
++	uint64_t tmux_ide_birth_id;
+ 	u_int		 id;
+ 	u_int		 active_point;
+ 
+@@ -2032,6 +2033,7 @@ typedef int (*overlay_key_cb)(struct client *, void *, struct key_event *);
+ typedef void (*overlay_free_cb)(struct client *, void *);
+ typedef void (*overlay_resize_cb)(struct client *, void *);
+ struct client {
++	uint64_t tmux_ide_connection_id;
+ 	const char		*name;
+ 	struct tmuxpeer		*peer;
+ 	const char		*user;
+@@ -2126,6 +2128,7 @@ struct client {
+ #define CLIENT_ASSUMEPASTING 0x2000000000ULL
+ #define CLIENT_REDRAWSCROLLBARS 0x4000000000ULL
+ #define CLIENT_NO_DETACH_ON_DESTROY 0x8000000000ULL
++#define CLIENT_JOURNAL_READER 0x10000000000ULL
+ #define CLIENT_ALLREDRAWFLAGS		\
+ 	(CLIENT_REDRAWWINDOW|		\
+ 	 CLIENT_REDRAWSTATUS|		\
+@@ -2935,6 +2938,34 @@ struct cmd_parse_result *cmd_parse_from_buffer(const void *, size_t,
+ struct cmd_parse_result *cmd_parse_from_arguments(struct args_value *, u_int,
+ 		     struct cmd_parse_input *);
+ 
++/* tmux-ide-journal.c: optional metadata observer, never input authority. */
++#include "tmux-ide-journal.h"
++uint64_t tmux_ide_interaction_pane_birth(void);
++uint64_t tmux_ide_interaction_request(void);
++uint64_t tmux_ide_interaction_command(void);
++int tmux_ide_interaction_enabled(void);
++void tmux_ide_interaction_begin(uint64_t, const struct ti_origin *);
++void tmux_ide_interaction_end(void);
++int tmux_ide_interaction_measuring(void);
++void tmux_ide_interaction_effect(unsigned, uint64_t, unsigned, uint64_t);
++void tmux_ide_interaction_done(uint64_t, const struct ti_origin *, unsigned,
++			       unsigned, unsigned, uint64_t, unsigned);
++struct ti_session_guard;
++struct ti_session_guard *cmdq_session_guard_new(const char *, u_int, uint64_t);
++void cmdq_session_guard_free(struct ti_session_guard *);
++void cmdq_set_session_guard(struct cmdq_item *, struct ti_session_guard *);
++void cmdq_set_origin(struct cmdq_item *, const struct ti_origin *);
++void cmdq_set_origin_client(struct cmdq_item *, struct client *, unsigned);
++void cmdq_set_state_origin_client(struct cmdq_state *, struct client *,
++				  unsigned);
++struct ti_origin cmdq_origin_child(struct cmdq_item *, unsigned);
++uint64_t tmux_ide_interaction_connection(void);
++void tmux_ide_interaction_forget(struct cmdq_item *);
++void tmux_ide_interaction_client_lost(struct client *);
++void tmux_ide_interaction_free(void);
++void tmux_ide_interaction_append(const struct ti_record *);
++struct client *cmdq_get_origin_client(struct cmdq_item *);
++
+ /* cmd-queue.c */
+ struct cmdq_state *cmdq_new_state(struct cmd_find_state *, struct key_event *,
+ 		     int);
+@@ -3234,6 +3265,8 @@ void	 grid_move_lines(struct grid *, u_int, u_int, u_int, u_int);
+ void	 grid_move_cells(struct grid *, u_int, u_int, u_int, u_int, u_int);
+ char	*grid_string_cells(struct grid *, u_int, u_int, u_int,
+ 	     struct grid_cell **, int, struct screen *);
++char	*grid_string_cells_bounded(struct grid *, u_int, u_int, u_int,
++	    struct grid_cell **, int, struct screen *, size_t);
+ void	 grid_duplicate_lines(struct grid *, u_int, struct grid *, u_int,
+ 	     u_int);
+ void	 grid_reflow(struct grid *, u_int);
+@@ -3649,10 +3682,16 @@ char	*parse_window_name(const char *);
+ void	control_discard(struct client *);
+ void	control_start(struct client *);
+ void	control_ready(struct client *);
++void control_journal_ready(struct client *);
+ void	control_stop(struct client *);
+ void	control_set_pane_on(struct client *, struct window_pane *);
+ void	control_set_pane_off(struct client *, struct window_pane *);
+ void	control_continue_pane(struct client *, struct window_pane *);
++int control_snapshot_ready(struct client *, struct window_pane *);
++int control_snapshot_commit(struct client *, struct window_pane *, const char *, size_t);
++int cmdq_guarded_snapshot_origin(struct cmdq_item *);
++int input_snapshot_ready(struct input_ctx *);
++const char *tmux_ide_server_epoch(void);
+ void	control_pause_pane(struct client *, struct window_pane *);
+ struct window_pane_offset *control_pane_offset(struct client *,
+ 	   struct window_pane *, int *);
+diff --git a/window.c b/window.c
+index 87d6df4..55a9e59 100644
+--- a/window.c
++++ b/window.c
+@@ -1051,6 +1051,7 @@ window_pane_create(struct window *w, u_int sx, u_int sy, u_int hlimit)
+ 	wp->flags = PANE_STYLECHANGED;
+ 
+ 	wp->id = next_window_pane_id++;
++	wp->tmux_ide_birth_id = tmux_ide_interaction_pane_birth();
+ 	RB_INSERT(window_pane_tree, &all_window_panes, wp);
+ 
+ 	wp->fd = -1;
+@@ -1844,6 +1845,9 @@ window_pane_get_new_data(struct window_pane *wp,
+ 	size_t	used = wpo->used - wp->base_offset;
+ 
+ 	*size = EVBUFFER_LENGTH(wp->event->input) - used;
++	/* An empty evbuffer may have no backing allocation. */
++	if (used == 0)
++		return (EVBUFFER_DATA(wp->event->input));
+ 	return (EVBUFFER_DATA(wp->event->input) + used);
+ }
+ 

@@ -49,11 +49,15 @@ survive viewer shutdown.
 
 ## Publish
 
-1. Commit the release changes.
-2. Publish all supported per-platform runtime assets and their manifests.
-3. Run `npm publish --tag beta` for a beta, or the approved stable tag for GM.
-4. Push the branch and annotated version tag.
-5. Create the matching GitHub release.
+1. Commit the release changes and merge the reviewed branch to `main` after its required checks pass.
+2. Push the matching `vX.Y.Z` tag at that commit. The release workflows build and qualify all four bundled tmux/TUI platforms.
+3. Let the Release workflow publish npm through its trusted-publishing environment. It verifies matching runtime assets and provenance before publishing; do not publish a second copy manually.
+4. Stable versions use npm `latest`; prereleases use `beta`. Verify the matching GitHub release notes and assets.
+
+For installer or native packaging changes, first run `release.yml` with
+`qualification_only=true`. Test `docs/public/install.sh` in an isolated HOME and
+prefix, including an upgrade and failed-download recovery. `pnpm test:installer`
+covers staged activation and failure preservation without touching real daemons.
 
 ## Post-release
 

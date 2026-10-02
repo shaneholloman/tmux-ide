@@ -66,6 +66,7 @@ export function createWorkspaceClientOperationLedger(options: {
   let terminalOrder: string[] = [];
   let lastReceipt: InteractionReceipt | null = null;
   let lastObservedReceipt: InteractionReceipt | null = null;
+  const observedCursors = new Map<string, number>();
   let lastResourceChangeAcknowledgement: WorkspaceClientResourceChangeAcknowledgement | null = null;
   let generation = options.initialGeneration;
   let disposed = false;
@@ -130,17 +131,28 @@ export function createWorkspaceClientOperationLedger(options: {
       return true;
     },
     observeReceipt(receipt, expectedGeneration) {
+      const endpoint = receipt.evidence?.endpoints.destination;
+      const scope = endpoint
+        ? JSON.stringify([
+            endpoint.environmentId,
+            endpoint.serverScope.serverId,
+            endpoint.serverScope.generation,
+          ])
+        : "structural";
       if (
         disposed ||
         expectedGeneration !== generation ||
-        (lastObservedReceipt && receipt.sequence <= lastObservedReceipt.sequence)
+        receipt.sequence <= (observedCursors.get(scope) ?? 0)
       )
         return;
+      observedCursors.set(scope, receipt.sequence);
+      if (observedCursors.size > 128) observedCursors.delete(observedCursors.keys().next().value!);
       lastObservedReceipt = receipt;
       publish();
     },
     receipt(receipt, expectedGeneration) {
-      if (disposed || expectedGeneration !== generation) return false;
+      if (disposed || expectedGeneration !== generation || receipt.origin === "external")
+        return false;
       if (receipt.phase === "accepted") {
         const entry = pending.get(receipt.operationId);
         if (
@@ -157,6 +169,20 @@ export function createWorkspaceClientOperationLedger(options: {
         lastReceipt = receipt;
         publish();
         return true;
+      }
+      // Command observation is not proof of input delivery or a completed snapshot.
+      if (
+        receipt.phase === "observed" &&
+        receipt.evidence !== null &&
+        ((receipt.operationKind === "workspace.pane.send" &&
+          receipt.evidence.effect.kind !== "input-enqueued" &&
+          receipt.evidence.effect.kind !== "no-input") ||
+          (receipt.operationKind === "workspace.pane.read" &&
+            receipt.evidence.effect.kind !== "snapshot-produced"))
+      ) {
+        lastReceipt = receipt;
+        publish();
+        return false;
       }
       if (terminal.has(receipt.operationId)) return false;
       const entry = pending.get(receipt.operationId);
@@ -199,6 +225,7 @@ export function createWorkspaceClientOperationLedger(options: {
       terminalOrder = [];
       lastReceipt = null;
       lastObservedReceipt = null;
+      observedCursors.clear();
       lastResourceChangeAcknowledgement = null;
       publish();
     },
@@ -214,6 +241,7 @@ export function createWorkspaceClientOperationLedger(options: {
       terminalOrder = [];
       lastReceipt = null;
       lastObservedReceipt = null;
+      observedCursors.clear();
       lastResourceChangeAcknowledgement = null;
     },
   };

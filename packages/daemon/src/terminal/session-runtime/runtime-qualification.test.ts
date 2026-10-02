@@ -1,3 +1,4 @@
+import { testInteractionContext } from "../../../test-support/interaction-evidence.ts";
 import { describe, expect, it, vi } from "vitest";
 import type {
   TerminalDeliveryAck,
@@ -56,6 +57,7 @@ function rig(
       ? { createTraceCorrelator: options.createTraceCorrelator }
       : {}),
     semanticMutations: {
+      captureInteractionContext: testInteractionContext,
       resolveSession: () => "zz-sim",
       execute: (operationId, intent) => {
         const base = {
@@ -394,7 +396,8 @@ describe("real SessionRuntime qualification", () => {
       "accepted",
       "observed",
     ]);
-    expect(receipts[1]?.sourceSemanticPaneId).toBe("pane.alpha");
+    expect(receipts[1]?.sourceSemanticPaneId).toBeNull();
+    expect(receipts[1]?.evidence?.actor.kind).toBe("unknown");
     expect(registry.qualificationSnapshot().mutations).toMatchObject({
       accepted: 2,
       observed: 2,

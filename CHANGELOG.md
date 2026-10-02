@@ -2,6 +2,101 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2.9.2
+
+- Promote the terminal-first Home and Terminals experience to the stable channel.
+- Require tmux 3.7 or newer for clients and running servers; bundle 3.7c and preserve older servers for explicit migration.
+- Bring local and SSH-connected agents together with consistent names, team groups, and pane activity.
+- Ship shared dialogs, command search, keyboard controls, light/dark themes, and optional automatic contrast correction enabled by default.
+- Support scoped CLI/MCP pane reads and sends, with named interactions where attribution is verified. Raw tmux observation remains experimental and opt-in.
+- Add a user-owned one-command installer with a private Node runtime, bundled tmux, verified TUI downloads, and staged upgrades.
+- Package and qualify native tmux for macOS and Linux on ARM64/x64. Linux bundles use the Ubuntu 24.04 baseline.
+
+This release covers Home and Terminals; experimental web and desktop surfaces remain outside the stable product scope. Existing tmux servers are preserved. Claude owns its team orchestration; in-process teammates are not separate panes. Performance qualification limits documented in beta.46 remain applicable.
+
+## 2.9.0-beta.50
+
+- Keep the resize guide visible throughout continuous drags while confirmed tmux layouts arrive.
+- Avoid invalidating session inventory for geometry-only layout changes, reducing avoidable pauses during resizing.
+- Preserve identity fences for membership, zoom, and structural changes.
+
+## 2.9.0-beta.49
+
+- Carry verified native Claude teammate names and team membership into Home and the sidebar through a read-only adapter.
+- Add `team assign %PANE "Team name"` and `team unassign %PANE` for mixed-harness groups, with explicit tmux socket selection.
+- Keep team members together in Home and the sidebar, share their team context labels, and include team names in Home search.
+- Preserve manual pane names and explicit group assignments over discovered defaults. Grouped support terminals remain custom terminals.
+- Keep memberships scoped to a machine/server and invalidate explicit assignments when the pane process is replaced.
+
+Claude retains orchestration ownership. Logical leads and in-process teammates are not guessed into separate panes. Cross-machine team groups and a graphical team-management dialog are not included. Existing beta.46 platform qualification limits remain applicable.
+
+## 2.9.0-beta.48
+
+- Use cohesive agent names across pane headers, the sidebar, Home and agent details, while preserving explicit manual aliases.
+- Recognize native Claude split-pane teammate names through read-only team metadata matched to the live pane process. Removed or unknown metadata falls back to normal pane naming.
+- Add Commands → New agent… to create independently named Claude Code or Codex agents in the selected local or remote workspace.
+- Keep agent names separate from changing activity and status labels.
+
+Claude team naming does not create native teammates or implement cross-harness team orchestration. In-process teammates share their lead's terminal. Existing beta.46 platform qualification limits remain applicable.
+
+## 2.9.0-beta.47
+
+- Keep pane headers and Home indicators quiet while you type: unknown tmux command observations remain in activity history instead of displacing named interactions.
+- Show one brief, attributed interaction between panes; repeated reads reuse the indicator and viewer or same-pane activity stays out of chrome.
+- Resolve the invoking pane automatically for CLI and MCP reads/sends when `source` is omitted. Reservations return the resolved intent for safe, unchanged execution and retries; explicit `source: null` keeps the caller unidentified.
+- Resolve reader names across sessions using scoped fleet identities, and reject stale source credentials instead of guessing an identity.
+- Fix a stale bundled-tmux test mock uncovered by the full check.
+
+External desktop clients without a verified tmux pane still remain unidentified; external-client registration is not included. Native observation remains opt-in, and the beta.46 platform qualification limits still apply.
+
+## 2.9.0-beta.46
+
+- Add a shared automation API for scoped pane discovery, reads, sends, operation status and interaction history, with CLI and stdio MCP adapters and a packageable SDK.
+- Preserve server generations and pane lifetimes across multi-server activity, and correlate cooperative operations with observed evidence without duplicate interactions.
+- Keep unknown actors, incomplete observation coverage and uncertain outcomes explicit; retries reuse operation handles rather than blindly resending input.
+- Add opt-in native interaction observation with bounded metadata and batched drains. Native observation remains off by default and does not replace running tmux servers.
+- Bundle matching terminal descriptions with native tmux and select them for managed launches, fixing attachment failures on machines without the original build host's terminfo database.
+
+This beta prioritizes Apple Silicon and Linux ARM qualification. Intel Mac performance qualification remains incomplete; Linux Intel metadata-tail latency exceeded the original 50 ms target (about 55–58 ms). Spark's terminal-resource functional assertions passed, but its full fixture retains a process-exit observation failure; exact container cleanup was confirmed. Stock viewer input can appear as an unknown command observation, without identifying it as another agent's action.
+
+## 2.9.0-beta.45
+
+- Unify agent and interaction status presentation across pane headers, Home and the sidebar, with explicit unknown and unavailable states.
+- Show pending reads and input separately from observed interactions; name verified actors and keep receipt details available without implying message comprehension.
+- Share delayed, reduced-motion-aware interaction animation and preserve urgent agent states in compact rows.
+- Add explicit Back to live and Restore controls for scrollback and expanded panes while preserving terminal geometry.
+- Scope interaction feedback to its daemon and session, and isolate Details dialogs from terminal input.
+
+## 2.9.0-beta.44
+
+- Group agents across machines in one sidebar section, with shared rows and quiet machine/session context. Keep separate destinations for agents in the same session.
+- Refresh Home with a flat agent list, search accent rail, Quick actions, and a dismissible tip. Compact layouts preserve agent navigation.
+- Simplify Home/Terminals tabs with clearer shortcuts and stable attention spacing. Reuse shared input surfaces in dialogs.
+- Keep unavailable agents explicit and prevent navigation to stale panes.
+
+## 2.9.0-beta.41
+
+- Working sessions appear above machine discovery, with shared two-line session rows, machine/server context, and consistent status icons. Tab switches sidebar keyboard sections.
+- Background sessions show new results after an observed agent completion. Successful opening acknowledges the result; unavailable activity coverage remains explicit.
+- Using tmux-ide is discoverable through Commands. Help, shortcuts and What's new form a reversible navigation cycle, with Home activity filters included in shortcut help.
+- Add a development gallery of production components, shared design-contract checks, and updated contributor/native-dependency guidance.
+
+## 2.9.0-beta.35
+
+- F10 toggles the sidebar, with the shortcut shown in Commands and keyboard help.
+- The footer Commands button has a distinct surface and high-contrast F5 keycap.
+- Shift-click opens links on release; Shift-drag selects and copies without opening them. Ctrl-click remains supported.
+- Direct Ghostty sessions request Shift mouse reporting while the TUI is active, without changing global settings.
+
+## 2.9.0-beta.34
+
+- Fix stale or duplicated-looking rows while scrolling Claude Code and other applications that split synchronized redraws across multiple output chunks. All changed rows are retained until the redraw is published.
+
+## 2.9.0-beta.33
+
+- Working agents now have animated indicators across Home, sidebars, and pane headers. Done, blocked, and idle agents have distinct static indicators alongside their status labels.
+- Agent animations share one clock, stop for stale observations, and respect reduced motion. Terminal contents remain retained during animation.
+
 ## 2.9.0-beta.7
 
 ### OpenTUI beta

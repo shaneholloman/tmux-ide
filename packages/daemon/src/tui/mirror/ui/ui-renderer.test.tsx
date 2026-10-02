@@ -1,8 +1,10 @@
 /* @jsxImportSource @opentui/solid */
 import { MouseButtons } from "@opentui/core/testing";
 import { useKeyboard, type JSX } from "@opentui/solid";
-import { createSignal, onCleanup } from "solid-js";
-import { describe, expect, it } from "bun:test";
+import { For, Show, createSignal, onCleanup } from "solid-js";
+import { describe, expect, it, spyOn } from "bun:test";
+import { createAgentStatusMarker } from "./agent-status-marker.ts";
+import { ActivityIndicator } from "./activity-indicator.tsx";
 
 import { createSemanticThemeSnapshot } from "../theme.ts";
 import { colorToThemeBytes } from "../theme.ts";
@@ -34,6 +36,65 @@ function KeyboardRouteTestHost(props: { readonly children: JSX.Element }) {
   useKeyboard((event) => owner.route(event));
   return <KeyboardRouteProvider owner={owner}>{props.children}</KeyboardRouteProvider>;
 }
+
+it.each(["dark", "light"] as const)(
+  "dims the whole %s app behind a workspace menu and restores it on close",
+  async (mode) => {
+    const theme = createSemanticThemeSnapshot({ mode });
+    const [open, setOpen] = createSignal(false);
+    let backgroundClicks = 0;
+    const setup = await renderForTest(
+      () => (
+        <box width={80} height={12} backgroundColor={theme.roles.surfaces.canvas}>
+          <text fg={theme.roles.text.primary} onMouseDown={() => backgroundClicks++}>
+            SIDEBAR
+          </text>
+          <box position="absolute" left={20} top={2} width={60} height={10}>
+            <Show when={open()}>
+              <OverlayFrame
+                theme={theme}
+                viewportWidth={60}
+                viewportHeight={10}
+                viewportOrigin={{ x: 20, y: 2 }}
+                placement="anchor"
+                anchor={{ x: 2, y: 1 }}
+                width={25}
+                height={6}
+                onDismiss={() => setOpen(false)}
+              >
+                <text fg={theme.roles.text.primary}>ACTIVE MENU</text>
+              </OverlayFrame>
+            </Show>
+          </box>
+        </box>
+      ),
+      { width: 80, height: 12 },
+    );
+    try {
+      await setup.renderOnce();
+      const find = (label: string) =>
+        setup
+          .captureSpans()
+          .lines.flatMap((line) => line.spans)
+          .find((span) => span.text.includes(label))!;
+      const original = colorToThemeBytes(find("SIDEBAR").fg);
+      setOpen(true);
+      await setup.renderOnce();
+      const dimmed = colorToThemeBytes(find("SIDEBAR").fg);
+      expect(dimmed.slice(0, 3).every((channel, index) => channel < original[index]!)).toBe(true);
+      expect(colorToThemeBytes(find("ACTIVE MENU").fg)).toEqual(
+        colorToThemeBytes(theme.roles.text.primary),
+      );
+      await setup.mockMouse.click(1, 0, MouseButtons.LEFT);
+      await setup.renderOnce();
+      expect(open()).toBe(false);
+      expect(backgroundClicks).toBe(0);
+      expect(colorToThemeBytes(find("SIDEBAR").fg)).toEqual(original);
+    } finally {
+      setup.renderer.destroy();
+    }
+  },
+);
 
 describe("OpenTUI ui primitives", () => {
   const colorKey = (color: Parameters<typeof colorToThemeBytes>[0]) =>
@@ -124,7 +185,7 @@ describe("OpenTUI ui primitives", () => {
     expect(colorKey(inactiveTab!.bg)).toBe(colorKey(theme.roles.surfaces.panel));
     expect(colorKey(addButton!.bg)).toBe(colorKey(theme.roles.surfaces.panel));
     expect(colorKey(ghostButton!.bg)).toBe(colorKey(theme.roles.surfaces.panel));
-    expect(colorKey(status!.bg)).toBe(colorKey(theme.roles.surfaces.header));
+    expect(colorKey(status!.bg)).toBe(colorKey(theme.roles.surfaces.panel));
     setup.renderer.destroy();
   });
 
@@ -142,7 +203,7 @@ describe("OpenTUI ui primitives", () => {
           footer="↑↓ choose · Enter open · Esc close"
           onDismiss={() => undefined}
         >
-          <text fg={theme.roles.text.secondary}>› New terminal window</text>
+          <text fg={theme.roles.text.secondary}>New terminal window</text>
         </Dialog>
       ),
       { width: 60, height: 12 },
@@ -151,7 +212,9 @@ describe("OpenTUI ui primitives", () => {
     const frame = stableFrame(setup.captureCharFrame());
     expect(frame).toContain("Command palette");
     expect(frame).toContain("New terminal window");
-    expect(frame).toContain("Enter open · Esc");
+    expect(frame).toContain("Enter open");
+    expect(frame).toContain("esc");
+    expect(frame).not.toMatch(/[╭╮╰╯]/u);
     setup.renderer.destroy();
   });
 
@@ -456,7 +519,8 @@ describe("OpenTUI ui primitives", () => {
       expect(terminalDisplayWidth(setup.captureCharFrame().split("\n")[0]!)).toBe(width);
 
       await setup.mockInput.pressArrow("down");
-      await setup.mockMouse.click(Math.floor((width - 42) / 2) + 3, 10, MouseButtons.LEFT);
+      const row = setup.renderer.root.findDescendantById("ui-overlay-row:rename:row")!;
+      await setup.mockMouse.click(row.x + 1, row.y, MouseButtons.LEFT);
       await setup.renderOnce();
       expect(activated).toEqual(["keyboard:rename", "pointer:rename"]);
       setup.mockInput.pressEscape();
@@ -470,4 +534,123 @@ describe("OpenTUI ui primitives", () => {
       setup.renderer.destroy();
     },
   );
+});
+
+it("runs one pending-region timer only while visible and motion is enabled", async () => {
+  const [active, setActive] = createSignal(false);
+  const [reduced, setReduced] = createSignal(false);
+  const intervals = spyOn(globalThis, "setInterval");
+  const clears = spyOn(globalThis, "clearInterval");
+  const setup = await renderForTest(
+    () => (
+      <ActivityIndicator
+        active={active()}
+        theme={createSemanticThemeSnapshot({
+          mode: "dark",
+          accessibility: { reducedMotion: reduced() },
+        })}
+      />
+    ),
+    { width: 10, height: 2 },
+  );
+  const timers = () => intervals.mock.calls.filter((call) => call[1] === 100).length;
+  try {
+    await setup.renderOnce();
+    const baseline = timers();
+    setActive(true);
+    await setup.renderOnce();
+    expect(timers()).toBe(baseline + 1);
+    const before = clears.mock.calls.length;
+    setReduced(true);
+    await setup.renderOnce();
+    expect(clears.mock.calls.length).toBeGreaterThan(before);
+    expect(setup.captureCharFrame()).toContain("…");
+    setActive(false);
+    setActive(true);
+    await setup.renderOnce();
+    expect(timers()).toBe(baseline + 1);
+    setReduced(false);
+    await setup.renderOnce();
+    expect(timers()).toBe(baseline + 2);
+    const beforeHide = clears.mock.calls.length;
+    setActive(false);
+    await setup.renderOnce();
+    expect(clears.mock.calls.length).toBeGreaterThan(beforeHide);
+  } finally {
+    setup.renderer.destroy();
+    intervals.mockRestore();
+    clears.mockRestore();
+  }
+});
+
+it("shares one agent animation clock and stops for stale, reduced-motion and unmounted rows", async () => {
+  const [working, setWorking] = createSignal(true);
+  const [unavailable, setUnavailable] = createSignal(false);
+  const [reduced, setReduced] = createSignal(false);
+  const [visible, setVisible] = createSignal(true);
+  const intervals = spyOn(globalThis, "setInterval");
+  const clears = spyOn(globalThis, "clearInterval");
+  const theme = () =>
+    createSemanticThemeSnapshot({
+      mode: "dark",
+      accessibility: { reducedMotion: reduced() },
+    });
+  const setup = await renderForTest(
+    () => (
+      <Show when={visible()}>
+        <box flexDirection="column">
+          <For each={[0, 1, 2]}>
+            {() => {
+              const marker = createAgentStatusMarker({
+                theme,
+                status: () => (working() ? "running" : "complete"),
+                unavailable,
+              });
+              return <text>{marker()} agent</text>;
+            }}
+          </For>
+        </box>
+      </Show>
+    ),
+    { width: 20, height: 4 },
+  );
+  const clocks = () => intervals.mock.calls.filter((call) => call[1] === 80);
+  try {
+    await setup.renderOnce();
+    expect(clocks()).toHaveLength(1);
+    const first = setup.captureCharFrame();
+    const tick = clocks()[0]![0] as () => void;
+    tick();
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).not.toBe(first);
+    expect(setup.captureCharFrame().match(/⠙/gu)).toHaveLength(3);
+    setWorking(false);
+    await setup.renderOnce();
+    expect(setup.captureCharFrame().match(/✓/gu)).toHaveLength(3);
+    expect(clears.mock.calls.length).toBeGreaterThan(0);
+    setReduced(true);
+    setWorking(true);
+    await setup.renderOnce();
+    expect(clocks()).toHaveLength(1);
+    expect(setup.captureCharFrame().match(/●/gu)).toHaveLength(3);
+    setReduced(false);
+    await setup.renderOnce();
+    expect(clocks()).toHaveLength(2);
+    const beforeStale = clears.mock.calls.length;
+    setUnavailable(true);
+    await setup.renderOnce();
+    expect(clears.mock.calls.length).toBeGreaterThan(beforeStale);
+    expect(setup.captureCharFrame().match(/·/gu)).toHaveLength(3);
+    setUnavailable(false);
+    await setup.renderOnce();
+    expect(clocks()).toHaveLength(3);
+    const beforeHide = clears.mock.calls.length;
+    setVisible(false);
+    await setup.renderOnce();
+    expect(clears.mock.calls.length).toBeGreaterThan(beforeHide);
+  } finally {
+    setup.renderer.destroy();
+    intervals.mockRestore();
+    clears.mockRestore();
+  }
 });

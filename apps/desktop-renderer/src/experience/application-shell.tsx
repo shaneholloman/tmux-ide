@@ -16,6 +16,7 @@ import {
   type DesktopWindowState,
   type FocusZone,
   type HostCapabilities,
+  type InteractionPaneEndpoint,
   type PaneAppearance,
   type ProductSurfaceId,
   type SemanticFocusTarget,
@@ -54,7 +55,8 @@ import type {
 } from "@tmux-ide/presentation/pane-frame";
 import {
   interactionReceiptTargetLabel,
-  interactionSummaryLabel,
+  interactionReceiptLabel,
+  interactionPaneEndpointKey,
   type InteractionFeedState,
 } from "@tmux-ide/core";
 import type {
@@ -974,6 +976,41 @@ export function DomApplicationShell(props: DomApplicationShellProps) {
     }
     return [...groups.values()];
   });
+  const paneEndpoints = createMemo(() => {
+    const endpoints = new Map<string, Extract<InteractionPaneEndpoint, { kind: "pane" }>>();
+    const ambiguous = new Set<string>();
+    for (const resource of shell().terminalInventory?.resources ?? []) {
+      const endpoint = resource.interactionEndpoint;
+      if (
+        resource.attachability.status !== "available" ||
+        !endpoint ||
+        endpoint.semanticPaneId !== resource.attachability.semanticPaneId
+      )
+        continue;
+      const id = endpoint.semanticPaneId,
+        previous = endpoints.get(id);
+      if (ambiguous.has(id)) continue;
+      if (
+        previous &&
+        interactionPaneEndpointKey(previous) !== interactionPaneEndpointKey(endpoint)
+      ) {
+        endpoints.delete(id);
+        ambiguous.add(id);
+      } else endpoints.set(id, endpoint);
+    }
+    return endpoints;
+  });
+  const endpointTitles = createMemo(
+    () =>
+      new Map(
+        (shell().terminalInventory?.resources ?? [])
+          .filter((resource) => resource.interactionEndpoint !== null)
+          .map((resource) => [
+            interactionPaneEndpointKey(resource.interactionEndpoint!),
+            resource.title,
+          ]),
+      ),
+  );
   /** Every attachable pane's title, as the daemon's inventory records it. */
   const paneTitles = createMemo<ReadonlyMap<string, string>>(() => {
     const inventory = shell().terminalInventory;
@@ -1488,23 +1525,22 @@ export function DomApplicationShell(props: DomApplicationShellProps) {
                     <ol>
                       <For each={props.interactionFeed?.activity ?? []}>
                         {(receipt) => (
-                          <li data-phase={receipt.phase}>
+                          <li
+                            data-phase={
+                              receipt.type === "interaction.receipt" ? receipt.phase : "observed"
+                            }
+                          >
                             <i aria-hidden="true" />
                             <span>
                               <strong>
                                 {interactionReceiptTargetLabel(
                                   receipt,
-                                  (paneId) => paneTitles().get(paneId) ?? paneId,
+                                  (endpoint) =>
+                                    endpointTitles().get(interactionPaneEndpointKey(endpoint)) ??
+                                    endpoint.semanticPaneId,
                                 )}
                               </strong>
-                              <small>
-                                {receipt.origin} · {receipt.phase} ·{" "}
-                                {interactionSummaryLabel(
-                                  receipt.operationKind,
-                                  receipt.summary,
-                                  receipt.phase,
-                                )}
-                              </small>
+                              <small>{interactionReceiptLabel(receipt)}</small>
                             </span>
                             <code>#{receipt.sequence}</code>
                           </li>
@@ -2030,6 +2066,7 @@ export function DomApplicationShell(props: DomApplicationShellProps) {
                       selectSidebarAgentForPane(paneResourceId, source);
                     }}
                     paneTitles={paneTitles()}
+                    paneEndpoints={paneEndpoints()}
                     fallbackWindows={inventoryWindows()}
                     reducedMotion={props.reducedMotion}
                     terminalThemeKey={props.terminalThemeKey}

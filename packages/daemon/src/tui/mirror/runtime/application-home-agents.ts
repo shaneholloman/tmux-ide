@@ -1,10 +1,25 @@
-import type { AgentActivity, ApplicationShellResourceV2 } from "@tmux-ide/contracts";
+import type { PaneTeamMembership } from "@tmux-ide/contracts";
+import type { NativePaneIdentity } from "@tmux-ide/contracts";
+import type {
+  AgentActivity,
+  InteractionPaneEndpoint,
+  ApplicationShellResourceV2,
+  TmuxServerScope,
+} from "@tmux-ide/contracts";
 
 import type { ApplicationHomeCatalogSession } from "./application-home-catalog.ts";
 import { terminalAgentStatusLabel } from "./application-terminal-workspace-policy.ts";
 
 export interface HomeAgentRow {
+  readonly team?: PaneTeamMembership;
+  readonly nativeIdentity: NativePaneIdentity | null;
+  readonly interactionEndpoint: Extract<InteractionPaneEndpoint, { kind: "pane" }> | null;
   readonly key: string;
+  readonly machineId?: string;
+  readonly machineLabel?: string;
+  readonly server?: TmuxServerScope;
+  readonly serverLabel?: string;
+  readonly disabled?: boolean;
   readonly sessionKey: string;
   readonly sessionName: string;
   readonly liveSessionId: string;
@@ -56,13 +71,27 @@ export function projectHomeAgentRows(
   return shell.resource.workspace.sidebar.agents.map((agent) => ({
     key: `${session.id}\u0000${agent.id}`,
     sessionKey: session.id,
+    server: session.server,
+    serverLabel: session.serverLabel,
     sessionName: session.name,
     // Older catalog fixtures/callers retain a generation-qualified incarnation
     // key even when they do not expose the separately named wire field.
     liveSessionId: session.liveSessionId ?? session.id,
-    daemonInstanceId: shell.daemon.instanceId,
+    daemonInstanceId: session.server?.generation ?? shell.daemon.instanceId,
     agentId: agent.id,
     paneId: agent.paneId,
+    nativeIdentity:
+      shell.resource.terminalInventory?.resources.find(
+        (resource) =>
+          resource.attachability.status === "available" &&
+          resource.attachability.semanticPaneId === agent.paneId,
+      )?.nativeIdentity ?? null,
+    interactionEndpoint:
+      shell.resource.terminalInventory?.resources.find(
+        (resource) =>
+          resource.attachability.status === "available" &&
+          resource.attachability.semanticPaneId === agent.paneId,
+      )?.interactionEndpoint ?? null,
     windowId:
       shell.resource.terminalInventory?.resources.find(
         (resource) =>
@@ -70,6 +99,7 @@ export function projectHomeAgentRows(
           resource.attachability.semanticPaneId === agent.paneId,
       )?.windowResourceId ?? null,
     name: agent.name,
+    ...(agent.team ? { team: agent.team } : {}),
     harness: agent.harness,
     activity: agent.activity,
     attention: agent.attention,

@@ -221,6 +221,8 @@ describe("application-shell agent-terminal PaneFrame adapter", () => {
             title: "Primary terminal",
             kind: "agent",
             active: true,
+            interactionEndpoint: null,
+            nativeIdentity: null,
             attachability: {
               status: "available",
               semanticPaneId: "pane.agent-primary",
@@ -231,6 +233,8 @@ describe("application-shell agent-terminal PaneFrame adapter", () => {
             title: "Dev shell",
             kind: "terminal",
             active: false,
+            interactionEndpoint: null,
+            nativeIdentity: null,
             attachability: { status: "available", semanticPaneId: "pane.shell" },
           },
           {
@@ -238,6 +242,8 @@ describe("application-shell agent-terminal PaneFrame adapter", () => {
             title: "Legacy terminal",
             kind: "terminal",
             active: false,
+            interactionEndpoint: null,
+            nativeIdentity: null,
             attachability: { status: "unavailable", reason: "missing-semantic-stamp" },
           },
         ],

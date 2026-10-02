@@ -27,6 +27,8 @@ function v3Input(overlay?: AgentGraphOverlay): ApplicationShellProjectionInputV1
         title: frame.title,
         kind: "agent" as const,
         active: frame.pane.id === input.focus.appFocusedPaneId,
+        interactionEndpoint: null,
+        nativeIdentity: null,
         attachability: { status: "available" as const, semanticPaneId: frame.pane.id },
       })),
     },

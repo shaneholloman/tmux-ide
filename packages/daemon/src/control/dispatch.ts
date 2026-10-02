@@ -99,7 +99,12 @@ export async function dispatchLine(
     if (err instanceof ControlVerbError) return fail(id, err.code, err.message);
     if (err instanceof IdeError) {
       // Data-layer errors carry honest codes already (SESSION_NOT_FOUND, …).
-      const code = err.code === "USAGE" ? "bad-request" : "not-found";
+      const code =
+        err.code === "USAGE"
+          ? "bad-request"
+          : err.code === "PANE_INPUT_FAILED"
+            ? "internal"
+            : "not-found";
       return fail(id, code, err.message);
     }
     return fail(id, "internal", (err as Error)?.message ?? "internal error");

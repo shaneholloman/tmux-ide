@@ -12,6 +12,7 @@ import { For, Show, createMemo } from "solid-js";
 import { shellChromeLayout, type ShellChromeView } from "../shell-chrome.ts";
 import type { SemanticThemeSnapshot } from "../theme.ts";
 import { clipTerminal, friendlySessionLabel } from "../terminal-text.ts";
+import { KeyHint } from "../ui/key-hint.tsx";
 import { Button } from "../ui/button.tsx";
 import { NavigationRow } from "../ui/navigation-row.tsx";
 import type { OverlayLayer } from "../ui/overlay-host.tsx";
@@ -31,6 +32,7 @@ export type ApplicationCatalogSurface = "home" | "terminals";
 export type ApplicationCatalogInputSource = "keyboard" | "mouse";
 export interface ApplicationCatalogShellProps {
   readonly machineSidebar?: ApplicationMachineSidebarModel;
+  readonly sidebarVisible?: boolean;
   readonly machineColor?: string;
   readonly machineLabel?: string | null;
   readonly appearanceOwner?: ApplicationAppearanceOwner;
@@ -49,6 +51,8 @@ export interface ApplicationCatalogShellProps {
   readonly paletteSelection?: Accessor<number>;
   readonly palettePreviewActive?: Accessor<boolean>;
   readonly onPaletteModalChange?: (open: boolean) => void;
+  readonly paletteReferencePage?: Accessor<"shortcuts" | "changes" | "help" | undefined>;
+  readonly onPaletteReferenceChange?: (page: "shortcuts" | "changes" | "help" | undefined) => void;
   readonly paletteKeyboardHint?: Accessor<string>;
   readonly paletteQuery?: Accessor<string>;
   readonly paletteDisabledReason?: (command: ApplicationPaletteCommand) => string | null;
@@ -71,6 +75,8 @@ export interface ApplicationCatalogShellProps {
   ) => void;
   readonly onCreateSession?: () => void;
   readonly onCycleTheme?: () => void;
+  readonly onOpenTutorial?: () => void;
+  readonly tutorialLabel?: string;
 }
 
 const CATALOG_VIEWS: readonly ShellChromeView[] = [
@@ -218,7 +224,7 @@ function CatalogStatusStrip(props: {
   return (
     <StatusBar theme={props.theme} width={props.width}>
       <StatusBarGroup width={contextWidth()}>
-        <StatusBarSegment theme={props.theme} label={context()} width={contextWidth()} active />
+        <StatusBarSegment theme={props.theme} label={context()} width={contextWidth()} />
       </StatusBarGroup>
       <StatusBarGroup grow>
         <StatusBarSegment
@@ -239,12 +245,13 @@ function CatalogStatusStrip(props: {
             />
           )}
         </For>
-        <StatusBarAction
+        <KeyHint
           theme={props.theme}
+          keys="F5"
           label="Commands"
-          shortcut="F5"
+          quiet
+          button
           width={15}
-          primary
           onPress={props.onOpenCommands}
         />
       </StatusBarGroup>
@@ -257,7 +264,11 @@ export function ApplicationCatalogShell(props: ApplicationCatalogShellProps): JS
   const sessions = (): readonly string[] =>
     typeof props.sessions === "function" ? props.sessions() : props.sessions;
   const chrome = createMemo(() =>
-    shellChromeLayout(props.dimensions().width, props.dimensions().height, 28),
+    shellChromeLayout(
+      props.dimensions().width,
+      props.dimensions().height,
+      props.sidebarVisible === false ? 0 : 28,
+    ),
   );
   // Catalog navigation is the first-run wayfinding surface. Keep its two
   // labels visible at compact widths; the icon-only terminal chrome is useful
@@ -278,9 +289,9 @@ export function ApplicationCatalogShell(props: ApplicationCatalogShellProps): JS
     return sessions().length === 0 ? " ○ no sessions " : ` ● ${sessions().length} live `;
   };
   const showCatalogSidebar = () =>
-    Boolean(props.machineSidebar) ||
-    (props.surface() === "terminals" &&
-      !(props.connectionFeedback?.() && props.dimensions().width < 60));
+    props.sidebarVisible !== false &&
+    props.surface() === "terminals" &&
+    !(props.connectionFeedback?.() && props.dimensions().width < 60);
   const catalogContentWidth = () =>
     showCatalogSidebar() ? chrome().main.width : props.dimensions().width;
   const overlayLayers = (): readonly OverlayLayer[] => [
@@ -294,6 +305,8 @@ export function ApplicationCatalogShell(props: ApplicationCatalogShellProps): JS
                 height={props.dimensions().height}
                 selected={props.paletteSelection?.() ?? 0}
                 query={props.paletteQuery?.() ?? ""}
+                referencePage={props.paletteReferencePage?.()}
+                onReferenceChange={props.onPaletteReferenceChange}
                 keyboardHint={props.paletteKeyboardHint?.()}
                 previewActive={props.palettePreviewActive?.() ?? true}
                 onModalChange={props.onPaletteModalChange}
@@ -385,7 +398,7 @@ export function ApplicationCatalogShell(props: ApplicationCatalogShellProps): JS
                         id={`catalog-session:${session}`}
                         label={friendlySessionLabel(session)}
                         width={Math.max(1, chrome().sidebar.width - 1)}
-                        marker={props.selectedSession() === index() ? "›" : "○"}
+                        marker=" "
                         selected={props.selectedSession() === index()}
                         onActivate={(source) => props.onOpenSession(session, source)}
                       />
@@ -405,6 +418,10 @@ export function ApplicationCatalogShell(props: ApplicationCatalogShellProps): JS
               {(model) => (
                 <ApplicationMachineSidebar
                   model={model()}
+                  onHelp={(source) => {
+                    props.onSetPaletteOpen(true, source);
+                    props.onPaletteReferenceChange?.("help");
+                  }}
                   width={chrome().sidebar.width}
                   height={chrome().sidebar.height}
                   theme={props.theme}
@@ -462,6 +479,8 @@ export function ApplicationCatalogShell(props: ApplicationCatalogShellProps): JS
                 onOpenTerminals={() => props.onOpenSurface("terminals", "mouse")}
                 onOpenCommands={() => props.onSetPaletteOpen(true, "mouse")}
                 onCycleTheme={props.onCycleTheme}
+                onOpenTutorial={props.onOpenTutorial}
+                tutorialLabel={props.tutorialLabel}
               />
             </Show>
           </box>

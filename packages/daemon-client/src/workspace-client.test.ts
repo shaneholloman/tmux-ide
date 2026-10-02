@@ -109,6 +109,8 @@ function shellResource(
         kind: "terminal" as const,
         active: index === 0,
         attachability: { status: "available" as const, semanticPaneId },
+        interactionEndpoint: null,
+        nativeIdentity: null,
       })),
     },
     appWindows: {
@@ -358,6 +360,7 @@ function deferred<T>() {
 
 function receipt(operationId: string, phase: InteractionReceipt["phase"]): InteractionReceipt {
   return {
+    evidence: null,
     type: "interaction.receipt",
     sequence: phase === "accepted" ? 1 : 2,
     operationId,

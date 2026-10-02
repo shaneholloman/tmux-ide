@@ -73,3 +73,22 @@ export function createOverlayFocusCoordinator(options: {
     },
   };
 }
+
+/** Cell padding collapses before labels become unusable in tiny terminals. */
+export function overlaySurfacePadding(width: number, height: number) {
+  return {
+    horizontal: height < 6 ? 0 : width >= 48 ? 3 : width >= 12 ? 2 : 0,
+    vertical: height >= 8 ? 1 : 0,
+  };
+}
+
+/** Content geometry for the default calm overlay, after viewport clamping. */
+export function overlaySurfaceMetrics(input: Parameters<typeof overlayFrameSize>[0]) {
+  const size = overlayFrameSize(input);
+  const padding = overlaySurfacePadding(size.width, size.height);
+  return {
+    ...size,
+    contentWidth: Math.max(1, size.width - padding.horizontal * 2),
+    contentHeight: Math.max(0, size.height - padding.vertical * 2),
+  };
+}

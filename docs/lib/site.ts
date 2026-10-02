@@ -12,9 +12,9 @@ export const SITE_REPOSITORY = "https://github.com/wavyrai/tmux-ide";
 export const SOFTWARE_DOWNLOAD_URL = "https://www.npmjs.com/package/tmux-ide";
 export const SOFTWARE_VERSION = packageMetadata.version;
 export const SOCIAL_PROFILE = "https://x.com/prototyper_co";
-export const INSTALL_COMMAND = "npm install -g tmux-ide@beta";
+export const INSTALL_COMMAND = "curl -fsSL https://tmux.thijsverreck.com/install.sh | sh";
 export const APP_COMMAND = "tmux-ide app";
-export const CURRENT_RELEASE_PATH = "/docs/release-2-9-0-beta-1";
+export const CURRENT_RELEASE_PATH = "/docs/release-2-9-2";
 
 export function absoluteUrl(path = "/"): string {
   return new URL(path, `${SITE_URL}/`).toString();

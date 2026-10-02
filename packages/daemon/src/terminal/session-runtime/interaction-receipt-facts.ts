@@ -1,4 +1,6 @@
 import {
+  SessionRuntimePaneReadResultSchemaZ,
+  type SessionRuntimePaneReadResult,
   WorkspaceMultiplexerMutationResultSchemaZ,
   type InteractionProof,
   type InteractionSafeSummary,
@@ -21,6 +23,12 @@ export function sessionRuntimeInteractionFacts(
       return {
         target: { kind: "pane", semanticPaneId: intent.semanticPaneId },
         summary: { operationKind: intent.verb, direction: intent.direction },
+      };
+    case "workspace.window.link.select":
+    case "workspace.window.link.unlink":
+      return {
+        target: { kind: "window-link", target: intent.target },
+        summary: { operationKind: intent.verb },
       };
     case "workspace.window.kill":
       return {
@@ -93,16 +101,26 @@ export function sessionRuntimeInteractionFacts(
 /** Convert verified lower-authority results into the receipt contract's bounded proof vocabulary. */
 export function sessionRuntimeObservedProof(
   intent: SessionRuntimeSemanticIntent,
-  rawResult: WorkspaceMultiplexerMutationResult | void,
+  rawResult: WorkspaceMultiplexerMutationResult | SessionRuntimePaneReadResult | void,
 ): InteractionProof {
   if (intent.verb === "workspace.pane.read") {
-    if (rawResult !== undefined) throw new TypeError("Pane read returned an unexpected result");
+    if (rawResult !== undefined) {
+      const read = SessionRuntimePaneReadResultSchemaZ.parse(rawResult);
+      if (
+        read.workspaceName !== intent.workspaceName ||
+        read.semanticPaneId !== intent.semanticPaneId
+      )
+        throw new TypeError("Pane read result does not match intent");
+    }
     return { operationKind: intent.verb, observed: true, semanticPaneId: intent.semanticPaneId };
   }
   const result = WorkspaceMultiplexerMutationResultSchemaZ.parse(rawResult);
   if (result.verb !== intent.verb)
     throw new TypeError("Mutation result verb does not match intent");
   switch (result.verb) {
+    case "workspace.window.link.select":
+    case "workspace.window.link.unlink":
+      return { operationKind: result.verb, outcome: result.outcome, target: result.target };
     case "workspace.window.split":
       return {
         operationKind: result.verb,

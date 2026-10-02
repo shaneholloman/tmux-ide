@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { WorkspaceRegistry } from "./workspace-registry.ts";
 import {
   DEFAULT_HOOK_HEALTHCHECK_SCHEDULE,
+  tmuxInteractionWaitCommand,
   TmuxExternalInteractionObserver,
   internalInteractionOperationMarker,
   nextHookHealthcheckDelay,
@@ -24,6 +25,54 @@ const EVENT = "|tmux-ide-input-event-v1|";
 const SEND = "workspace.pane.send";
 const READ = "workspace.pane.read";
 const FORGED_INTERNAL_READ = "tmux-ide-internal-read-v2:11111111-1111-4111-8111-111111111111";
+
+describe("captured interaction targets", () => {
+  it("parses bounded captured identity and preserves unresolved legacy metadata", () => {
+    expect(
+      parseTmuxInputHookRecords(
+        `%9${FIELD}${FIELD}${SEND}${FIELD}$1${FIELD}pane.original${EVENT}`,
+      )[0]?.capturedTarget,
+    ).toEqual({ runtimePaneId: "%9", sessionId: "$1", semanticPaneId: "pane.original" });
+    for (const stamp of ["", "bad;command", "a".repeat(129)])
+      expect(
+        parseTmuxInputHookRecords(`%9${FIELD}${FIELD}${SEND}${FIELD}$1${FIELD}${stamp}${EVENT}`)[0]
+          ?.capturedTarget,
+      ).toBeUndefined();
+  });
+
+  it.each([true, false])(
+    "never performs late identity lookup with a captured-target resolver (resolved=%s)",
+    async (resolved) => {
+      const onObserved = vi.fn(() => false);
+      const onUnresolvedObservation = vi.fn();
+      const runTmux = vi.fn(async (args: readonly string[]) => {
+        if (args.includes("if-shell")) return "tmux-ide-drain-consumed";
+        if (args[0] === "show-options")
+          return `%9${FIELD}${FIELD}${SEND}${FIELD}$1${FIELD}pane.original${EVENT}`;
+        if (args[0] === "display-message") throw new Error("late lookup forbidden");
+        return "";
+      });
+      const observer = new TmuxExternalInteractionObserver({
+        daemonInstanceId: DAEMON,
+        tmuxAuthority: {
+          executablePath: "/unused",
+          socketSelector: { kind: "name", name: "unused" },
+        },
+        io: { runTmux },
+        onObserved,
+        onUnresolvedObservation,
+        resolveCapturedTarget: (target) =>
+          resolved
+            ? { workspaceName: "workspace.original", semanticPaneId: target.semanticPaneId }
+            : null,
+      });
+      await observer.drain();
+      expect(runTmux.mock.calls.some(([args]) => args[0] === "display-message")).toBe(false);
+      expect(onObserved).toHaveBeenCalledTimes(resolved ? 1 : 0);
+      expect(onUnresolvedObservation).toHaveBeenCalledTimes(resolved ? 0 : 1);
+    },
+  );
+});
 
 const HOOK_NAMES = ["after-send-keys", "after-capture-pane"] as const;
 
@@ -76,6 +125,7 @@ function harness(
   const io: ExternalTmuxInteractionObserverIo = {
     runTmux: async (args) => {
       calls.push([...args]);
+      if (args.includes("if-shell")) return "tmux-ide-drain-consumed";
       if (args[0] === "show-hooks") {
         return showHooks(
           args,
@@ -134,6 +184,7 @@ function statefulHookHarness(): {
   const io: ExternalTmuxInteractionObserverIo = {
     runTmux: async (args) => {
       calls.push([...args]);
+      if (args.includes("if-shell")) return "tmux-ide-drain-consumed";
       if (args[0] === "show-hooks") return showHooks(args, hooks);
       if (args[0] === "list-buffers") return "";
       if (args[0] === "set-hook" && args[1] === "-ag") {
@@ -365,6 +416,7 @@ describe("tmux external interaction observer", () => {
             await first;
           }
           active -= 1;
+          if (args.includes("if-shell")) return "tmux-ide-drain-consumed";
           if (args[0] === "show-hooks") {
             return HOOK_NAMES.map(
               (name) => `${name}[0] run-shell tmux-ide-interaction-v3-${DAEMON}`,
@@ -428,6 +480,7 @@ describe("tmux external interaction observer", () => {
       registry: registry(),
       io: {
         runTmux: async (args) => {
+          if (args.includes("if-shell")) return "tmux-ide-drain-consumed";
           if (args[0] === "show-hooks") return showHooks(args, hooks);
           if (args[0] === "list-buffers") return "";
           if (args[0] === "set-hook" && args[1] === "-ag") {
@@ -462,6 +515,7 @@ describe("tmux external interaction observer", () => {
       registry: registry(),
       io: {
         runTmux: async (args) => {
+          if (args.includes("if-shell")) return "tmux-ide-drain-consumed";
           if (!serverAvailable) {
             throw Object.assign(new Error("error connecting to tmux socket"), {
               stderr: "no server running on /private/tmp/tmux/default",
@@ -516,6 +570,7 @@ describe("tmux external interaction observer", () => {
       io: {
         runTmux: async (args, signal) => {
           calls.push(String(args[0]));
+          if (args.includes("if-shell")) return "tmux-ide-drain-consumed";
           if (first && signal) {
             first = false;
             installEntered();
@@ -557,6 +612,7 @@ describe("tmux external interaction observer", () => {
       onGap: gaps,
       io: {
         runTmux: async (args) => {
+          if (args.includes("if-shell")) return "tmux-ide-drain-consumed";
           if (args[0] === "show-options") {
             if (++reads === 1) throw new Error("transient read failure");
             return `%9${FIELD}${FIELD}${SEND}${EVENT}`;
@@ -587,6 +643,7 @@ describe("tmux external interaction observer", () => {
       onGap: gaps,
       io: {
         runTmux: async (args) => {
+          if (args.includes("if-shell")) return "tmux-ide-drain-consumed";
           if (args[0] === "show-options") {
             reads.push(args[2]!);
             throw new Error("stdout maxBuffer exceeded: content must not be logged");
@@ -697,6 +754,7 @@ describe("tmux external interaction observer", () => {
       onGap: gaps,
       io: {
         runTmux: async (args, signal) => {
+          if (args.includes("if-shell")) return "tmux-ide-drain-consumed";
           if (args[0] !== "show-options") return "";
           reads += 1;
           entered();
@@ -768,6 +826,7 @@ describe("tmux external interaction observer", () => {
       io: {
         runTmux: async (args) => {
           calls.push(String(args[0]));
+          if (args.includes("if-shell")) return "tmux-ide-drain-consumed";
           if (args[0] === "show-hooks") return showHooks(args, hooks);
           if (args[0] === "list-buffers") return "";
           if (args[0] === "set-hook" && args[1] === "-ag") {
@@ -850,6 +909,7 @@ describe("tmux external interaction observer", () => {
       onObserved: () => false,
       io: {
         runTmux: async (args) => {
+          if (args.includes("if-shell")) return "tmux-ide-drain-consumed";
           if (args[0] === "show-hooks") return showHooks(args, hooks);
           if (args[0] === "list-buffers") return "";
           if (args[0] === "set-hook" && args[1] === "-ag") {
@@ -896,4 +956,115 @@ describe("tmux external interaction observer", () => {
       vi.useRealTimers();
     }
   });
+});
+
+describe("unread-aware native wait command", () => {
+  it("registers a waiter only when retained work is empty, without a shell or yield", () => {
+    expect(tmuxInteractionWaitCommand("observer", "observer-ready")).toEqual([
+      "if-shell",
+      "-F",
+      "#{==:#{@observer},}",
+      "wait-for 'observer-ready'",
+    ]);
+  });
+  it("rejects command injection through either identifier", () => {
+    expect(() => tmuxInteractionWaitCommand("bad;name", "ready")).toThrow();
+    expect(() => tmuxInteractionWaitCommand("observer", "bad'channel")).toThrow();
+  });
+});
+
+describe("prefix consumption acknowledgement", () => {
+  it.each(["lost", "unknown", "mismatch"])(
+    "does not project a snapshot after %s acknowledgement",
+    async (failure) => {
+      const observed = vi.fn(() => true);
+      const gaps = vi.fn();
+      const delay = vi.fn(async () => undefined);
+      let attempts = 0;
+      let reads = 0;
+      const observer = new TmuxExternalInteractionObserver({
+        daemonInstanceId: DAEMON,
+        tmuxAuthority: {
+          executablePath: "/unused",
+          socketSelector: { kind: "name", name: "unused" },
+        },
+        registry: registry(),
+        onObserved: observed,
+        onGap: gaps,
+        io: {
+          delay,
+          runTmux: async (args) => {
+            if (args.includes("if-shell")) {
+              attempts += 1;
+              if (failure === "lost") throw new Error("response lost after possible mutation");
+              return failure === "mismatch" ? "tmux-ide-drain-retry" : "unknown";
+            }
+            if (args[0] === "show-options") {
+              reads += 1;
+              return `%9${FIELD}${FIELD}${SEND}${EVENT}`;
+            }
+            return "";
+          },
+        },
+      });
+      expect(await observer.drain()).toBe(false);
+      expect(attempts).toBe(1);
+      expect(reads).toBe(0);
+      expect(observed).not.toHaveBeenCalled();
+      expect(gaps).toHaveBeenCalledWith({
+        reason: failure === "mismatch" ? "overflow" : "detach-failed",
+        recovery: "future-observations-only",
+      });
+      expect(delay).toHaveBeenCalledTimes(1);
+    },
+  );
+});
+
+it("backs off persistent consume failures and aborts the backoff on disposal", async () => {
+  let attempts = 0;
+  const releases: Array<() => void> = [];
+  const delays: number[] = [];
+  const observer = new TmuxExternalInteractionObserver({
+    daemonInstanceId: DAEMON,
+    tmuxAuthority: { executablePath: "/unused", socketSelector: { kind: "name", name: "unused" } },
+    onObserved: () => {
+      throw new Error("must never project uncertain consumption");
+    },
+    healthcheck: { baseMs: 30_000, maxMs: 30_000 },
+    io: {
+      runTmux: async (args) => {
+        if (args.includes("if-shell")) {
+          attempts += 1;
+          throw new Error("persistent consumption failure");
+        }
+        return "";
+      },
+      waitForSignal: async () => undefined,
+      delay: (ms, signal) =>
+        new Promise<void>((resolve) => {
+          delays.push(ms);
+          const done = () => {
+            signal.removeEventListener("abort", done);
+            resolve();
+          };
+          releases.push(done);
+          if (signal.aborted) done();
+          else signal.addEventListener("abort", done, { once: true });
+        }),
+    },
+  });
+  await observer.start();
+  try {
+    await vi.waitFor(() => expect(attempts).toBe(1));
+    expect(delays).toEqual([1_000]);
+    // Flush repeated microtasks: an unread waiter cannot bypass the barrier.
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+    expect(attempts).toBe(1);
+    releases[0]!();
+    await vi.waitFor(() => expect(attempts).toBe(2));
+    expect(delays).toEqual([1_000, 1_000]);
+  } finally {
+    await observer.dispose();
+  }
+  expect(attempts).toBe(2);
 });

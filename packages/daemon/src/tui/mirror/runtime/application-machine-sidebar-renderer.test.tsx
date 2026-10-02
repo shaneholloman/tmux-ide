@@ -2,7 +2,8 @@ import { ApplicationCatalogShell } from "./application-shell-catalog.tsx";
 /* @jsxImportSource @opentui/solid */
 import { MouseButtons } from "@opentui/core/testing";
 import { describe, expect, it } from "bun:test";
-import { createSignal } from "solid-js";
+import { createSignal, Show } from "solid-js";
+import { ApplicationReferenceSheet } from "./application-reference-sheet.tsx";
 import { createSemanticThemeSnapshot } from "../theme.ts";
 import { renderForTest } from "../testing/renderer-harness.test.ts";
 import { KeyboardRouteProvider, createKeyboardRouteOwner } from "../ui/keyboard-router.tsx";
@@ -122,10 +123,14 @@ describe("machine sidebar", () => {
     );
     const selected = async () => {
       await setup.renderOnce();
+      const bg = createSemanticThemeSnapshot({ mode: "dark" })
+        .roles.selection.selection.toInts()
+        .join(",");
       return setup
-        .captureCharFrame()
-        .split("\n")
-        .filter((line) => line.includes("agent") && line.includes("›"));
+        .captureSpans()
+        .lines.flatMap((line) => line.spans)
+        .filter((span) => span.text.includes("agent") && span.bg.toInts().join(",") === bg)
+        .map((span) => span.text);
     };
     expect((await selected())[0]).toContain("local agent");
     expect((await selected()).length).toBe(1);
@@ -297,9 +302,14 @@ for (const surface of ["home", "terminals"] as const) {
     );
     await setup.renderOnce();
     const frame = setup.captureCharFrame();
-    expect(frame).toContain("Machines");
-    expect(frame).toContain("My server");
-    expect(frame.split("\n").filter((line) => line.includes("Machines"))).toHaveLength(1);
+    if (surface === "home") {
+      expect(frame).not.toContain("Machines");
+      expect(frame).not.toContain("My server");
+      expect(frame).toContain("tmux-ide");
+    } else {
+      expect(frame).toContain("My server");
+      expect(frame.split("\n").filter((line) => line.includes("Machines"))).toHaveLength(1);
+    }
     setup.renderer.destroy();
   });
 }
@@ -353,7 +363,7 @@ it("retains agents across machine selection and routes identical pane IDs only t
       .findIndex((line) => line.includes("server agent"));
   expect(setup.captureCharFrame()).toContain("local agent");
   expect(setup.captureCharFrame()).toContain("server agent");
-  expect(setup.captureCharFrame()).toContain("WORKING");
+  expect(setup.captureCharFrame()).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/u);
   setActiveMachine("server");
   await setup.renderOnce();
   expect(setup.captureCharFrame()).toContain("local agent");
@@ -362,7 +372,7 @@ it("retains agents across machine selection and routes identical pane IDs only t
   setOffline(true);
   await setup.renderOnce();
   expect(setup.captureCharFrame()).toContain("server agent");
-  expect(setup.captureCharFrame()).toContain("unavailable");
+  expect(setup.captureCharFrame()).toContain("Unavailable");
   await setup.mockMouse.click(5, findAgent(), MouseButtons.LEFT);
   expect(calls).toHaveLength(2);
   setup.renderer.destroy();
@@ -437,7 +447,7 @@ it("offers keyboard and mouse connection controls for the focused remote only", 
   );
   await setup.mockMouse.click(
     6,
-    lines.findIndex((line) => line.includes("Disconnect (D)")),
+    lines.findIndex((line) => line.includes("D Disconnect")),
     MouseButtons.LEFT,
   );
   expect(calls).toEqual(["retry:mini", "disconnect:mini", "retry:mini", "disconnect:mini"]);
@@ -445,13 +455,13 @@ it("offers keyboard and mouse connection controls for the focused remote only", 
   owner.dispose();
 });
 
-it("renders bounded host tabs and scopes mouse open/close to their exact keys", async () => {
+it("keeps retained session tabs out of the agent-first sidebar", async () => {
   const calls: string[] = [];
   const setup = await renderForTest(
     () => (
       <ApplicationMachineSidebar
         width={38}
-        height={12}
+        height={20}
         theme={createSemanticThemeSnapshot({ mode: "dark" })}
         model={{
           groups: () => [],
@@ -472,17 +482,14 @@ it("renders bounded host tabs and scopes mouse open/close to their exact keys", 
         }}
       />
     ),
-    { width: 38, height: 12 },
+    { width: 38, height: 20 },
   );
   await setup.renderOnce();
   const lines = setup.captureCharFrame().split("\n");
-  expect(lines[0]).toContain("F9 tabs");
-  const gpu = lines.findIndex((line) => line.includes("GPU / api"));
-  expect(gpu).toBeGreaterThan(0);
-  expect(lines[gpu]).toContain("offline");
-  await setup.mockMouse.click(6, gpu, MouseButtons.LEFT);
-  await setup.mockMouse.click(lines[gpu].indexOf("×"), gpu, MouseButtons.LEFT);
-  expect(calls).toEqual(["open:gpu-api", "close:gpu-api"]);
+  expect(lines[0]).toContain("Machines");
+  expect(lines.join("\n")).not.toContain("Working sessions");
+  expect(lines.join("\n")).not.toContain("GPU · default");
+  expect(calls).toEqual([]);
   setup.renderer.destroy();
 });
 
@@ -492,10 +499,12 @@ it("keeps collapsed activity visible, handles vim/page navigation and scopes hel
   const [focused, setFocused] = createSignal(true);
   const opened: string[] = [];
   let searches = 0;
+  const [help, setHelp] = createSignal(false);
   const setup = await renderForTest(
     () => (
       <KeyboardRouteProvider owner={owner}>
         <ApplicationMachineSidebar
+          onHelp={() => setHelp(true)}
           width={42}
           height={18}
           theme={createSemanticThemeSnapshot({ mode: "dark" })}
@@ -531,6 +540,15 @@ it("keeps collapsed activity visible, handles vim/page navigation and scopes hel
             onOpenSwitcher: () => searches++,
           }}
         />
+        <Show when={help()}>
+          <ApplicationReferenceSheet
+            page="help"
+            width={42}
+            height={18}
+            theme={createSemanticThemeSnapshot({ mode: "dark" })}
+            onClose={() => setHelp(false)}
+          />
+        </Show>
       </KeyboardRouteProvider>
     ),
     { width: 42, height: 18 },
@@ -548,11 +566,11 @@ it("keeps collapsed activity visible, handles vim/page navigation and scopes hel
   await setup.renderOnce();
   key("h");
   await setup.renderOnce();
-  expect(setup.captureCharFrame()).toContain("! 1");
-  expect(setup.captureCharFrame()).not.toContain("work-0");
+  expect(setup.captureCharFrame()).toContain("! Agent");
+  expect(setup.captureCharFrame()).toContain("Mini · work-0");
   setOffline(true);
   await setup.renderOnce();
-  expect(setup.captureCharFrame()).not.toContain("! 1");
+  expect(setup.captureCharFrame()).toContain("Unavailable");
   setOffline(false);
   key("l");
   key("j");
@@ -565,14 +583,193 @@ it("keeps collapsed activity visible, handles vim/page navigation and scopes hel
   expect(opened[1]).not.toBe("work-0");
   key("?");
   await setup.renderOnce();
-  expect(setup.captureCharFrame()).toContain("Ctrl-U/D half");
+  expect(setup.captureCharFrame()).toContain("Using tmux-ide");
   key("escape");
   expect(focused()).toBe(true);
+  expect(help()).toBe(false);
+  await setup.renderOnce();
   key("/");
   expect(searches).toBe(1);
   key("escape");
   expect(focused()).toBe(false);
   expect(key("j")).toBe(false);
+  setup.renderer.destroy();
+  owner.dispose();
+});
+
+it("shows duplicate server labels separately and clicks the exact session row", async () => {
+  const a = {
+    serverId: `tmux-server.${"a".repeat(32)}`,
+    generation: "11111111-1111-4111-8111-111111111111",
+  };
+  const b = {
+    serverId: `tmux-server.${"b".repeat(32)}`,
+    generation: "22222222-2222-4222-8222-222222222222",
+  };
+  const calls: (string | undefined)[] = [];
+  const servers: string[] = [];
+  const [groups, setGroups] = createSignal<ApplicationMachineGroup[]>([
+    {
+      id: "local",
+      label: "Local",
+      state: "ready",
+      sessions: [
+        { id: "a", name: "same", paneCount: 1, server: a, serverLabel: "work" },
+        { id: "b", name: "same", paneCount: 1, server: b, serverLabel: "work" },
+      ],
+    },
+  ]);
+  const setup = await renderForTest(
+    () => (
+      <ApplicationMachineSidebar
+        width={42}
+        height={12}
+        theme={createSemanticThemeSnapshot({ mode: "light" })}
+        model={{
+          groups,
+          activeMachineId: () => "local",
+          activeSessionName: () => "same",
+          activeSessionKey: () => "b",
+          onOpen: (_machine, _name, _source, key) => calls.push(key),
+          onSelectMachine: () => {},
+          onSelectServer: (_machine, server) => servers.push(server.serverId),
+        }}
+      />
+    ),
+    { width: 42, height: 12 },
+  );
+  await setup.renderOnce();
+  expect(setup.captureCharFrame()).toContain("work · aaaaaa");
+  expect(setup.captureCharFrame()).toContain("work · bbbbbb");
+  const row = setup.renderer.root.findDescendantById(
+    `ui-navigation-row:machine:${JSON.stringify(["local", "session", "b"])}`,
+  )!;
+  await setup.mockMouse.click(row.x + 6, row.y, MouseButtons.LEFT);
+  expect(calls).toEqual(["b"]);
+  const heading = setup.renderer.root.findDescendantById(
+    `ui-navigation-row:server:local:${b.serverId}`,
+  )!;
+  await setup.mockMouse.click(heading.x + 6, heading.y, MouseButtons.LEFT);
+  expect(servers).toEqual([b.serverId]);
+  setGroups([{ ...groups()[0]!, sessions: [groups()[0]!.sessions[0]!] }]);
+  await setup.renderOnce();
+  expect(setup.captureCharFrame()).not.toContain("work ·");
+});
+
+it("uses shortcut-first buttons for sidebar actions with isolated clicks", async () => {
+  const actions: string[] = [];
+  const setup = await renderForTest(
+    () => (
+      <ApplicationMachineSidebar
+        onHelp={(source) => actions.push(`help:${source}`)}
+        width={28}
+        height={12}
+        theme={createSemanticThemeSnapshot({ mode: "light" })}
+        model={{
+          groups: () => [],
+          activeMachineId: () => null,
+          activeSessionName: () => null,
+          onOpen() {},
+          onSelectMachine() {},
+          onOpenSwitcher: () => actions.push("sessions"),
+          onOpenAttention: () => actions.push("attention"),
+          onAddMachine: () => actions.push("add"),
+        }}
+      />
+    ),
+    { width: 28, height: 12 },
+  );
+  try {
+    await setup.renderOnce();
+    const lines = setup.captureCharFrame().split("\n");
+    for (const label of ["F6 Browse all sessions", "F7 Attention (0)", "A Add machine"]) {
+      const y = lines.findIndex((line) => line.includes(label));
+      expect(y).toBeGreaterThanOrEqual(0);
+      await setup.mockMouse.click(lines[y]!.indexOf(label), y, MouseButtons.LEFT);
+    }
+    expect(actions).toEqual(["sessions", "attention", "add"]);
+    const y = lines.findIndex((line) => line.includes("? Help"));
+    await setup.mockMouse.click(lines[y]!.indexOf("? Help"), y, MouseButtons.LEFT);
+    await setup.renderOnce();
+    expect(actions).toEqual(["sessions", "attention", "add", "help:mouse"]);
+    expect(setup.captureCharFrame()).toBe(lines.join("\n"));
+  } finally {
+    setup.renderer.destroy();
+  }
+});
+
+it("routes focus between agents and machine tree without duplicate activation", async () => {
+  const owner = createKeyboardRouteOwner();
+  const opened: string[] = [];
+  const setup = await renderForTest(
+    () => (
+      <KeyboardRouteProvider owner={owner}>
+        <ApplicationMachineSidebar
+          theme={createSemanticThemeSnapshot({ mode: "dark" })}
+          width={40}
+          height={20}
+          model={{
+            focused: () => true,
+            groups: () => [
+              {
+                id: "local",
+                label: "Local",
+                state: "ready",
+                sessions: [{ id: "s", name: "shell", paneCount: 1 }],
+                agents: ["a", "b"].map((id) => ({
+                  id,
+                  name: id,
+                  sessionName: "shell",
+                  paneId: id,
+                  activity: "idle" as const,
+                  attention: false,
+                })),
+              },
+            ],
+            activeMachineId: () => null,
+            activeSessionName: () => "shell",
+            onOpen: () => opened.push("tree"),
+            onSelectMachine() {},
+            tabs: () => [
+              { key: "a", label: "one", hostLabel: "Local", active: true, available: true },
+              {
+                key: "b",
+                label: "two",
+                hostLabel: "Spark",
+                serverLabel: "dev",
+                active: false,
+                available: true,
+              },
+            ],
+            onOpenAgent: (_machine, _session, pane) => opened.push(pane),
+          }}
+        />
+      </KeyboardRouteProvider>
+    ),
+    { width: 40, height: 20 },
+  );
+  const press = (name: string) =>
+    owner.route({
+      name,
+      ctrl: false,
+      meta: false,
+      shift: false,
+      eventType: "press",
+      preventDefault() {},
+      stopPropagation() {},
+    });
+  await setup.renderOnce();
+  press("down");
+  press("return");
+  expect(opened).toEqual(["b"]);
+  press("tab");
+  press("end");
+  press("return");
+  expect(opened).toEqual(["b", "tree"]);
+  press("tab");
+  press("home");
+  press("return");
+  expect(opened).toEqual(["b", "tree", "a"]);
   setup.renderer.destroy();
   owner.dispose();
 });

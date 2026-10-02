@@ -1,12 +1,16 @@
+import { prepareApplicationGuidedTour } from "./application-guided-tour-preparation.ts";
+import type { TmuxServerScope } from "@tmux-ide/contracts";
+import { createApplicationSidebarShortcuts } from "./application-sidebar-shortcuts.ts";
+import { terminalWindowActionCallbacks } from "./application-terminal-workspace-policy.ts";
 import { applicationRouteConnection } from "./application-route-connection.ts";
 import { ApplicationMachineOverlays } from "./application-machine-overlays.tsx";
-import { handleFleetShortcut } from "./application-machine-navigation.ts";
 import { applicationMachineAuthorityManager } from "./application-machine-authority.ts";
 import { createApplicationMachineAgentNavigator } from "./application-machine-agent-navigation.ts";
 import { createApplicationMachineNavigation } from "./application-machine-navigation.ts";
+import { handleFleetShortcut } from "./application-machine-navigation.ts";
 import { disposeApplicationDaemonAuthority } from "./application-daemon-authority.ts";
 import { createTerminalLinkOpener } from "./terminal-link-opener.ts";
-import { createApplicationPaneActivityOwner } from "./application-pane-activity-owner.ts";
+import { createMachinePaneActivity } from "./application-pane-activity-owner.ts";
 import { createApplicationConnectionFeedback } from "../workspace/connection-feedback.ts";
 /* @jsxImportSource @opentui/solid */
 import { batch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
@@ -29,14 +33,14 @@ import {
   type StartApplicationRootOptions,
 } from "./application-root-configuration.ts";
 import { createApplicationHomeCatalogOwner } from "./application-home-catalog-owner.ts";
-import { createApplicationHomeNavigationOwner } from "./application-home-agents-owner.ts";
+import { createApplicationHomeExperience } from "./application-home-experience.ts";
 import { ApplicationShellView, applicationShellKeyAction } from "./application-shell-view.tsx";
 import {
   applicationGenerationNavigationKey,
   createApplicationGenerationStarter,
 } from "./application-generation-starter.ts";
 import { createApplicationInputReadiness } from "./application-input-readiness.ts";
-import { applyApplicationAppearanceToRenderer } from "./application-theme-repaint.ts";
+import { createApplicationAppearanceRendererBinding } from "./application-theme-repaint.ts";
 import { createApplicationTerminalInteractionController } from "./application-terminal-interaction-controller.ts";
 import {
   createApplicationHostFocusRecovery,
@@ -90,6 +94,7 @@ import { createKeyboardRouteOwner, KeyboardRouteProvider } from "../ui/keyboard-
 export type { StartApplicationRootOptions } from "./application-root-configuration.ts";
 export async function startApplicationRoot(options: StartApplicationRootOptions = {}) {
   options.initialPreparation?.diagnosticHandoff?.attach(tuiPerfMark);
+  const guidedTourPreparation = await prepareApplicationGuidedTour();
   let renderer!: Awaited<ReturnType<typeof createRootRenderer>>;
   let lifecycle!: TuiApplicationLifecycle;
   const { ready, resolveReady, rejectReady } = createApplicationRootReadiness();
@@ -174,6 +179,7 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
         const makeSessionOwner = (
           machineId = applicationMachineAuthorityManager.snapshot().selectedMachineId,
           expectedLiveSessionId?: string,
+          server?: TmuxServerScope,
         ) => {
           const ownedEpoch = ++sessionOwnerEpoch;
           connectionProgress.replaceOwner();
@@ -181,6 +187,7 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
             applicationMachineAuthorityManager.getMachine(machineId)!,
             expectedLiveSessionId,
             tuiLifecycleStream ? tuiPerfMark : undefined,
+            server,
           );
           return createOpenTuiSessionOwner({
             onStartupFailure: (sessionName, failure) => {
@@ -249,7 +256,11 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
         });
         appearance = createAppearanceOwner(config.app, renderer, terminalPaletteOwner);
         const { theme, palette, setTransientNote } = appearance;
-        const semanticViewportResize = createSemanticShellViewportResizeOwner(layoutSnapshot);
+        const [sidebarVisible, setSidebarVisible] = createSignal(true);
+        const semanticViewportResize = createSemanticShellViewportResizeOwner(
+          layoutSnapshot,
+          sidebarVisible,
+        );
         const activeSurface = createMemo<"home" | "terminals">(
           () => shell().semantic?.workspaceCanvas.activeMode ?? surface(),
         );
@@ -258,14 +269,16 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
         });
         const { terminalRendererSource, terminalGestureRuntime, focusRendererSource } =
           createApplicationTerminalRendererSources(generation);
-        const paneInteractions = createApplicationPaneActivityOwner(generation);
         getTerminalRendererSource = focusRendererSource;
         interaction = createApplicationTerminalInteractionController({
           generation,
           layout: layoutSnapshot,
           focusedPane,
           rendererFocused,
-          shellPresentation: () => applicationShellBindingRenderSignature(shell()),
+          shellPresentation: () => [
+            sidebarVisible(),
+            ...(applicationShellBindingRenderSignature(shell()) ?? []),
+          ],
           setFocusedPane,
           diagnosticsEnabled: Boolean(tuiPerfStream),
           detailedWindowSwitchTiming:
@@ -315,19 +328,18 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
           | ReturnType<typeof createApplicationMachineAgentNavigator>
           | undefined;
         const machines = createApplicationMachineNavigation({
-          resetWorkspace(machineId, expectedLiveSessionId) {
-            if (initialPreparation) {
-              void initialPreparation.preparedConnection
-                .then((connection) => connection?.dispose())
-                .catch(() => undefined);
-              initialPreparation = null;
-            }
+          attachedGeneration: generation,
+          resetWorkspace(machineId, expectedLiveSessionId, server) {
+            void initialPreparation?.preparedConnection
+              .then((connection) => connection?.dispose())
+              .catch(() => undefined);
+            initialPreparation = null;
             interaction?.adoptGeneration(null);
             setGeneration(null);
             shellBinding.adoptGeneration(null);
             terminalHostFocus.adopt(null);
             void sessionOwner?.dispose().catch(() => undefined);
-            sessionOwner = makeSessionOwner(machineId, expectedLiveSessionId);
+            sessionOwner = makeSessionOwner(machineId, expectedLiveSessionId, server);
           },
           cancelOpen: () => {
             machineAgentNavigator?.cancel();
@@ -347,6 +359,7 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
           setSurface,
           setNote: appearance.setNote,
         });
+        const paneInteractions = createMachinePaneActivity(machines, generationMachineId, shell);
         machineAgentNavigator = createApplicationMachineAgentNavigator({
           isCurrentTarget: (machineId, row) => machines.agents.isCurrentTarget(machineId, row),
           selectedMachineId: machines.selectedMachineId,
@@ -361,9 +374,11 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
         onCleanup(() => machineAgentNavigator?.dispose());
         const homeCatalog = createApplicationHomeCatalogOwner({
           lifecycle,
-          automaticOpen: config.target === null && machines.automaticOpen,
+          automaticOpen: config.target === null && !config.serverId && machines.automaticOpen,
           automaticOpenAllowed: machines.automaticOpenAllowed,
           catalog: machines.catalog.selectedCatalog,
+          openCatalogSession: (session) =>
+            machines.openSelectedSession(session.name, "keyboard", session.id),
           startGeneration,
           setNote: appearance.setNote,
         });
@@ -378,10 +393,19 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
           componentKeyboardRoutes.dispose();
           sessionFocusOwner?.dispose();
         });
-        const { homeAgents, paneRename, paletteCommands, paletteCommandList, openAgent } =
-          createApplicationHomeNavigationOwner({
-            fleetCommands: machines.paletteCommands,
-            openFleet: machines.openPalette,
+        const { homeAgents, paneRename, newAgent, paletteCommands, openAgent, tour } =
+          createApplicationHomeExperience({
+            guidedTourPreparation,
+            machines,
+            sidebarVisible,
+            toggleSidebar: () => setSidebarVisible((visible) => !visible),
+            lifecycle,
+            generation,
+            generationMachineId,
+            layoutSnapshot,
+            appearance,
+            dimensions,
+            paletteModalOpen,
             focusedPane,
             catalog: homeCatalog,
             activeSurface,
@@ -398,30 +422,25 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
             setSurface,
             setNote: setTransientNote,
           });
-        let paintedAppearanceGeneration: number | null = null;
-        createEffect(() => {
-          const nextAppearance = appearance.appearance();
-          paintedAppearanceGeneration = applyApplicationAppearanceToRenderer(
-            renderer,
-            nextAppearance.theme,
-            nextAppearance.generation,
-            paintedAppearanceGeneration,
-          );
-        });
+        createApplicationAppearanceRendererBinding(renderer, appearance);
         createEffect(() => {
           const currentShell = shell();
           semanticViewportResize.adopt(dimensions(), currentShell.semantic, generation());
           focusedPane();
           terminalInputIngress.adopt();
         });
+        const sidebarShortcut = createApplicationSidebarShortcuts(
+          activeSurface,
+          sidebarVisible,
+          setSidebarVisible,
+          machines,
+          paletteCommands,
+        );
         useKeyboard((event) => {
           noteHostInteraction();
           const name = event.name.toLowerCase();
-          if (paletteModalOpen()) {
-            componentKeyboardRoutes.route(event);
-            return;
-          }
-          if (machines.switching()) {
+          if (newAgent.handleKey(event) || paneRename.handleKey(event)) return;
+          if (paletteModalOpen() || machines.switching()) {
             componentKeyboardRoutes.route(event);
             return;
           }
@@ -431,13 +450,7 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
           }
           if (name === "f6" || name === "f7") paletteCommands.setOpen(false, "keyboard");
           if (handleFleetShortcut(event, machines)) return;
-          if (name === "f5") {
-            machines.sidebar.onBlur?.();
-            paletteCommands.setOpen(true, "keyboard");
-            return;
-          }
           if (appearance.handlePickerKey(event)) return;
-          if (paneRename.handleKey(event)) return;
           if (
             (shell().semantic?.focus.palette.open || shell().localPaletteOpen) &&
             event.ctrl &&
@@ -446,11 +459,8 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
           )
             return;
           if (paletteCommands.handleKey(event)) return;
-          if (event.ctrl && name === "g") {
-            machines.focus();
-            return;
-          }
-          if (machines.focused() && !(event.ctrl && name === "q")) {
+          if (sidebarShortcut(event)) return;
+          if (machines.focused() && !["f1", "f2"].includes(name) && !(event.ctrl && name === "q")) {
             componentKeyboardRoutes.route(event);
             return;
           }
@@ -481,8 +491,8 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
             homeCatalog.handleKey(name)
           )
             return;
+          if (componentKeyboardRoutes.route(event)) return;
           if (
-            (activeSurface() === "home" || activeSurface() === "terminals") &&
             name === "n" &&
             homeCatalog.phase() === "live" &&
             homeCatalog.sessionNames().length === 0
@@ -490,7 +500,6 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
             void homeCatalog.createLocalSession();
             return;
           }
-          if (componentKeyboardRoutes.route(event)) return;
           if (activeSurface() === "terminals" && interaction.routeWorkspaceKey(event)) return;
           if (
             activeSurface() === "terminals" &&
@@ -505,14 +514,16 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
         });
         usePaste((event) => {
           noteHostInteraction();
-          if (paletteModalOpen() || appearance.pickerOpen() || machines.adding()) return;
+          if (paletteModalOpen()) return void componentKeyboardRoutes.routePaste(event.bytes);
+          if (appearance.pickerOpen() || machines.adding()) return;
           if (machines.switching()) {
             componentKeyboardRoutes.routePaste(event.bytes);
             return;
           }
-          if (paneRename.handlePaste(event.bytes)) return;
+          if (newAgent.handlePaste(event.bytes) || paneRename.handlePaste(event.bytes)) return;
           if (selectionOwner.blocksInput()) return;
           if (paletteCommands.handlePaste(event.bytes)) return;
+          if (activeSurface() === "home" && componentKeyboardRoutes.routePaste(event.bytes)) return;
           if (machines.focused()) return;
           if (
             activeSurface() !== "terminals" ||
@@ -525,7 +536,7 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
         });
         onMount(() => {
           tuiPerfMark("solid-mounted");
-          machines.start(config.target);
+          machines.start(config.target, config.serverId);
         });
         const resizeIngress = tuiPerfStream ? interaction.beginResizePointerIngress : undefined;
         const applicationMouseIngress = applicationMousePointerIngressCapability(
@@ -538,9 +549,12 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
             <ApplicationShellView
               machineLabel={machines.isLocal() ? null : machines.label()}
               machineColor={machines.color()}
+              sidebarVisible={sidebarVisible()}
               machineSidebar={machines.sidebar}
               appearanceOwner={appearance}
               homeAgents={homeAgents.presentation}
+              onOpenTutorial={tour.open}
+              tutorialLabel={tour.label()}
               dimensions={dimensions}
               surface={activeSurface}
               semantic={() => shell().semantic}
@@ -558,9 +572,12 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
               catalogPhase={homeCatalog.phase}
               catalogNote={homeCatalog.note}
               paletteOpen={() => shell().semantic?.focus.palette.open ?? shell().localPaletteOpen}
+              newAgentOwner={newAgent}
               paneRenameDialog={paneRename.draft}
               paletteSelection={paletteCommands.selection}
               paletteQuery={paletteCommands.query}
+              paletteReferencePage={paletteCommands.referencePage}
+              onPaletteReferenceChange={paletteCommands.setReferencePage}
               paletteKeyboardHint={paletteCommands.keyboardHint}
               palettePreviewActive={() =>
                 rendererFocused() && !machines.switching() && !machines.adding()
@@ -571,9 +588,11 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
               onPaletteViewport={paletteCommands.setViewport}
               onPaletteFavorite={machines.togglePaletteFavorite}
               paletteCloseArmed={paletteCommands.closeArmed}
-              paletteCommands={paletteCommandList}
+              paletteCommands={paletteCommands.commands}
               paneInteractions={paneInteractions}
+              interactionObservation={paneInteractions.observationStatus}
               recentPaneActivity={paneInteractions.activity}
+              activityDaemonId={() => generation()?.daemonGeneration ?? null}
               terminalRendererSource={terminalRendererSource}
               terminalGestureRuntime={terminalGestureRuntime}
               onApplicationMousePointerIngress={focusedApplicationMouseIngress}
@@ -591,7 +610,7 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
               onOpenSession={recoverHostFocus((sessionName, source) => {
                 machineAgentNavigator?.cancel();
                 homeAgents?.cancel();
-                void startGeneration(sessionName, false, source);
+                void machines.openSelectedSession(sessionName, source);
               })}
               onOpenAgent={recoverHostFocus((sessionName, paneId, source) => {
                 machineAgentNavigator?.cancel();
@@ -600,9 +619,12 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
               })}
               onSetPaletteOpen={recoverHostFocus(paletteCommands.setOpen)}
               onPaletteActivate={recoverHostFocus(paletteCommands.activate)}
-              onZoomPane={recoverHostFocus((paneId) => {
-                void interaction.zoomPane(paneId).then(setTransientNote);
-              })}
+              {...terminalWindowActionCallbacks(
+                interaction,
+                setTransientNote,
+                recoverHostFocus,
+                () => machineAgentNavigator?.cancel(),
+              )}
               onCreateWindow={recoverHostFocus(() =>
                 paletteCommands.activate("new-window", "mouse"),
               )}
@@ -616,10 +638,6 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
               onCancelPaneRename={recoverHostFocus(paneRename.cancel)}
               onSubmitPaneRename={recoverHostFocus(paneRename.submit)}
               onDismissNotification={recoverHostFocus(() => setTransientNote(null))}
-              onSelectPane={recoverHostFocus((paneId, source) => {
-                machineAgentNavigator?.cancel();
-                interaction.selectPane(paneId, source);
-              })}
               onResizePreview={recoverHostFocus(interaction.previewPaneResize)}
               onResizePane={recoverHostFocus(interaction.resizePane)}
               onCancelResize={interaction.cancelPaneResize}
@@ -636,6 +654,7 @@ export async function startApplicationRoot(options: StartApplicationRootOptions 
               onWindowPresented={tuiPerfStream ? interaction.observeWindowPresentation : undefined}
               onInteraction={() => noteHostInteraction()}
             />
+            <tour.Coach />
             <ApplicationMachineOverlays
               machines={machines}
               active={rendererFocused()}

@@ -27,7 +27,10 @@ import { WorkspaceRegistry } from "../workspace-registry.ts";
 import { memorablePaneName } from "../../terminal/protocol/pane-display-name.ts";
 
 // PATH/override tests must not depend on locally built distribution assets.
-vi.mock("../bundled-tmux.ts", () => ({ resolveBundledTmux: () => null }));
+vi.mock("../bundled-tmux.ts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../bundled-tmux.ts")>()),
+  resolveBundledTmux: () => null,
+}));
 
 const DAEMON = "20000000-0000-4000-8000-000000000002";
 const OPERATION = "10000000-0000-4000-8000-000000000001";
@@ -292,6 +295,54 @@ describe("WorkspacePaneCreationAuthority", () => {
       expect(() => asyncRunner(["display-message"])).toThrow(/changed before use/u);
     } finally {
       await new Promise<void>((resolve) => second.close(() => resolve()));
+    }
+  });
+
+  it("preserves exact async capture bytes with bounded private prefix allowance and cancellation", async () => {
+    const root = mkdtempSync(join(tmpdir(), "tmux-ide-async-output-"));
+    roots.push(root);
+    const socketPath = join(root, "s"),
+      executablePath = join(root, "tmux");
+    writeFileSync(
+      executablePath,
+      `#!${process.execPath}\nconst arg=process.argv.at(-1);if(arg==='wait')setInterval(()=>{},1000);else if(arg==='large')process.stdout.write('x'.repeat(65536)+'\\nack\\n');else process.stdout.write(arg);\n`,
+      { mode: 0o755 },
+    );
+    const server = createServer();
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, resolve);
+    });
+    try {
+      const run = createPinnedWorkspaceTmuxAsyncRunner({
+        executablePath,
+        socketSelector: { kind: "path", path: socketPath },
+      });
+      const raw = { preserveTrailingNewlines: true, maxOutputBytes: 65536 + 2050 };
+      for (const text of ["", "identity\nack\n", "identity\nack\nrow\n\n", "identity\nack\n\n"]) {
+        await expect(run(["capture-pane", text], undefined, raw)).resolves.toBe(text);
+        await expect(run(["capture-pane", text])).resolves.toBe(text.replace(/(?:\r?\n)+$/u, ""));
+      }
+      const changingOptions = { preserveTrailingNewlines: true, maxOutputBytes: 2050 };
+      const pendingCapture = run(["capture-pane", "identity\nack\n\n"], undefined, changingOptions);
+      changingOptions.preserveTrailingNewlines = false;
+      changingOptions.maxOutputBytes = 1;
+      await expect(pendingCapture).resolves.toBe("identity\nack\n\n");
+      await expect(run(["capture-pane", "large"], undefined, raw)).resolves.toHaveLength(65541);
+      await expect(run(["capture-pane", "large"])).rejects.toThrow();
+      await expect(
+        run(["capture-pane", "1234"], undefined, { ...raw, maxOutputBytes: 3 }),
+      ).rejects.toThrow();
+      for (const maxOutputBytes of [0, -1, 67587, 1.5, Infinity])
+        expect(() => run(["capture-pane", ""], undefined, { maxOutputBytes })).toThrow(
+          "output bound",
+        );
+      const abort = new AbortController();
+      const capture = run(["capture-pane", "wait"], abort.signal, raw);
+      abort.abort();
+      await expect(capture).rejects.toThrow();
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
 
@@ -696,6 +747,27 @@ describe("WorkspacePaneCreationAuthority", () => {
         (error as WorkspacePaneCreationError).context.reason === "local_config_outside_workspace",
     );
     expect(fake.creations).toBe(0);
+  });
+
+  it("pins explicit named authority despite inherited foreign TMUX", () => {
+    const root = mkdtempSync(join(tmpdir(), "tmux-ide-selector-"));
+    roots.push(root);
+    const executable = join(root, "tmux");
+    writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+    chmodSync(executable, 0o755);
+    vi.stubEnv("TMUX_IDE_RUNTIME_MODE", "production");
+    vi.stubEnv("TMUX_IDE_TMUX_BIN", executable);
+    vi.stubEnv("TMUX_IDE_TMUX_SOCKET_NAME", "chosen");
+    vi.stubEnv("TMUX_IDE_TMUX_SOCKET_PATH", "");
+    vi.stubEnv("TMUX", "/does-not-exist/foreign.sock,123,0");
+    try {
+      expect(resolveWorkspacePaneTmuxAuthority().socketSelector).toEqual({
+        kind: "name",
+        name: "chosen",
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("rejects project-relative and empty PATH authority even when ./tmux is executable", () => {

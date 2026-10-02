@@ -138,9 +138,12 @@ describe("MirrorService refcounting", () => {
     const retention = await service.retainSession(FIXTURE.session);
     state.truthRows = state.truthRows.slice(0, 2);
     state.windowRows = state.windowRows.slice(0, 1);
-    state.descriptorRows = state.descriptorRows
-      .slice(0, 2)
-      .map((row) => row.replace(/\t2\t2$/u, "\t2\t1"));
+    state.descriptorRows = state.descriptorRows.slice(0, 2).map((row) => {
+      const fields = row.split("\t");
+      // session_windows precedes the optional native pane birth field.
+      fields[19] = "1";
+      return fields.join("\t");
+    });
     const layouts: string[] = [];
 
     const subscription = await service.subscribeLayout(FIXTURE.session, (layout) => {
@@ -198,7 +201,7 @@ describe("MirrorService refcounting", () => {
     const retention = await service.retainSession(FIXTURE.session);
     state.windowRows = mutate(state);
     await expect(service.subscribeLayout(FIXTURE.session, () => undefined)).rejects.toThrow(
-      /window layout truth.*(?:malformed|missing)/u,
+      /window layout truth.*(?:malformed|missing|inconsistent active window)/u,
     );
     await retention.close();
   });
@@ -314,7 +317,10 @@ describe("MirrorService refcounting", () => {
           }
           if (transactional && command.startsWith("list-windows")) {
             windowReads += 1;
-            return windowReads === 1 ? intermediateWindows : finalWindows;
+            return fixtureAutoReply({
+              ...state,
+              windowRows: windowReads === 1 ? intermediateWindows : finalWindows,
+            })(command);
           }
           return fixtureAutoReply(state)(command);
         }),
@@ -343,7 +349,7 @@ describe("MirrorService refcounting", () => {
     await first.close();
   });
 
-  it("exhausts a churning trusted transaction without mutating or publishing incumbent state", async () => {
+  it("accepts continuous geometry changes without exhausting the identity inventory fence", async () => {
     const state = fixtureState();
     stampDetachedFixture(state);
     let transactional = false;
@@ -353,10 +359,54 @@ describe("MirrorService refcounting", () => {
         new SimulatedChannel(handlers, (command) => {
           if (transactional && command.startsWith("list-windows")) {
             windowReads += 1;
-            return FIXTURE.windowRows(
-              FIXTURE.layoutW1,
-              windowReads % 2 === 1 ? "cccc,180x40,0,0,3" : "dddd,170x35,0,0,3",
-            );
+            return fixtureAutoReply({
+              ...state,
+              windowRows: FIXTURE.windowRows(
+                FIXTURE.layoutW1,
+                windowReads % 2 === 1 ? "cccc,180x40,0,0,3" : "dddd,170x35,0,0,3",
+              ),
+            })(command);
+          }
+          return fixtureAutoReply(state)(command);
+        }),
+    });
+    const incumbent: Array<{ window: string | null; cols: number }> = [];
+    const first = await service.subscribeLayout(FIXTURE.session, (layout) => {
+      incumbent.push({ window: layout.semanticWindowId, cols: layout.cols });
+    });
+    incumbent.length = 0;
+    transactional = true;
+
+    const second = await service.subscribeLayout(FIXTURE.session, () => undefined);
+    expect(windowReads).toBe(2);
+    expect(incumbent).toEqual([{ window: "window.test.two", cols: 170 }]);
+    expect(await service.describeTrustedInventory(FIXTURE.session, "$1")).toMatchObject({
+      runtimeSessionId: "$1",
+      panes: expect.arrayContaining([
+        expect.objectContaining({ runtimePaneId: "%3", semanticPaneId: "pane.gamma" }),
+      ]),
+    });
+    await second.close();
+    await first.close();
+  });
+
+  it("exhausts a transaction with churning pane membership without mutating or publishing incumbent state", async () => {
+    const state = fixtureState();
+    stampDetachedFixture(state);
+    let transactional = false;
+    let windowReads = 0;
+    const service = new MirrorService({
+      createIo: (_session, handlers) =>
+        new SimulatedChannel(handlers, (command) => {
+          if (transactional && command.startsWith("list-windows")) {
+            windowReads += 1;
+            return fixtureAutoReply({
+              ...state,
+              windowRows: FIXTURE.windowRows(
+                FIXTURE.layoutW1,
+                windowReads % 2 === 1 ? "cccc,180x40,0,0,3" : "dddd,170x35,0,0,4",
+              ),
+            })(command);
           }
           return fixtureAutoReply(state)(command);
         }),
@@ -551,4 +601,34 @@ describe("MirrorService refcounting", () => {
     expect(sims.get("zz-two")![0]!.disposed).toBe(true);
     await expect(subscribed(service, "zz-one", "pane.alpha")).rejects.toThrow(/disposed/);
   });
+});
+
+it("does not create production viewer grants for injected fake IO", async () => {
+  const createOwnedViewerAdapter = vi.fn();
+  const service = new MirrorService({
+    createOwnedViewerAdapter,
+    createIo: () => {
+      throw new Error("fake construction");
+    },
+  });
+  await expect(service.describeSession("viewer-fake-construction")).rejects.toThrow(
+    "fake construction",
+  );
+  expect(createOwnedViewerAdapter).not.toHaveBeenCalled();
+  await service.dispose();
+});
+it("retires the adapter when channel construction fails", async () => {
+  const dispose = vi.fn();
+  const service = new MirrorService({
+    createOwnedViewerAdapter: () =>
+      ({ dispose }) as unknown as import("./owned-viewer-adapter.ts").OwnedViewerAdapter,
+    resolveSocketPath: () => {
+      throw new Error("retired socket");
+    },
+  });
+  await expect(service.describeSession("viewer-real-construction")).rejects.toThrow(
+    "retired socket",
+  );
+  expect(dispose).toHaveBeenCalledOnce();
+  await service.dispose();
 });

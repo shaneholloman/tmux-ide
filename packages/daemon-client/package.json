@@ -14,6 +14,7 @@
     "./direct-application-shell-transport": "./src/direct-application-shell-transport.ts",
     "./workspace-event-supervisor": "./src/workspace-event-supervisor.ts",
     "./owner-action-client": "./src/owner-action-client.ts",
+    "./automation-client": "./src/automation-client.ts",
     "./workspace-pane-client": "./src/workspace-pane-client.ts",
     "./pane-stream-client": "./src/pane-stream-client.ts",
     "./pane-stream-clock-calibration": "./src/pane-stream-clock-calibration.ts",
@@ -26,7 +27,10 @@
     "./runtime-resource-ledger": "./src/runtime-resource-ledger.ts",
     "./fleet-dial-scheduler": "./src/fleet-dial-scheduler.ts",
     "./fleet-connection-status": "./src/fleet-connection-status.ts",
-    "./fleet-environments": "./src/fleet-environments.ts"
+    "./fleet-environments": "./src/fleet-environments.ts",
+    "./tmux-server-client": "./src/tmux-server-client.ts",
+    "./scoped-tmux-server-transport": "./src/scoped-tmux-server-transport.ts",
+    "./tmux-server-interaction-events": "./src/tmux-server-interaction-events.ts"
   },
   "main": "src/index.ts",
   "scripts": {

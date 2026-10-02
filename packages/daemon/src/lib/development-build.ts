@@ -15,6 +15,30 @@ import {
 import { dirname, join, relative, resolve, sep } from "node:path";
 import type { DevelopmentInstance } from "./development-instance.ts";
 
+export type DevelopmentNativeObservation = "enabled" | "disabled";
+export function developmentNativeObservationOption(
+  value: unknown,
+  command = "rebuild",
+  container = false,
+): DevelopmentNativeObservation | undefined {
+  if (value === undefined) return undefined;
+  if (command !== "rebuild" || container || (value !== "enabled" && value !== "disabled"))
+    throw new Error(
+      "native-observation requires rebuild and enabled|disabled outside container mode",
+    );
+  return value;
+}
+export function developmentNativeObservationMode(
+  requested: unknown,
+  previous?: Pick<DevelopmentBuildManifest, "nativeObservation"> | null,
+): DevelopmentNativeObservation {
+  return (
+    developmentNativeObservationOption(requested) ??
+    developmentNativeObservationOption(previous?.nativeObservation) ??
+    "disabled"
+  );
+}
+
 export interface DevelopmentBuildManifest {
   version: 1;
   generation: string;
@@ -22,6 +46,7 @@ export interface DevelopmentBuildManifest {
   source: { commit: string; digest: string; dirty: boolean; files: number; lockfileHash: string };
   packageVersion: string;
   execution: "packaged-development";
+  nativeObservation?: DevelopmentNativeObservation;
   capabilities?: readonly ("managed-development-owner-v1" | "container-suspension-v1")[];
   host: {
     platform: string;
@@ -112,6 +137,7 @@ export function developmentTreeHash(root: string, omitManifest = false): string 
 function assertRecord(value: unknown): asserts value is DevelopmentBuildManifest {
   if (!value || typeof value !== "object") throw new Error("Missing development build manifest");
   const m = value as DevelopmentBuildManifest;
+  developmentNativeObservationOption(m.nativeObservation);
   if (
     m.version !== 1 ||
     !/^build-[a-f0-9-]{36}$/u.test(m.generation) ||

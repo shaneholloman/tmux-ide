@@ -1,0 +1,245 @@
+import { z } from "zod";
+import { execFileSync } from "node:child_process";
+import { parseArgs } from "node:util";
+import {
+  AutomationExecuteRequestSchemaZ,
+  AutomationOperationHandleSchemaZ,
+  AutomationOperationIntentSchemaZ,
+  DAEMON_WIRE_PROTOCOL_VERSION,
+  TmuxInteractionCursorSchemaZ,
+  type AutomationOperationHandle,
+} from "@tmux-ide/contracts";
+import {
+  createAutomationClient,
+  AutomationInvocationError,
+  type AutomationClient,
+  type AutomationRequestOptions,
+} from "@tmux-ide/daemon-client/automation-client";
+import {
+  canonicalDaemonUrl,
+  isCanonicalDaemonAlive,
+  probeCanonicalDaemonIdentity,
+  probeCanonicalDaemonHealth,
+  readCanonicalDaemonInfo,
+} from "./lib/canonical-daemon.ts";
+import { PANE_SOURCE_CREDENTIAL_OPTION } from "./lib/pane-source-credentials.ts";
+import { IdeError } from "./lib/errors.ts";
+
+/** Source credentials are read from the invoking pane's actual server, never the target server. */
+export function invokingPaneCredential(env = process.env): string | undefined {
+  const tmux = env.TMUX;
+  const pane = env.TMUX_PANE;
+  if (!tmux || !pane || !/^%\d+$/u.test(pane)) return undefined;
+  const match = /^(\/[^\0\r\n]+),\d+,\d+$/u.exec(tmux);
+  if (!match) return undefined;
+  try {
+    const value = execFileSync(
+      "tmux",
+      ["-S", match[1]!, "show-option", "-p", "-v", "-t", pane, PANE_SOURCE_CREDENTIAL_OPTION],
+      {
+        encoding: "utf8",
+        timeout: 1500,
+        maxBuffer: 256,
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    ).trim();
+    return /^[A-Za-z0-9_-]{32,128}$/u.test(value) ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function localAutomationClient(
+  dependencies: Partial<{
+    read: typeof readCanonicalDaemonInfo;
+    alive: typeof isCanonicalDaemonAlive;
+    identity: typeof probeCanonicalDaemonIdentity;
+    health: typeof probeCanonicalDaemonHealth;
+    credential: typeof invokingPaneCredential;
+  }> = {},
+  origin: "cli" | "mcp" = "cli",
+): Promise<AutomationClient> {
+  const read = dependencies.read ?? readCanonicalDaemonInfo;
+  const unavailable = () =>
+    new IdeError("A running compatible tmux-ide daemon is required for automation", {
+      code: "AUTOMATION_UNAVAILABLE",
+    });
+  const daemon = read();
+  if (!daemon?.authToken || !(await (dependencies.alive ?? isCanonicalDaemonAlive)(daemon)))
+    throw unavailable();
+  // These probes send no credentials. A living PID alone does not bind an HTTP port.
+  const [identity, health] = await Promise.all([
+    (dependencies.identity ?? probeCanonicalDaemonIdentity)(daemon),
+    (dependencies.health ?? probeCanonicalDaemonHealth)(daemon),
+  ]);
+  const current = read();
+  if (
+    !identity ||
+    !health ||
+    !current ||
+    daemon.protocolVersion !== DAEMON_WIRE_PROTOCOL_VERSION ||
+    identity.protocolVersion !== daemon.protocolVersion ||
+    health.protocolVersion !== daemon.protocolVersion ||
+    identity.instanceId !== daemon.instanceId ||
+    identity.pid !== daemon.pid ||
+    identity.startedAt !== daemon.startedAt ||
+    identity.productVersion !== daemon.productVersion ||
+    health.productVersion !== daemon.productVersion ||
+    current.instanceId !== daemon.instanceId ||
+    current.startedAt !== daemon.startedAt ||
+    current.pid !== daemon.pid ||
+    current.port !== daemon.port ||
+    current.bindHostname !== daemon.bindHostname ||
+    current.authToken !== daemon.authToken ||
+    current.protocolVersion !== daemon.protocolVersion
+  )
+    throw unavailable();
+  return createAutomationClient({
+    origin,
+    baseUrl: canonicalDaemonUrl("http", daemon.bindHostname, daemon.port),
+    ownerToken: daemon.authToken,
+    sourceCredential: (dependencies.credential ?? invokingPaneCredential)(),
+  });
+}
+
+class AutomationCliError extends IdeError {
+  constructor(error: AutomationInvocationError) {
+    super(error.message, { code: error.code });
+    this.handle = error.handle;
+  }
+  readonly handle: AutomationOperationHandle | null;
+  override toJSON() {
+    return { ...super.toJSON(), handle: this.handle };
+  }
+}
+
+export async function readAutomationRequest(
+  input: AsyncIterable<Uint8Array | string>,
+): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of input) {
+    const bytes = Buffer.from(chunk);
+    size += bytes.length;
+    if (size > 64 * 1024)
+      throw new IdeError("Automation request exceeds 64 KiB", { code: "INVALID_REQUEST" });
+    chunks.push(bytes);
+  }
+  try {
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
+  } catch {
+    throw new IdeError("Expected a JSON automation request on stdin", { code: "INVALID_REQUEST" });
+  }
+}
+
+/** Omission requests discovery; explicit null deliberately keeps the caller unbound. */
+export const AutomationInvocationIntentSchemaZ = z.discriminatedUnion("kind", [
+  AutomationOperationIntentSchemaZ.options[0].extend({
+    source: AutomationOperationIntentSchemaZ.options[0].shape.source.optional(),
+  }),
+  AutomationOperationIntentSchemaZ.options[1].extend({
+    source: AutomationOperationIntentSchemaZ.options[1].shape.source.optional(),
+  }),
+]);
+export async function resolveAutomationIntent(
+  input: unknown,
+  client: AutomationClient,
+  options: AutomationRequestOptions = {},
+) {
+  const intent = AutomationInvocationIntentSchemaZ.parse(input);
+  return AutomationOperationIntentSchemaZ.parse({
+    ...intent,
+    source:
+      intent.source === undefined
+        ? ((await client.discover(options)).source ?? null)
+        : intent.source,
+  });
+}
+
+/** The CLI is a thin adapter; it never falls back to raw tmux after an uncertain effect. */
+export async function runAutomationCli(
+  args: readonly string[],
+  dependencies: {
+    client?: AutomationClient;
+    input?: AsyncIterable<Uint8Array | string>;
+    output?: (value: unknown) => void;
+  } = {},
+): Promise<void> {
+  const { positionals, values } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    options: { json: { type: "boolean" }, help: { type: "boolean", short: "h" } },
+  });
+  const output =
+    dependencies.output ?? ((value) => process.stdout.write(`${JSON.stringify(value)}\n`));
+  const command = positionals[0];
+  if (values.help || !command) {
+    output({
+      usage: "tmux-ide automation panes|reserve|execute|send|read|status|events --json",
+      input:
+        "reserve/send/read: intent JSON on stdin; execute: {version:1,handle,intent}; status: generation operationId; events: {server,cursor}",
+    });
+    return;
+  }
+  if (!["panes", "reserve", "execute", "send", "read", "status", "events"].includes(command))
+    throw new IdeError("Unknown automation command", { code: "INVALID_REQUEST" });
+  const client = dependencies.client ?? (await localAutomationClient());
+  try {
+    if (command === "panes") {
+      output(await client.discover());
+      return;
+    }
+    if (command === "status") {
+      output(
+        await client.status(
+          AutomationOperationHandleSchemaZ.parse({
+            generation: positionals[1],
+            operationId: positionals[2],
+          }),
+        ),
+      );
+      return;
+    }
+    if (!dependencies.input && process.stdin.isTTY)
+      throw new IdeError("Provide the JSON automation request on stdin", {
+        code: "INVALID_REQUEST",
+      });
+    const input = await readAutomationRequest(dependencies.input ?? process.stdin);
+    if (command === "execute") {
+      const request = AutomationExecuteRequestSchemaZ.parse(input);
+      output(await client.execute(request.handle, request.intent));
+      return;
+    }
+    if (command === "events") {
+      const resume = TmuxInteractionCursorSchemaZ.parse(input);
+      const subscription = client.subscribe({
+        server: resume.server,
+        resume,
+        onBatch: (batch) => output(batch),
+      });
+      const close = () => subscription.close();
+      process.once("SIGINT", close);
+      process.once("SIGTERM", close);
+      try {
+        await subscription.ready;
+        await subscription.done;
+      } finally {
+        subscription.close();
+        process.off("SIGINT", close);
+        process.off("SIGTERM", close);
+      }
+      return;
+    }
+    const intent = await resolveAutomationIntent(input, client);
+    if (command !== "reserve" && intent.kind !== command)
+      throw new IdeError("Automation command does not match intent kind", {
+        code: "INVALID_REQUEST",
+      });
+    const reservation = await client.reserve(intent);
+    if (command === "reserve") output({ ...reservation, intent });
+    else output(await client.execute(reservation.handle, intent));
+  } catch (error) {
+    if (error instanceof AutomationInvocationError) throw new AutomationCliError(error);
+    throw error;
+  }
+}

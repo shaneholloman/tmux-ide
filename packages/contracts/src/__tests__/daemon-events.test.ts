@@ -1,9 +1,10 @@
+import { scopedReceiptFixture } from "./fixtures/scoped-receipt.ts";
 import { describe, expect, it } from "vitest";
 import { DaemonEventClientFrameSchemaZ, DaemonEventServerFrameSchemaZ } from "../daemon-events.ts";
 
 describe("daemon event contracts", () => {
   it("accepts strict privacy-safe interaction receipts and rejects literal input", () => {
-    const receipt = {
+    const receipt = scopedReceiptFixture({
       type: "interaction.receipt",
       sequence: 8,
       operationId: "10000000-0000-4000-8000-000000000001",
@@ -26,7 +27,7 @@ describe("daemon event contracts", () => {
       },
       at: "2026-08-10T10:00:00.000Z",
       resourceRevision: null,
-    } as const;
+    } as const);
     expect(DaemonEventServerFrameSchemaZ.parse(receipt)).toEqual(receipt);
     expect(
       DaemonEventServerFrameSchemaZ.safeParse({ ...receipt, text: "private prompt" }).success,
@@ -38,18 +39,20 @@ describe("daemon event contracts", () => {
       }).success,
     ).toBe(false);
     expect(
-      DaemonEventServerFrameSchemaZ.safeParse({
-        ...receipt,
-        origin: "external",
-        operationKind: "workspace.pane.read",
-        phase: "observed",
-        summary: { operationKind: "workspace.pane.read", observedOnly: true },
-        proof: {
+      DaemonEventServerFrameSchemaZ.safeParse(
+        scopedReceiptFixture({
+          ...receipt,
+          origin: "external",
           operationKind: "workspace.pane.read",
-          observed: true,
-          semanticPaneId: "pane.editor",
-        },
-      }).success,
+          phase: "observed",
+          summary: { operationKind: "workspace.pane.read", observedOnly: true },
+          proof: {
+            operationKind: "workspace.pane.read",
+            observed: true,
+            semanticPaneId: "pane.editor",
+          },
+        }),
+      ).success,
     ).toBe(true);
     expect(
       DaemonEventServerFrameSchemaZ.safeParse({
@@ -64,12 +67,14 @@ describe("daemon event contracts", () => {
       }).success,
     ).toBe(false);
     expect(
-      DaemonEventServerFrameSchemaZ.safeParse({
-        ...receipt,
-        origin: "external",
-        phase: "observed",
-        summary: { operationKind: "workspace.pane.send", observedOnly: true },
-      }).success,
+      DaemonEventServerFrameSchemaZ.safeParse(
+        scopedReceiptFixture({
+          ...receipt,
+          origin: "external",
+          phase: "observed",
+          summary: { operationKind: "workspace.pane.send", observedOnly: true },
+        }),
+      ).success,
     ).toBe(true);
     expect(
       DaemonEventServerFrameSchemaZ.safeParse({

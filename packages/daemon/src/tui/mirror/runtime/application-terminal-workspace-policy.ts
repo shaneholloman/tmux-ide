@@ -1,3 +1,4 @@
+import type { WindowLinkTarget } from "@tmux-ide/contracts";
 import type { AgentActivity } from "@tmux-ide/contracts";
 
 import type { OpenTuiWorkspaceLayoutSnapshot } from "../open-tui-workspace-runtime-port.ts";
@@ -7,6 +8,8 @@ import { nativePaneResizeCells } from "./pane-resize-geometry.ts";
 import type { OpenTuiPaneFrame } from "./terminal-layout-projection.ts";
 
 export interface ApplicationTerminalAgentIndicator {
+  /** Name came from the shared daemon resolver, including team metadata. */
+  readonly nameResolved?: boolean;
   readonly name: string;
   readonly activity: AgentActivity;
   readonly attention: boolean;
@@ -98,11 +101,14 @@ export function terminalPaneDisplayTitle(
   displayNameSource?: "manual" | "agent" | "process" | "title" | "generated" | null,
 ): string {
   const presentedName = displayName?.trim() || paneId;
-  return indicator
-    ? displayNameSource === "manual" && presentedName !== indicator.name.trim()
-      ? `${presentedName} · ${indicator.name.trim()}`
-      : indicator.name.trim() || presentedName
-    : presentedName;
+  if (indicator?.nameResolved && indicator.name.trim()) return indicator.name.trim();
+  if (
+    displayNameSource === "manual" ||
+    displayNameSource === "agent" ||
+    displayNameSource === "title"
+  )
+    return presentedName;
+  return indicator?.name.trim() || presentedName;
 }
 
 export function terminalWindowTitle(
@@ -277,6 +283,22 @@ export function terminalPaneSeparators(
   return Object.freeze(separators);
 }
 
+/** Highlight the observed divider, never the pointer's unconfirmed target. */
+export function terminalPaneObservedResizeGuide(
+  frames: readonly OpenTuiPaneFrame[],
+  paneBorderStatus: "top" | "bottom" | "off",
+  preview: ApplicationPaneResizePreview,
+): ResizeGuideRect | null {
+  const separator = terminalPaneSeparators(frames, paneBorderStatus).find(
+    (candidate) =>
+      candidate.paneId === preview.semanticPaneId &&
+      candidate.axis === (preview.axis === "cols" ? "x" : "y"),
+  );
+  return separator
+    ? terminalPaneResizePreview(separator, separator.position, separator.position).guide
+    : null;
+}
+
 export function terminalPaneResizePreview(
   separator: ApplicationPaneSeparator,
   pointer: number,
@@ -308,4 +330,65 @@ export function terminalPaneResizePreview(
             height: 1,
           }),
   });
+}
+
+/** Resolve only live opaque observations; native indexes are display metadata. */
+export function windowLinkTarget(
+  snapshot: OpenTuiWorkspaceLayoutSnapshot,
+  linkId: string,
+): WindowLinkTarget | null {
+  const topology = snapshot.windowLinks;
+  const link = topology?.links.find((candidate) => candidate.linkId === linkId);
+  if (!topology || !link) return null;
+  return {
+    liveSessionId: topology.liveSessionId,
+    linkRevision: topology.linkRevision,
+    linkId: link.linkId,
+    expectedSemanticWindowId: link.semanticWindowId,
+  };
+}
+
+/** Pane navigation within the active link must not silently choose a sibling link. */
+export function windowLinkForPane(
+  snapshot: OpenTuiWorkspaceLayoutSnapshot,
+  paneId: string,
+): WindowLinkTarget | null {
+  const backing = snapshot.windows.find((window) =>
+    window.panes.some((pane) => pane.pane === paneId),
+  );
+  const topology = snapshot.windowLinks;
+  if (!backing || !topology) return null;
+  const links = topology.links.filter((link) => link.semanticWindowId === backing.semanticWindowId);
+  const link =
+    links.find((candidate) => candidate.linkId === topology.activeLinkId) ??
+    (links.length === 1 ? links[0] : undefined);
+  return link ? windowLinkTarget(snapshot, link.linkId) : null;
+}
+
+/** Root composition for backing zoom and link actions, all restoring host focus. */
+export function terminalWindowActionCallbacks(
+  controller: Pick<
+    import("./application-terminal-interaction-controller.ts").ApplicationTerminalInteractionController,
+    "selectWindowLink" | "unlinkWindowLink" | "zoomPane" | "selectPane"
+  >,
+  notify: (message: string) => void,
+  recover: import("./application-host-focus-presentation.ts").ApplicationHostFocusRecovery,
+  cancelNavigation: () => void,
+) {
+  return {
+    onSelectPane: recover((paneId: string) => {
+      cancelNavigation();
+      controller.selectPane(paneId);
+    }),
+    onZoomPane: recover((paneId?: string) => {
+      void controller.zoomPane(paneId).then(notify);
+    }),
+    onSelectWindowLink: recover((target: WindowLinkTarget) => {
+      cancelNavigation();
+      void controller.selectWindowLink(target);
+    }),
+    onUnlinkWindowLink: recover((target: WindowLinkTarget) => {
+      void controller.unlinkWindowLink(target).then(notify);
+    }),
+  };
 }

@@ -33,7 +33,13 @@ if (cliSource.includes("production-web-server.ts")) {
 const output = execFileSync(
   "npm",
   ["pack", "--dry-run", "--json", "--ignore-scripts", "--cache", "/tmp/tmux-ide-npm-cache"],
-  { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
+  {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "inherit"],
+    // The complete four-platform release inventory exceeds Node's 1 MiB default.
+    // Keep a bounded allowance while inspecting every packaged path.
+    maxBuffer: 32 * 1024 * 1024,
+  },
 );
 const report = JSON.parse(output)[0];
 const files = new Set(report.files.map((entry) => entry.path));

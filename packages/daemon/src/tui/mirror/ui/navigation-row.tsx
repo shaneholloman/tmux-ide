@@ -10,6 +10,7 @@ export type NavigationRowInputSource = "keyboard" | "mouse";
 
 export interface NavigationRowProps extends ComponentInteractionState {
   readonly theme: SemanticThemeSnapshot;
+  readonly surface?: "canvas" | "panel";
   readonly id: string;
   readonly label: string;
   readonly labelColor?: string;
@@ -28,7 +29,12 @@ export interface NavigationRowProps extends ComponentInteractionState {
  * here so sidebars only project semantic labels and typed intents.
  */
 export function NavigationRow(props: NavigationRowProps) {
-  const palette = () => componentPalette(props.theme, props, props.tone);
+  const palette = () => {
+    const value = componentPalette(props.theme, props, props.tone);
+    return value.state === "base" && props.surface === "canvas"
+      ? { ...value, background: props.theme.roles.surfaces.canvas }
+      : value;
+  };
   const width = () => Math.max(1, Math.floor(props.width));
   const marker = () => props.marker ?? palette().marker;
   const markerWidth = () => Math.min(width(), Math.max(1, terminalDisplayWidth(marker()) + 1));
@@ -73,6 +79,7 @@ export function NavigationRow(props: NavigationRowProps) {
     <Surface
       id={`ui-navigation-row:${props.id}`}
       theme={props.theme}
+      variant={props.surface}
       width={width()}
       height={1}
       flexDirection="row"

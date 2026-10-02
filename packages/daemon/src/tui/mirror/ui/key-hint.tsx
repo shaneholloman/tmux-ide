@@ -13,11 +13,28 @@ export interface KeyHintProps extends ComponentInteractionState {
   /** Exact cell projection for compact chrome that already owns spacing. */
   presentation?: string;
   onPress?: () => void;
+  quiet?: boolean;
+  /** Distinct footer button with an emphasized shortcut. */
+  button?: boolean;
 }
 
 /** A one-row, cell-aligned keyboard affordance with optional pointer/keyboard activation. */
 export function KeyHint(props: KeyHintProps) {
   const palette = () => componentPalette(props.theme, props, "neutral");
+  const background = () =>
+    props.button
+      ? props.selected
+        ? props.theme.roles.selection.selection
+        : props.theme.roles.surfaces.panelRaised
+      : props.quiet && !props.focused && !props.hovered
+        ? props.theme.roles.surfaces.panel
+        : palette().background;
+  const foreground = () =>
+    props.selected
+      ? props.theme.roles.selection.selectionText
+      : props.quiet && !props.focused && !props.hovered
+        ? props.theme.roles.text.muted
+        : palette().foreground;
   const text = () => props.presentation ?? `${props.keys}${props.label ? ` ${props.label}` : ""}`;
   const width = () => Math.max(1, Math.floor(props.width ?? terminalDisplayWidth(text()) + 2));
   const content = () => clipTerminal(props.presentation ?? ` ${text()} `, width());
@@ -45,7 +62,7 @@ export function KeyHint(props: KeyHintProps) {
       width={width()}
       height={1}
       overflow="hidden"
-      backgroundColor={palette().background}
+      backgroundColor={background()}
       focusable={Boolean(props.onPress) && !props.disabled}
       focused={Boolean(props.focused)}
       onMouseDown={(event) => {
@@ -55,8 +72,30 @@ export function KeyHint(props: KeyHintProps) {
         activate();
       }}
     >
-      <text fg={palette().foreground} bg={palette().background}>
-        {props.focused || props.selected ? <strong>{content()}</strong> : content()}
+      <text fg={foreground()} bg={background()}>
+        {props.focused || props.selected ? (
+          <strong>{content()}</strong>
+        ) : (props.quiet || props.button) && !props.presentation ? (
+          <>
+            {" "}
+            <span
+              style={{
+                fg: props.button
+                  ? props.theme.roles.selection.selectionText
+                  : props.theme.roles.text.primary,
+                bg: props.button ? props.theme.roles.selection.selection : background(),
+              }}
+            >
+              {clipTerminal(props.keys, Math.max(0, width() - 1))}
+            </span>
+            {clipTerminal(
+              props.label ? ` ${props.label} ` : " ",
+              Math.max(0, width() - terminalDisplayWidth(props.keys) - 1),
+            )}
+          </>
+        ) : (
+          content()
+        )}
       </text>
     </box>
   );

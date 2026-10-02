@@ -140,6 +140,31 @@ describe("canonical daemon info", () => {
     expect(readCanonicalDaemonInfo()).toBeNull();
   });
 
+  it("allows cold server proof past the ordinary identity deadline and honors cancellation", async () => {
+    server = createServer((_req, res) => {
+      setTimeout(() => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            ...info(1),
+            ok: true,
+            tmuxServerProof: { version: 1, kind: "live", digest: "a".repeat(64) },
+          }),
+        );
+      }, 1_000);
+    });
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test port");
+    expect(
+      (await probeCanonicalDaemonIdentity(info(address.port), undefined, true))?.tmuxServerProof
+        ?.digest,
+    ).toBe("a".repeat(64));
+    expect(
+      await probeCanonicalDaemonIdentity(info(address.port), AbortSignal.timeout(10), true),
+    ).toBeNull();
+  });
+
   it("treats a dead PID as stale", async () => {
     const port = await listen();
     expect(await isCanonicalDaemonAlive({ ...info(port), pid: 999_999_999 })).toBe(false);
@@ -177,7 +202,10 @@ describe("canonical daemon info", () => {
   it("persists and reads back the optional stable environment id", async () => {
     const port = await listen();
     const environmentId = "0f4e9a7c-2f4a-4d55-9d2e-1f6cf3a3b210";
-    writeCanonicalDaemonInfo({ ...info(port), environmentId }, acquireClaim());
+    writeCanonicalDaemonInfo(
+      { ...info(port), environmentId, tmuxServerProofVersion: 1 },
+      acquireClaim(),
+    );
 
     expect(readCanonicalDaemonInfo()?.environmentId).toBe(environmentId);
     const raw = JSON.parse(readFileSync(getCanonicalDaemonInfoPath(), "utf-8")) as Record<
@@ -185,6 +213,8 @@ describe("canonical daemon info", () => {
       unknown
     >;
     expect(raw.environmentId).toBe(environmentId);
+    expect(raw.tmuxServerProofVersion).toBe(1);
+    expect(readCanonicalDaemonInfo()?.tmuxServerProofVersion).toBe(1);
   });
 
   it("reads a pre-environment daemon record unchanged", async () => {

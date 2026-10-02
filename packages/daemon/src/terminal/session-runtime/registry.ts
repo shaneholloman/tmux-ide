@@ -1,3 +1,4 @@
+import type { OwnedNativePlanCompletion } from "../../lib/owned-native-interaction-bindings.ts";
 import type {
   NativeBackingIdentity,
   TerminalNativeBackingResponse,
@@ -52,6 +53,8 @@ import type { PaneStreamMirror } from "../pane-stream/pane-stream-websocket.ts";
 import {
   SessionSemanticMutationExecutor,
   type SessionRuntimeIntentResult,
+  type SessionRuntimeAutomationAuthority,
+  type SessionRuntimeInteractionContext,
   type SessionRuntimeTmuxObservation,
   type SessionSemanticMutationExecutorOptions,
   type SessionSemanticMutationMetrics,
@@ -550,6 +553,20 @@ export class SessionRuntimeRegistry implements PaneStreamMirror {
     );
   }
 
+  /** Called by the serialized semantic mutation executor, never by a transport directly. */
+  paneResizeTransport(session: string) {
+    if (this.#disposed) throw new Error("Session runtime disposed");
+    return this.#mirror.paneResizeTransport(session);
+  }
+
+  executeWindowLinkAction(
+    session: string,
+    request: Parameters<MirrorService["executeWindowLinkAction"]>[1],
+  ): ReturnType<MirrorService["executeWindowLinkAction"]> {
+    if (this.#disposed) return Promise.reject(new Error("Session runtime disposed"));
+    return this.#mirror.executeWindowLinkAction(session, request);
+  }
+
   /** Retire one no-longer-registered session without disturbing siblings. */
   async retireSession(session: string): Promise<void> {
     const runtime = this.#sessions.get(session);
@@ -598,6 +615,45 @@ export class SessionRuntimeRegistry implements PaneStreamMirror {
     this.#assertExecutionHandle(handle, semanticPaneId);
   }
 
+  /** Internal automation seam: caller boundary has validated owner/lifetime and source grant. */
+  submitAutomationIntent(
+    operationId: string,
+    rawIntent: SessionRuntimeSemanticIntent,
+    authority: SessionRuntimeAutomationAuthority,
+  ): Promise<SessionRuntimeIntentResult> {
+    const intent = SessionRuntimeSemanticIntentSchemaZ.parse(rawIntent);
+    if (intent.verb !== "workspace.pane.send" && intent.verb !== "workspace.pane.read")
+      return Promise.reject(new Error("Automation authorizes pane reads and sends only"));
+    if (
+      authority.destination.workspaceName !== intent.workspaceName ||
+      authority.destination.semanticPaneId !== intent.semanticPaneId
+    )
+      return Promise.reject(new Error("Automation destination does not match intent"));
+    if (!this.#semanticMutations)
+      return Promise.reject(new Error("Session semantic mutations are unavailable"));
+    // Native sender hints are owner-local. Cross-owner source remains scoped evidence only.
+    const source = authority.source?.endpoint;
+    const sameOwner =
+      source &&
+      source.environmentId === authority.destination.environmentId &&
+      source.serverScope.serverId === authority.destination.serverScope.serverId &&
+      source.serverScope.generation === authority.destination.serverScope.generation &&
+      source.workspaceName === authority.destination.workspaceName;
+    const sourceSemanticPaneId = sameOwner ? source.semanticPaneId : null;
+    return this.#semanticMutations.submit(
+      operationId,
+      intent.verb === "workspace.pane.send"
+        ? { ...intent, sourceSemanticPaneId: sourceSemanticPaneId ?? undefined }
+        : intent,
+      {
+        origin: authority.origin,
+        authenticatedSourceSemanticPaneId: sourceSemanticPaneId,
+        interactionContext: { destination: authority.destination, source: authority.source },
+        authorizeBeforeEffect: authority.authorizeBeforeEffect,
+      },
+    );
+  }
+
   /** Execute one send as a separately authenticated local tmux-pane principal. */
   submitPaneCredentialIntent(
     session: string,
@@ -605,6 +661,7 @@ export class SessionRuntimeRegistry implements PaneStreamMirror {
     rawIntent: SessionRuntimeSemanticIntent,
     semanticPaneId: string,
     authorizeBeforeEffect?: () => void,
+    sourceBinding?: SessionRuntimeInteractionContext["source"],
   ): Promise<SessionRuntimeIntentResult> {
     const intent = SessionRuntimeSemanticIntentSchemaZ.parse(rawIntent);
     if (intent.verb !== "workspace.pane.send") {
@@ -627,6 +684,7 @@ export class SessionRuntimeRegistry implements PaneStreamMirror {
       {
         origin: "cli",
         authenticatedSourceSemanticPaneId: semanticPaneId,
+        authenticatedSourceBinding: sourceBinding,
         authorizeBeforeEffect,
       },
     );
@@ -853,6 +911,10 @@ export class SessionRuntimeRegistry implements PaneStreamMirror {
       authenticatedSourceSemanticPaneId,
       authorizeBeforeEffect,
     });
+  }
+
+  observeOwnedNativePlan(proof: OwnedNativePlanCompletion): boolean {
+    return this.#semanticMutations?.observeOwnedNativePlan(proof) ?? false;
   }
 
   observeTmuxInteraction(observation: SessionRuntimeTmuxObservation): boolean {

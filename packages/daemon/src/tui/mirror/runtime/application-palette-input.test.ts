@@ -11,21 +11,26 @@ describe("live-session palette commands", () => {
       "home",
       "terminals",
       "new-window",
+      "new-agent",
       "split-right",
       "split-down",
       "close-pane",
-      "appearance",
       "zoom-pane",
+      "appearance",
+      "help",
+      "shortcuts",
+      "whats-new",
+      "switch-session",
     ]);
   });
 
   it("makes every exact catalog route reachable without a connected semantic shell", () => {
     const commands = applicationPaletteCommands(null, ["alpha", "beta workspace", "alpha"]);
-    expect(commands.slice(8)).toEqual([
+    expect(commands.slice(13)).toEqual([
       { kind: "open-session", label: "alpha", sessionName: "alpha" },
       { kind: "open-session", label: "beta workspace", sessionName: "beta workspace" },
     ]);
-    expect(applicationPaletteKeyAction({ name: "enter" }, true, 9, commands)).toEqual({
+    expect(applicationPaletteKeyAction({ name: "enter" }, true, 14, commands)).toEqual({
       kind: "activate",
       command: { kind: "open-session", label: "beta workspace", sessionName: "beta workspace" },
     });

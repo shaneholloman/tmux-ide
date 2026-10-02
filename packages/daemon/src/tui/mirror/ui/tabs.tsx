@@ -54,10 +54,7 @@ export function Tabs(props: TabsProps) {
     );
   const itemWidth = (item: TabItem) =>
     props.fit === "equal" && props.width ? equalWidth() : terminalDisplayWidth(tabText(item));
-  const background = () =>
-    props.variant === "header"
-      ? props.theme.roles.surfaces.header
-      : props.theme.roles.surfaces.panel;
+  const background = () => props.theme.roles.surfaces.panel;
   useKeyboardRoute((event) => {
     if (!props.focused || event.eventType !== "press") return false;
     const key = event.name.toLowerCase();
@@ -91,13 +88,27 @@ export function Tabs(props: TabsProps) {
               attention: item().attention,
               disabled: item().disabled,
             });
+          const tabBackground = () =>
+            props.variant === "header" && !item().attention && !item().disabled
+              ? active()
+                ? props.theme.roles.surfaces.panelRaised
+                : id === props.hoveredId
+                  ? props.theme.roles.selection.hover
+                  : background()
+              : palette().background;
+          const tabForeground = () =>
+            props.variant === "header" && !item().attention && !item().disabled
+              ? active()
+                ? props.theme.roles.text.link
+                : props.theme.roles.text.muted
+              : palette().foreground;
           return (
             <box
               id={`ui-tab:${id}`}
               height={1}
               width={itemWidth(item())}
               flexDirection="row"
-              backgroundColor={palette().background}
+              backgroundColor={tabBackground()}
               overflow="hidden"
               onMouseDown={(event) => {
                 if (event.button !== 0) return;
@@ -116,17 +127,26 @@ export function Tabs(props: TabsProps) {
                   <>
                     <text
                       width={terminalDisplayWidth(before)}
-                      fg={palette().foreground}
-                      bg={palette().background}
+                      fg={tabForeground()}
+                      bg={tabBackground()}
                       attributes={active() ? 1 : 0}
                     >
-                      {before}
+                      {props.variant === "header" && /^ F\d+ /u.test(before) ? (
+                        <>
+                          <span style={{ fg: props.theme.roles.text.primary }}>
+                            {before.slice(0, before.indexOf(" ", 1))}
+                          </span>
+                          {before.slice(before.indexOf(" ", 1))}
+                        </>
+                      ) : (
+                        before
+                      )}
                     </text>
                     {markerIndex >= 0 ? (
                       <text
                         width={1}
                         fg={props.theme.roles.statusTone.warning}
-                        bg={palette().background}
+                        bg={tabBackground()}
                         attributes={1}
                       >
                         !
@@ -134,8 +154,8 @@ export function Tabs(props: TabsProps) {
                     ) : null}
                     <text
                       width={terminalDisplayWidth(after)}
-                      fg={palette().foreground}
-                      bg={palette().background}
+                      fg={tabForeground()}
+                      bg={tabBackground()}
                       attributes={active() ? 1 : 0}
                     >
                       {after}

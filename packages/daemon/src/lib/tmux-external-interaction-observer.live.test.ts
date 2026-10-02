@@ -4,14 +4,17 @@ import {
   TMUX_INTERACTION_MAX_DRAIN_BYTES,
 } from "./tmux-interaction-retention.ts";
 import { createPinnedWorkspaceTmuxAsyncRunner } from "./workspace-pane-creation.ts";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { TmuxExternalInteractionObserver } from "./tmux-external-interaction-observer.ts";
+import {
+  tmuxInteractionWaitCommand,
+  TmuxExternalInteractionObserver,
+} from "./tmux-external-interaction-observer.ts";
 import type { WorkspaceRegistry } from "./workspace-registry.ts";
 import { MirrorControlChannel } from "../terminal/mirror/control-channel.ts";
 
@@ -21,6 +24,49 @@ describe.skipIf(!hasTmux).sequential("tmux external interaction observer live", 
   vi.setConfig({ testTimeout: 20_000 });
   const roots: string[] = [];
   const observers: TmuxExternalInteractionObserver[] = [];
+
+  it("captures semantic and session identity before the pane disappears", async () => {
+    const root = mkdtempSync("/tmp/tmux-ide-captured-target-");
+    roots.push(root);
+    const socketPath = join(root, "tmux.sock");
+    const executablePath = realpathSync(
+      execFileSync("which", ["tmux"], { encoding: "utf8" }).trim(),
+    );
+    const run = (args: readonly string[]) =>
+      execFileSync(executablePath, ["-S", socketPath, ...args], { encoding: "utf8" }).trim();
+    run(["-f", "/dev/null", "new-session", "-d", "-s", "project", "cat"]);
+    const pane = run(["display-message", "-p", "-t", "project", "#{pane_id}"]);
+    const sessionId = run(["display-message", "-p", "-t", "project", "#{session_id}"]);
+    run(["split-window", "-d", "-t", pane, "cat"]);
+    run(["set-option", "-p", "-t", pane, "@tmux_ide_pane_id", "pane.original"]);
+    const onObserved = vi.fn(() => false);
+    const resolveCapturedTarget = vi.fn((target) => ({
+      workspaceName: "workspace.original",
+      semanticPaneId: target.semanticPaneId,
+    }));
+    const observer = new TmuxExternalInteractionObserver({
+      daemonInstanceId: randomUUID(),
+      tmuxAuthority: { executablePath, socketSelector: { kind: "path", path: socketPath } },
+      onObserved,
+      resolveCapturedTarget,
+    });
+    observers.push(observer);
+    await observer.install();
+    run(["send-keys", "-t", pane, "-l", "hello"]);
+    run(["kill-pane", "-t", pane]);
+    await vi.waitFor(async () => {
+      await observer.drain();
+      expect(onObserved).toHaveBeenCalledOnce();
+    });
+    expect(resolveCapturedTarget).toHaveBeenCalledWith({
+      runtimePaneId: pane,
+      sessionId,
+      semanticPaneId: "pane.original",
+    });
+    expect(onObserved).toHaveBeenCalledWith(
+      expect.objectContaining({ semanticPaneId: "pane.original" }),
+    );
+  });
 
   afterEach(async () => {
     const settled = await Promise.allSettled(
@@ -42,6 +88,196 @@ describe.skipIf(!hasTmux).sequential("tmux external interaction observer live", 
     }
     if (failures.length) throw new AggregateError(failures, "Observer fixture cleanup failed");
   });
+
+  it("checks unread state despite cancelled wakeups and arms an empty queue atomically", async () => {
+    const root = mkdtempSync("/tmp/tmux-ide-unread-wait-");
+    roots.push(root);
+    const socketPath = join(root, "tmux.sock");
+    const run = (args: readonly string[]) =>
+      execFileSync("tmux", ["-S", socketPath, ...args], { encoding: "utf8" }).trim();
+    run(["-f", "/dev/null", "new-session", "-d", "-s", "project", "cat"]);
+    const buffer = "tmux-ide-unread-regression";
+    const option = tmuxInteractionOption(buffer);
+    const channel = `${buffer}-ready`;
+    const wait = (signal: AbortSignal) =>
+      new Promise<void>((resolve, reject) => {
+        execFile(
+          "tmux",
+          ["-S", socketPath, ...tmuxInteractionWaitCommand(buffer, channel)],
+          { signal },
+          (error) => (error ? reject(error) : resolve()),
+        );
+      });
+    // Reproduce cmd-wait-for's even-signal cancellation before registration.
+    // Retained work must still make the production wait command return.
+    for (const count of [2, 4]) {
+      run(["set-option", "-g", option, "unread"]);
+      for (let i = 0; i < count; i += 1) run(["wait-for", "-S", channel]);
+      await wait(AbortSignal.timeout(1_000));
+    }
+    // No periodic fallback: a genuinely empty queue remains blocked until a
+    // producer appends and signals. This also exercises the rearm boundary.
+    run(["set-option", "-g", option, ""]);
+    const controller = new AbortController();
+    let settled = false;
+    const pending = wait(controller.signal).finally(() => {
+      settled = true;
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(settled).toBe(false);
+      run(["set-option", "-g", option, "next", ";", "wait-for", "-S", channel]);
+      await pending;
+    } finally {
+      controller.abort();
+      await pending.catch(() => undefined);
+    }
+  });
+
+  it("automatically drains an even burst arriving while the previous batch is consumed", async () => {
+    const root = mkdtempSync("/tmp/tmux-ide-drain-rearm-");
+    roots.push(root);
+    const socketPath = join(root, "tmux.sock");
+    const executablePath = realpathSync(
+      execFileSync("which", ["tmux"], { encoding: "utf8" }).trim(),
+    );
+    const run = (args: readonly string[]) =>
+      execFileSync(executablePath, ["-S", socketPath, ...args], { encoding: "utf8" }).trim();
+    run(["-f", "/dev/null", "new-session", "-d", "-s", "project", "cat"]);
+    const pane = run(["display-message", "-p", "-t", "project", "#{pane_id}"]);
+    run(["set-option", "-p", "-t", pane, "@tmux_ide_pane_id", "pane.editor"]);
+    const authority = {
+      executablePath,
+      socketSelector: { kind: "path" as const, path: socketPath },
+    };
+    const runner = createPinnedWorkspaceTmuxAsyncRunner(authority);
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let detached = false;
+    let blockOnce = true;
+    const observed: string[] = [];
+    const observer = new TmuxExternalInteractionObserver({
+      daemonInstanceId: randomUUID(),
+      tmuxAuthority: authority,
+      healthcheck: { baseMs: 30_000, maxMs: 30_000 },
+      registry: {
+        list: () => [{ name: "workspace.project", sessionName: "project", projectDir: root }],
+      } as unknown as WorkspaceRegistry,
+      io: {
+        runTmux: async (args, signal) => {
+          const output = await runner(args, signal);
+          if (
+            blockOnce &&
+            args[0] === "set-option" &&
+            args[1] === "-gF" &&
+            args[2]?.endsWith("-drain")
+          ) {
+            blockOnce = false;
+            detached = true;
+            await barrier;
+          }
+          return output;
+        },
+      },
+      onObserved: (interaction) => {
+        observed.push(interaction.semanticPaneId);
+        return false;
+      },
+    });
+    observers.push(observer);
+    try {
+      await observer.start();
+      run(["send-keys", "-t", pane, "-l", "first"]);
+      await vi.waitFor(() => expect(detached).toBe(true));
+      run(["send-keys", "-t", pane, "-l", "second"]);
+      run(["send-keys", "-t", pane, "-l", "third"]);
+      // Force a server round trip after both background hook publications.
+      // The buffer check confirms both records exist before rearming.
+      await vi.waitFor(() => {
+        const options = run(["show-options", "-g"]);
+        const retained = options
+          .split("\n")
+          .find(
+            (line) =>
+              line.startsWith("@tmux-ide-interaction-v3-") &&
+              !line.split(" ")[0]!.endsWith("-drain"),
+          );
+        expect(retained?.match(/workspace.pane.send/g)).toHaveLength(2);
+      });
+      release();
+      await vi.waitFor(() => expect(observed).toHaveLength(3));
+    } finally {
+      release();
+    }
+  });
+
+  it.each(["append", "replace"])(
+    "preserves records when a yielding user hook allows a producer to %s during snapshot",
+    async (mode) => {
+      const root = mkdtempSync("/tmp/tmux-ide-prefix-drain-");
+      roots.push(root);
+      const socketPath = join(root, "tmux.sock");
+      const executablePath = realpathSync(
+        execFileSync("which", ["tmux"], { encoding: "utf8" }).trim(),
+      );
+      const run = (args: readonly string[]) =>
+        execFileSync(executablePath, ["-S", socketPath, ...args], { encoding: "utf8" }).trim();
+      run(["-f", "/dev/null", "new-session", "-d", "-s", "project", "cat"]);
+      const pane = run(["display-message", "-p", "-t", "project", "#{pane_id}"]);
+      run(["set-option", "-p", "-t", pane, "@tmux_ide_pane_id", "pane.editor"]);
+      const daemonInstanceId = randomUUID();
+      const observed: string[] = [];
+      const gaps: string[] = [];
+      const observer = new TmuxExternalInteractionObserver({
+        daemonInstanceId,
+        tmuxAuthority: { executablePath, socketSelector: { kind: "path", path: socketPath } },
+        registry: {
+          list: () => [{ name: "workspace.project", sessionName: "project", projectDir: root }],
+        } as unknown as WorkspaceRegistry,
+        onObserved: (interaction) => {
+          observed.push(interaction.operationKind);
+          return true;
+        },
+        onGap: (gap) => gaps.push(gap.reason),
+        io: { delay: async () => undefined },
+      });
+      observers.push(observer);
+      await observer.install();
+      const option = tmuxInteractionOption(`tmux-ide-interaction-v3-${daemonInstanceId}`);
+      const first = `${pane}|tmux-ide-input-field-v1||tmux-ide-input-field-v1|workspace.pane.send|tmux-ide-input-event-v1|`;
+      const second = `${pane}|tmux-ide-input-field-v1||tmux-ide-input-field-v1|workspace.pane.read|tmux-ide-input-event-v1|`;
+      run(["set-option", "-g", option, first]);
+      run(["set-option", "-g", "@test-drain-armed", "1"]);
+      run([
+        "set-hook",
+        "-g",
+        "after-set-option",
+        "if-shell -F '#{@test-drain-armed}' 'set-option -gu @test-drain-armed ; set-option -g @test-drain-paused 1 ; wait-for test-drain-resume'",
+      ]);
+      const draining = observer.drain();
+      try {
+        await vi.waitFor(() =>
+          expect(run(["show-options", "-gqv", "@test-drain-paused"])).toBe("1"),
+        );
+        run(["set-option", mode === "append" ? "-ga" : "-g", option, second]);
+      } finally {
+        run(["wait-for", "-S", "test-drain-resume"]);
+      }
+      expect(await draining).toBe(mode === "append");
+      expect(observed).toEqual(mode === "append" ? ["workspace.pane.send"] : []);
+      expect(run(["show-options", "-gqv", option])).toBe(second);
+      expect(gaps).toEqual(mode === "append" ? [] : ["overflow"]);
+      expect(await observer.drain()).toBe(true);
+      expect(observed).toEqual(
+        mode === "append"
+          ? ["workspace.pane.send", "workspace.pane.read"]
+          : ["workspace.pane.read"],
+      );
+      expect(run(["show-options", "-gqv", option])).toBe("");
+    },
+  );
 
   it("publishes ordered markers without a child client and preserves user hooks", async () => {
     const root = mkdtempSync("/tmp/tmux-ide-native-hook-");

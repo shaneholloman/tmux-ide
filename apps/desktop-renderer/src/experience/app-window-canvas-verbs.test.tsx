@@ -123,6 +123,8 @@ const inventory: ApplicationShellTerminalInventory = {
   activeResourceId: "terminal.lead",
   resources: [
     {
+      interactionEndpoint: null,
+      nativeIdentity: null,
       id: "terminal.lead",
       title: "Lead terminal",
       kind: "agent",
@@ -130,6 +132,8 @@ const inventory: ApplicationShellTerminalInventory = {
       attachability: { status: "available", semanticPaneId: "terminal.lead" },
     },
     {
+      interactionEndpoint: null,
+      nativeIdentity: null,
       id: "terminal.second",
       title: "Second terminal",
       kind: "terminal",

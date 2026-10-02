@@ -1,3 +1,7 @@
+import {
+  InteractionPaneEndpointSchemaZ,
+  NativePaneIdentitySchemaZ,
+} from "./interaction-evidence.ts";
 import { z } from "zod";
 import { DesktopMissionWorkspaceResourceSchemaZ } from "./desktop-missions.ts";
 import { CohesionFixtureV1SchemaZ, type CohesionFixtureV1 } from "./cohesion-fixture.ts";
@@ -108,6 +112,9 @@ export const ApplicationShellTerminalResourceSchemaZ = z
     kind: z.enum(["agent", "terminal"]),
     active: z.boolean(),
     attachability: TerminalResourceAttachabilitySchemaZ,
+    /** Current daemon-owned pane lifetime; null means attribution is unavailable. */
+    interactionEndpoint: InteractionPaneEndpointSchemaZ.options[0].nullable(),
+    nativeIdentity: NativePaneIdentitySchemaZ.nullable(),
     // Additive (m41 attach-4). Present only on attachable resources whose durable
     // tmux window carries a valid, unique window stamp; resources sharing it live
     // in the same window. attach-5's UI consumes it to surface the shared-window

@@ -29,6 +29,20 @@ describe("PaneSourceCredentialAuthority", () => {
     expect(runAsync).toHaveBeenCalledTimes(2);
     expect(issuedTokens).toHaveLength(1);
     expect(authority.resolve(issuedTokens[0], "alpha", "pane.editor")).toBe("pane.editor");
+    const binding = authority.resolveBinding(issuedTokens[0], "alpha", "pane.editor")!;
+    expect(binding).toMatchObject({
+      session: "alpha",
+      runtimePaneId: "%1",
+      semanticPaneId: "pane.editor",
+    });
+    expect(binding.bindingId).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(authority.resolveBinding(issuedTokens[0], "alpha", "pane.other")).toBeNull();
+    expect(authority.resolveBinding(issuedTokens[0], "alpha", "pane.editor")).toEqual(binding);
+    authority.rotateSession("alpha");
+    expect(authority.resolveBinding(issuedTokens[0], "alpha", "pane.editor")).toBeNull();
+    expect(authority.resolveBinding(issuedTokens[1], "alpha", "pane.editor")?.bindingId).not.toBe(
+      binding.bindingId,
+    );
   });
 
   it("bounds startup reconciliation and aborts ignored late work", async () => {

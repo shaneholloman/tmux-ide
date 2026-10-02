@@ -17,6 +17,8 @@ import {
 import { tmpdir, availableParallelism } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { stageTerminfoCatalog, terminfoBuildInputs } from "./lib/tmux-terminfo-bundle.mjs";
+import { readTmuxNativePatches } from "./lib/tmux-native-patches.mjs";
 import {
   parseLddDependencies,
   isSystemGlibc,
@@ -58,9 +60,7 @@ const run = (command, args, options = {}) =>
 const hash = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
 if (text("git", ["-C", source, "rev-parse", "HEAD"]) !== provenance.commit)
   throw new Error("tmux source commit mismatch");
-const patchPath = join(root, "native/tmux", provenance.patch);
-if (hash(patchPath) !== provenance.patchSha256)
-  throw new Error("tmux source patch checksum mismatch");
+const patches = readTmuxNativePatches(provenance, join(root, "native/tmux"));
 const scratch = mkdtempSync(join(tmpdir(), "tmux-ide-native-build-"));
 try {
   const archive = execFileSync("git", ["-C", source, "archive", provenance.commit], {
@@ -68,11 +68,13 @@ try {
     env: childEnv,
   });
   execFileSync("tar", ["-xf", "-", "-C", scratch], { input: archive, env: childEnv });
-  execFileSync("git", ["apply", "-"], {
-    cwd: scratch,
-    input: readFileSync(patchPath),
-    env: childEnv,
-  });
+  for (const patch of patches) {
+    execFileSync("git", ["apply", "-"], {
+      cwd: scratch,
+      input: patch.bytes,
+      env: childEnv,
+    });
+  }
   run("sh", ["autogen.sh"], { cwd: scratch });
   run("./configure", ["--enable-utf8proc", "--disable-jemalloc"], { cwd: scratch });
   run("make", ["-j", String(jobs)], { cwd: scratch });
@@ -86,6 +88,11 @@ try {
   const names = new Map();
   const licenseFiles = [];
   mkdirSync(join(stage, "licenses"));
+  if (provenance.experimentalExtensions?.includes("tmux-ide-interaction-journal-v2")) {
+    const name = "licenses/interaction-journal.txt";
+    copyFileSync(join(root, "native/tmux/interaction-journal.LICENSE"), join(stage, name));
+    licenseFiles.push(name);
+  }
   const relocate = (binary, isExecutable) => {
     const ownId = isExecutable ? null : text("otool", ["-D", binary]).split("\n")[1];
     const dependencies = text("otool", ["-L", binary])
@@ -182,10 +189,17 @@ try {
   }
   if (text(executable, ["-V"]) !== `tmux ${provenance.version}`)
     throw new Error("Bundled tmux version mismatch");
+  const catalogInput = terminfoBuildInputs(process.platform, [...libraries.keys()], text);
+  const catalog = stageTerminfoCatalog(catalogInput.roots, join(stage, "share/terminfo"));
+  for (const license of catalogInput.licenses) {
+    copyFileSync(license.source, join(stage, license.name));
+    licenseFiles.push(license.name);
+  }
   const files = [
     "tmux",
     ...[...libraries.values()].map((path) => `lib/${basename(path)}`),
     ...licenseFiles,
+    ...catalog.files,
   ];
   const minimumVersions =
     process.platform !== "darwin"
@@ -287,6 +301,22 @@ try {
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
       if (!captured) throw new Error("Patched native-grid capture qualification failed");
+      if (provenance.experimentalExtensions?.includes("tmux-ide-interaction-journal-v2")) {
+        const capability = JSON.parse(text(executable, ["-S", socket, "tmux-ide-events", "-V"]));
+        if (capability.schemaVersion !== 2 || capability.enabled !== false)
+          throw new Error("Native journal must ship disabled");
+        text(executable, ["-S", socket, "tmux-ide-events", "-e"]);
+        for (const flag of ["-T", "-B"]) {
+          let accepted = false;
+          try {
+            text(executable, ["-S", socket, "tmux-ide-events", flag]);
+            accepted = true;
+          } catch {
+            /* Production parser must reject test-only injection. */
+          }
+          if (accepted) throw new Error("Native journal test instrumentation in release build");
+        }
+      }
       nativeGridProbe = {
         version: captured.version,
         cols: captured.cols,
@@ -320,6 +350,12 @@ try {
           systemLibc: text("getconf", ["GNU_LIBC_VERSION"]),
         }),
     ...(nativeGridProbe ? { nativeGridProbe } : {}),
+    terminfo: {
+      directory: catalog.directory,
+      entries: catalog.entries,
+      bytes: catalog.bytes,
+      provenance: catalogInput.provenance,
+    },
     platform: process.platform,
     arch: process.arch,
     files: Object.fromEntries(files.map((name) => [name, hash(join(stage, name))])),
@@ -337,7 +373,10 @@ try {
   try {
     mkdirSync(join(next, "lib"));
     mkdirSync(join(next, "licenses"));
-    for (const name of files) copyFileSync(join(stage, name), join(next, name));
+    for (const name of files) {
+      mkdirSync(dirname(join(next, name)), { recursive: true });
+      copyFileSync(join(stage, name), join(next, name));
+    }
     copyFileSync(join(root, "native/tmux/COPYING"), join(next, "COPYING"));
     writeFileSync(join(next, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
     if (text(join(next, "tmux"), ["-V"]) !== `tmux ${provenance.version}`)

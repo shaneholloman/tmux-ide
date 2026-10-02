@@ -1,9 +1,12 @@
+import type { TmuxServerScope } from "@tmux-ide/contracts";
 export interface FleetTabTarget {
   readonly key: string;
   readonly machineId: string;
   readonly liveSessionId: string;
+  readonly server?: TmuxServerScope;
   readonly label: string;
   readonly hostLabel: string;
+  readonly serverLabel?: string;
 }
 /** Retained targets, with at most one active terminal owner. Suspended tabs own no streams. */
 export function createFleetTabs(options: {
@@ -14,19 +17,45 @@ export function createFleetTabs(options: {
   unavailable(): void;
 }) {
   const tabs = new Map<string, FleetTabTarget>();
+  const unread = new Set<string>();
+  const observations = new Map<string, Map<string, string>>();
   let active: string | null = null;
   let pending: string | null = null;
   let epoch = 0;
   let disposed = false;
   return {
-    snapshot: () => ({ tabs: [...tabs.values()], active }),
+    snapshot: () => ({ tabs: [...tabs.values()], active, unread: [...unread] }),
+    observe(key: string, agents: readonly { id: string; activity: string }[] | null) {
+      if (disposed || !tabs.has(key)) return;
+      if (!agents) {
+        observations.delete(key);
+        return;
+      }
+      const previous = observations.get(key);
+      observations.set(key, new Map(agents.map((agent) => [agent.id, agent.activity])));
+      if (
+        active !== key &&
+        !unread.has(key) &&
+        agents.some(
+          (agent) => agent.activity === "complete" && previous?.get(agent.id) === "running",
+        )
+      ) {
+        unread.add(key);
+        options.publish();
+      }
+    },
     remember(target: FleetTabTarget) {
       if (disposed) return;
       if (!tabs.has(target.key) && tabs.size >= 8) {
         const removable = [...tabs.keys()].find((key) => key !== active);
-        if (removable) tabs.delete(removable);
+        if (removable) {
+          tabs.delete(removable);
+          unread.delete(removable);
+          observations.delete(removable);
+        }
       }
       tabs.set(target.key, Object.freeze({ ...target }));
+      unread.delete(target.key);
       active = target.key;
       options.publish();
     },
@@ -50,6 +79,7 @@ export function createFleetTabs(options: {
         options.unavailable();
         return false;
       }
+      unread.delete(key);
       active = key;
       options.publish();
       return true;
@@ -63,6 +93,8 @@ export function createFleetTabs(options: {
         pending = null;
       }
       tabs.delete(key);
+      unread.delete(key);
+      observations.delete(key);
       options.publish();
     },
     suspend() {
@@ -78,6 +110,8 @@ export function createFleetTabs(options: {
       disposed = true;
       epoch++;
       tabs.clear();
+      unread.clear();
+      observations.clear();
       active = null;
     },
   };

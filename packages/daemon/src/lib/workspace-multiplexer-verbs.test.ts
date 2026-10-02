@@ -1,8 +1,9 @@
+import { testInteractionContext } from "../../test-support/interaction-evidence.ts";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   parseMultiplexerPaneRows,
@@ -13,6 +14,7 @@ import {
   WorkspaceMultiplexerError,
   type WorkspaceMultiplexerErrorCode,
 } from "./workspace-multiplexer-verbs.ts";
+import { WindowLinkResolutionError } from "../terminal/mirror/window-link-authority.ts";
 import { WorkspaceRegistry } from "./workspace-registry.ts";
 import { INTERNAL_SEND_OPERATION_OPTION } from "./tmux-external-interaction-observer.ts";
 
@@ -54,6 +56,7 @@ class FakeTmux {
   windows: FakeWindow[] = [];
   panes: FakePane[] = [];
   readonly calls: string[][] = [];
+  captureOutput = "";
   #nextPane = 0;
   #nextWindow = 0;
   /** Argv prefix → thrown error, for failure-path tests. */
@@ -116,6 +119,8 @@ class FakeTmux {
         return String(
           this.panes.filter((candidate) => candidate.windowId === pane.windowId).indexOf(pane),
         );
+      case "#{pane_birth_id}":
+        return "";
       case "#{pane_width}":
         return String(pane.width);
       case "#{pane_height}":
@@ -244,7 +249,7 @@ class FakeTmux {
         const pane = this.#pane(args[3]!);
         pane.options.set(args[4]!, args[5]!);
         if (args.length > 6) {
-          if (args[7] === "capture-pane") return "";
+          if (args[7] === "capture-pane") return this.captureOutput;
           if (
             args[6] !== ";" ||
             args[7] !== "send-keys" ||
@@ -338,6 +343,19 @@ class FakeTmux {
         const given = pane[axis] - settled;
         pane[axis] = settled;
         for (const sibling of siblings) sibling[axis] += Math.trunc(given / siblings.length);
+        if (args.length > 5) {
+          if (
+            args.length !== 11 ||
+            args[5] !== ";" ||
+            args[6] !== "display-message" ||
+            args[7] !== "-p" ||
+            args[8] !== "-t" ||
+            args[9] !== pane.id ||
+            args[10] !== (axis === "width" ? "#{pane_width}" : "#{pane_height}")
+          )
+            throw new Error("invalid resize readback");
+          return this.#format(args[10]!, pane);
+        }
         return "";
       }
       case "swap-pane": {
@@ -397,6 +415,14 @@ function expectRefusal(
 }
 
 describe("pane listing parsing", () => {
+  it("reads resize dimensions in the same observation and refuses malformed geometry", () => {
+    const row = "%1\t0\t@2\tpane.abc\twin.def\t2\t0\t1\t";
+    expect(parseMultiplexerPaneRows(`${row}\t40\t20`)[0]).toMatchObject({ width: 40, height: 20 });
+    for (const dimensions of ["0\t20", "40\t-1", "NaN\t20", "40\t1.5", "40\t"])
+      expect(() => parseMultiplexerPaneRows(`${row}\t${dimensions}`)).toThrow(
+        WorkspaceMultiplexerError,
+      );
+  });
   it("reads one well-formed row", () => {
     const rows = parseMultiplexerPaneRows("%1\t2\t@2\tpane.abc\twin.def\t3\t1\t0\top-1");
     expect(rows).toEqual([
@@ -474,6 +500,20 @@ describe("semantic target resolution", () => {
   });
 });
 
+describe("linked backing pane observations", () => {
+  const line = "%0\t0\t@0\tpane.one\twindow.one\t1\t0\t1\t";
+  it("collapses identical native panes repeated by session links", () => {
+    const rows = parseMultiplexerPaneRows(`${line}\n${line}`);
+    expect(rows).toHaveLength(1);
+    expect(resolvePaneRow(rows, "pane.one").paneId).toBe("%0");
+  });
+  it("refuses conflicting repeated native observations", () => {
+    expect(() =>
+      parseMultiplexerPaneRows(`${line}\n${line.replace("pane.one", "pane.other")}`),
+    ).toThrow(WorkspaceMultiplexerError);
+  });
+});
+
 describe("the multiplexer authority", () => {
   let dir: string;
   let registry: WorkspaceRegistry;
@@ -519,6 +559,79 @@ describe("the multiplexer authority", () => {
     operationId,
     expectedDaemonInstanceId: DAEMON_ID,
     intent: { workspaceName: "work", ...intent } as never,
+  });
+
+  describe("authoritative link routing", () => {
+    const target = {
+      liveSessionId: `live-session.${"a".repeat(20)}`,
+      linkId: `window-link.${"b".repeat(32)}`,
+      expectedSemanticWindowId: "window.editor",
+      linkRevision: 2,
+    };
+    it.each(["select", "unlink"] as const)("routes %s without native rediscovery", async (verb) => {
+      const execute = vi.fn(async () => ({ outcome: "applied" as const, windowLinks: null }));
+      const result = await authority.mutateWindowLink(
+        request({ verb: `workspace.window.link.${verb}`, target }),
+        execute,
+      );
+      expect(execute).toHaveBeenCalledExactlyOnceWith("work", { action: verb, target });
+      expect(result).toMatchObject({
+        verb: `workspace.window.link.${verb}`,
+        target,
+        outcome: "applied",
+      });
+      expect(tmux.calls).toEqual([]);
+    });
+    it("forwards explicit pane context and leaves legacy ambiguity to the link authority", async () => {
+      const execute = vi.fn(async () => ({ outcome: "applied" as const, windowLinks: null }));
+      await authority.mutateWindowLink(
+        request({ verb: "workspace.pane.select", semanticPaneId: "pane.one", windowLink: target }),
+        execute,
+      );
+      expect(execute).toHaveBeenCalledExactlyOnceWith("work", {
+        action: "select",
+        target,
+        paneId: "pane.one",
+      });
+      execute.mockImplementationOnce(async () => {
+        throw new WindowLinkResolutionError("window_link_ambiguous");
+      });
+      await expect(
+        authority.mutateWindowLink(
+          request({ verb: "workspace.pane.select", semanticPaneId: "pane.one" }),
+          execute,
+        ),
+      ).rejects.toMatchObject({ code: "window_link_ambiguous" });
+      expect(tmux.calls).toEqual([]);
+    });
+    it.each([
+      ["stale", "window_link_stale"],
+      ["native-refused", "mutation_failed"],
+      ["indeterminate", "mutation_unverified"],
+    ] as const)("does not retry %s", async (outcome, code) => {
+      const execute = vi.fn(async () => ({ outcome, windowLinks: null }));
+      await expect(
+        authority.mutateWindowLink(
+          request({ verb: "workspace.window.link.unlink", target }),
+          execute,
+        ),
+      ).rejects.toMatchObject({ code });
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(tmux.calls).toEqual([]);
+    });
+    it("rejects a different daemon generation before consulting link authority", async () => {
+      const execute = vi.fn(async () => ({ outcome: "applied" as const, windowLinks: null }));
+      await expect(
+        authority.mutateWindowLink(
+          {
+            ...request({ verb: "workspace.window.link.unlink", target }),
+            expectedDaemonInstanceId: randomUUID(),
+          },
+          execute,
+        ),
+      ).rejects.toMatchObject({ code: "daemon_instance_mismatch" });
+      expect(execute).not.toHaveBeenCalled();
+    });
   });
 
   it("refuses a request from a different daemon generation", async () => {
@@ -715,7 +828,218 @@ describe("the multiplexer authority", () => {
     });
   });
 
+  describe("authored native execution", () => {
+    const intent = {
+      verb: "workspace.pane.send" as const,
+      workspaceName: "work",
+      semanticPaneId: "pane.one",
+      origin: "sdk" as const,
+      text: ";",
+      submit: false,
+    };
+    const context = {
+      executionId: "00000000-0000-4000-8000-000000000001",
+      authoredReceiptAdmissionSequence: 1,
+      interactionContext: testInteractionContext(intent),
+      origin: "cli" as const,
+    };
+    function nativeAuthority(
+      native: NonNullable<
+        import("./workspace-multiplexer-verbs.ts").WorkspaceMultiplexerIo["runAuthoredNative"]
+      >,
+      changeBirth = false,
+    ) {
+      let lists = 0;
+      return new WorkspaceMultiplexerAuthority({
+        daemonInstanceId: DAEMON_ID,
+        registry,
+        io: {
+          canonicalProjectDir: (path) => path,
+          runTmux: (args, options) => {
+            const output = tmux.run(args, options);
+            if (args[0] !== "list-panes") return output;
+            return output
+              .split("\n")
+              .map(
+                (line) =>
+                  `${line.slice(0, line.lastIndexOf("\t"))}\t${changeBirth && lists++ > 1 ? "8" : "7"}`,
+              )
+              .join("\n");
+          },
+          runAuthoredNative: native,
+        },
+      });
+    }
+    it.each([false, true])(
+      "preserves structured literal payload without native completion markers, submit=%s",
+      (submit) => {
+        const native = vi.fn(
+          (
+            _request: import("./workspace-multiplexer-verbs.ts").AuthoredNativeCommandRequest,
+            _options?: unknown,
+          ) => ({ output: "" }),
+        );
+        const subject = nativeAuthority(native);
+        subject.mutate(
+          request({ ...intent, submit, sourceSemanticPaneId: "pane.two" }),
+          undefined,
+          context,
+        );
+        const plan = native.mock
+          .calls[0]![0] as unknown as import("./workspace-multiplexer-verbs.ts").AuthoredNativeCommandRequest;
+        expect(plan).toMatchObject({
+          context,
+          targetPaneId: "%0",
+          targetBirthId: "7",
+          expectedKinds: submit ? ["paste-buffer", "send-keys"] : ["send-keys"],
+        });
+        expect(
+          plan.commands.find((cmd) => cmd[0] === (submit ? "set-buffer" : "send-keys"))!.at(-1),
+        ).toBe(";");
+        expect(
+          plan.commands.some(
+            (cmd) => cmd[0] === "set-option" && cmd.includes(INTERNAL_SEND_OPERATION_OPTION),
+          ),
+        ).toBe(false);
+        expect(tmux.calls.some((cmd) => cmd[0] === "send-keys" || cmd[0] === "set-buffer")).toBe(
+          false,
+        );
+      },
+    );
+    it("uses stock only when native declines before dispatch; never on a thrown native error", () => {
+      const native = vi.fn(() => null);
+      const subject = nativeAuthority(native);
+      subject.mutate(request({ ...intent, text: "safe" }), undefined, context);
+      expect(native).toHaveBeenCalledTimes(1);
+      expect(tmux.calls.some((cmd) => cmd.includes("send-keys"))).toBe(true);
+      expect(tmux.calls.some((cmd) => cmd.includes(INTERNAL_SEND_OPERATION_OPTION))).toBe(true);
+      tmux.calls.length = 0;
+      const failure = nativeAuthority(() => {
+        throw new Error("partial effect");
+      });
+      expect(() => failure.mutate(request(intent), undefined, context)).toThrow();
+      expect(tmux.calls.some((cmd) => cmd.includes(INTERNAL_SEND_OPERATION_OPTION))).toBe(false);
+      expect(tmux.calls.some((cmd) => cmd[0] === "send-keys" || cmd[0] === "paste-buffer")).toBe(
+        false,
+      );
+    });
+    it("preserves capture bytes and rejects a birth change even when the address is unchanged", () => {
+      const read = {
+        verb: "workspace.pane.read" as const,
+        workspaceName: "work",
+        semanticPaneId: "pane.one",
+        origin: "sdk" as const,
+      };
+      const native = vi.fn(
+        (
+          _request: import("./workspace-multiplexer-verbs.ts").AuthoredNativeCommandRequest,
+          _options?: unknown,
+        ) => ({ output: '{"type":"operation-identity"}\n\n' }),
+      );
+      expect(nativeAuthority(native).readPane(randomUUID(), read, context)).toMatchObject({
+        text: '{"type":"operation-identity"}\n\n',
+      });
+      expect(native.mock.calls[0]![1]).toMatchObject({ preserveTrailingNewlines: true });
+      expect(() => nativeAuthority(native, true).readPane(randomUUID(), read, context)).toThrow();
+      expect(() =>
+        nativeAuthority(native, true).mutate(request(intent), undefined, context),
+      ).toThrow();
+    });
+    it("does not infer native authority from caller intent when trusted context is absent", () => {
+      const native = vi.fn(
+        (
+          _request: import("./workspace-multiplexer-verbs.ts").AuthoredNativeCommandRequest,
+          _options?: unknown,
+        ) => ({ output: "" }),
+      );
+      nativeAuthority(native).mutate(
+        request({ ...intent, text: "safe", sourceSemanticPaneId: "pane.two" }),
+      );
+      expect(native).not.toHaveBeenCalled();
+    });
+  });
+
   describe("session runtime read", () => {
+    const intent = {
+      verb: "workspace.pane.read" as const,
+      workspaceName: "work",
+      semanticPaneId: "pane.one",
+      origin: "sdk" as const,
+    };
+    it("returns the same single captured response including trailing blank lines", () => {
+      tmux.captureOutput = "\u001b[31mhello é\u001b[0m\n\n";
+      const result = authority.readPane(randomUUID(), intent);
+      expect(result).toMatchObject({
+        text: tmux.captureOutput,
+        byteCount: Buffer.byteLength(tmux.captureOutput),
+        capturedByteCount: Buffer.byteLength(tmux.captureOutput),
+        truncated: false,
+        format: "ansi",
+      });
+      expect(tmux.calls.filter((args) => args.includes("capture-pane"))).toHaveLength(1);
+    });
+    it("retains a UTF8-safe tail within the response byte limit", () => {
+      tmux.captureOutput = "🙂".repeat(5000) + "end";
+      const result = authority.readPane(randomUUID(), intent);
+      expect(result.byteCount).toBeLessThanOrEqual(16384);
+      expect(result.byteCount).toBe(Buffer.byteLength(result.text));
+      expect(result.capturedByteCount).toBe(20003);
+      expect(result.truncated).toBe(true);
+      expect(result.text).not.toContain("�");
+      expect(tmux.captureOutput.endsWith(result.text)).toBe(true);
+    });
+    it("fails rather than reporting a successful partial capture past the subprocess limit", () => {
+      tmux.captureOutput = "x".repeat(65537);
+      expect(() => authority.readPane(randomUUID(), intent)).toThrowError(
+        expect.objectContaining({
+          code: "mutation_failed",
+          context: expect.objectContaining({ reason: "pane_capture_output_limit" }),
+        }),
+      );
+    });
+    it("does not expose private captured bytes from subprocess failures", () => {
+      tmux.failOn = {
+        match: (args) => args.includes("capture-pane"),
+        error: new Error("stdout maxBuffer: private terminal contents"),
+      };
+      let failure: unknown;
+      try {
+        authority.readPane(randomUUID(), intent);
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toMatchObject({
+        code: "mutation_failed",
+        context: expect.objectContaining({ reason: "pane_capture_failed" }),
+      });
+      expect(JSON.stringify(failure)).not.toContain("private terminal");
+      expect((failure as Error).cause).toBeUndefined();
+      expect(tmux.calls.filter((args) => args.includes("capture-pane"))).toHaveLength(1);
+    });
+    it("refuses a semantic identity that changes during capture", () => {
+      const observed = new WorkspaceMultiplexerAuthority({
+        daemonInstanceId: DAEMON_ID,
+        registry,
+        io: {
+          runTmux: (args) => {
+            const output = tmux.run(args);
+            if (args.includes("capture-pane")) tmux.panes[0]!.id = "%99";
+            return output;
+          },
+        },
+      });
+      expect(() => observed.readPane(randomUUID(), intent)).toThrowError(
+        expect.objectContaining({ code: "mutation_unverified" }),
+      );
+    });
+    it("does not capture after authority disposal", async () => {
+      await authority.dispose();
+      expect(() => authority.readPane(randomUUID(), intent)).toThrowError(
+        expect.objectContaining({ code: "workspace_unavailable" }),
+      );
+      expect(tmux.calls.filter((args) => args.includes("capture-pane"))).toHaveLength(0);
+    });
+
     it("marks and captures one semantic pane in one tmux command-list", async () => {
       const operationId = randomUUID();
       await authority.readPane(operationId, {
@@ -946,7 +1270,64 @@ describe("the multiplexer authority", () => {
       expect(tmux.panes.find((pane) => pane.id === "%0")!.width).toBe(140);
       // The argv is the one-axis form, never the zoom form.
       const resize = tmux.calls.find((args) => args[0] === "resize-pane")!;
-      expect(resize).toEqual(["resize-pane", "-t", "%0", "-x", "140"]);
+      expect(resize).toEqual([
+        "resize-pane",
+        "-t",
+        "%0",
+        "-x",
+        "140",
+        ";",
+        "display-message",
+        "-p",
+        "-t",
+        "%0",
+        "#{pane_width}",
+      ]);
+      expect(tmux.calls).toHaveLength(2);
+    });
+
+    it("refuses a retained resize when retired during its identity read", async () => {
+      tmux.addPane("@0");
+      const run = vi.fn(async (args: readonly string[]) => {
+        const result = tmux.run(args);
+        await authority.dispose();
+        return result;
+      });
+      await expect(
+        authority.mutateResize(
+          request({
+            verb: "workspace.pane.resize",
+            semanticPaneId: "pane.one",
+            axis: "cols",
+            cells: 140,
+          }),
+          () => run,
+        ),
+      ).rejects.toMatchObject({ code: "workspace_unavailable" });
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(tmux.calls.some((args) => args[0] === "resize-pane")).toBe(false);
+    });
+
+    it("does not retry a retained resize after an uncertain effect", async () => {
+      tmux.addPane("@0");
+      const run = vi.fn(async (args: readonly string[]) => {
+        const result = tmux.run(args);
+        if (args[0] === "resize-pane") throw new Error("lost receipt");
+        return result;
+      });
+      await expect(
+        authority.mutateResize(
+          request({
+            verb: "workspace.pane.resize",
+            semanticPaneId: "pane.one",
+            axis: "cols",
+            cells: 140,
+          }),
+          () => run,
+        ),
+      ).rejects.toMatchObject({ code: "mutation_unverified" });
+      expect(run).toHaveBeenCalledTimes(2);
+      expect(tmux.calls.filter((args) => args[0] === "resize-pane")).toHaveLength(1);
     });
 
     it("reports the CLAMPED size rather than the one that was asked for", async () => {
@@ -977,6 +1358,7 @@ describe("the multiplexer authority", () => {
       );
       expect(result).toMatchObject({ outcome: "unchanged", cells: 100 });
       expect(tmux.calls.some((args) => args[0] === "resize-pane")).toBe(false);
+      expect(tmux.calls).toHaveLength(1);
     });
 
     it("resizes the row axis with -y", async () => {
@@ -995,6 +1377,12 @@ describe("the multiplexer authority", () => {
         "%0",
         "-y",
         "20",
+        ";",
+        "display-message",
+        "-p",
+        "-t",
+        "%0",
+        "#{pane_height}",
       ]);
     });
 
@@ -1408,4 +1796,23 @@ describe("the multiplexer authority", () => {
       "workspace_unavailable",
     );
   });
+});
+
+it("parses native birth identity without disturbing legacy or geometry rows", () => {
+  const base = "%0\t0\t@0\tpane.one\twin.one\t1\t0\t1\t";
+  expect(parseMultiplexerPaneRows(base)[0]).not.toHaveProperty("nativePaneBirthId");
+  expect(parseMultiplexerPaneRows(`${base}\t7`)[0]).toMatchObject({ nativePaneBirthId: "7" });
+  expect(parseMultiplexerPaneRows(`${base}\t80\t24`)[0]).toMatchObject({ width: 80, height: 24 });
+  expect(parseMultiplexerPaneRows(`${base}\t7\t80\t24`)[0]).toMatchObject({
+    nativePaneBirthId: "7",
+    width: 80,
+    height: 24,
+  });
+  for (const birth of ["", "0"])
+    expect(parseMultiplexerPaneRows(`${base}\t${birth}`)[0]).toMatchObject({
+      nativePaneBirthId: null,
+    });
+  for (const birth of ["01", "-1", "18446744073709551616", "nope"])
+    expect(() => parseMultiplexerPaneRows(`${base}\t${birth}`)).toThrow();
+  expect(() => parseMultiplexerPaneRows(`${base}\t7\n${base}\t8`)).toThrow();
 });

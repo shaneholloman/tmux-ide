@@ -48,8 +48,10 @@ jobs:
         with:
           bun-version-file: ".bun-version"
 
-      - name: Install tmux for installed ownership smoke
-        run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: Install supported tmux for installed ownership smoke
+        uses: ./.github/actions/setup-tmux
+        with:
+          test-node-version: ${{ matrix.node }}
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -80,6 +82,13 @@ jobs:
       - name: Run TUI renderer suite
         if: matrix.node >= 22
         run: pnpm test:tui-renderer
+
+      - name: Validate isolated production-component gallery
+        if: matrix.node >= 22
+        run: |
+          pnpm typecheck:tui-gallery
+          pnpm exec eslint scripts/tui-gallery
+          pnpm test:tui-gallery
 
       - name: Validate package contents
         run: pnpm pack:check
@@ -116,8 +125,8 @@ jobs:
         with:
           bun-version-file: ".bun-version"
 
-      - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: Install supported tmux
+        uses: ./.github/actions/setup-tmux
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -166,6 +175,9 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Install supported tmux for coverage fixtures
+        uses: ./.github/actions/setup-tmux
 
       - name: Build CLI (workspace deps may need dist/)
         run: pnpm build

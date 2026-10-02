@@ -164,6 +164,57 @@ describe("createTmuxIdeSdk", () => {
 });
 
 describe("createTmuxIdeOwnerSdk", () => {
+  it("does not retry an explicit daemon refusal and preserves structured details", async () => {
+    const request = vi.fn(async () =>
+      Response.json({
+        ok: false,
+        error: { code: "forbidden", message: "Source refused", details: { reason: "source" } },
+      }),
+    );
+    const sdk = createTmuxIdeOwnerSdk({
+      baseUrl: "http://localhost:4000/",
+      ownerToken: "secret",
+      fetch: request as typeof fetch,
+    });
+    await expect(
+      sdk.sendPane(
+        { workspaceName: "alpha", semanticPaneId: "pane.editor", text: "private", submit: true },
+        { operationId: "10000000-0000-4000-8000-000000000002" },
+      ),
+    ).rejects.toMatchObject({
+      code: "forbidden",
+      message: "Source refused",
+      details: { reason: "source" },
+    });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+  it("reports exhausted ambiguity with the operation id without disclosing input or credentials", async () => {
+    const requests: RequestInit[] = [];
+    const request = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      requests.push(init!);
+      throw new Error("lost private content");
+    });
+    const sdk = createTmuxIdeOwnerSdk({
+      baseUrl: "http://localhost:4000",
+      ownerToken: "secret",
+      fetch: request as typeof fetch,
+    });
+    const result = sdk.sendPane(
+      {
+        workspaceName: "alpha",
+        semanticPaneId: "pane.editor",
+        text: "private input",
+        submit: true,
+      },
+      { operationId: "10000000-0000-4000-8000-000000000002" },
+    );
+    await expect(result).rejects.toThrow(
+      "Pane delivery 10000000-0000-4000-8000-000000000002 was not confirmed",
+    );
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(requests[0]!.headers).toEqual(requests[1]!.headers);
+    expect(requests[0]!.body).toBe(requests[1]!.body);
+  });
   it("sends one semantic SDK action and never exposes its literal input in the result", async () => {
     const request = vi.fn(async (_input: URL | RequestInfo, init?: RequestInit) => {
       const parsed = JSON.parse(String(init?.body)) as { text: string };

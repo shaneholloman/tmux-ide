@@ -53,6 +53,15 @@ pkg-config and the platform's libevent, ncurses and utf8proc development
 dependencies. It does not modify the source checkout or replace system tmux.
 An ordinary system tmux binary is not a substitute for this patched bundle.
 
+The bundle also needs ncurses terminal descriptions (terminfo). On macOS, keep
+the catalog from the same ncurses installation as the linked library. Debian
+and Ubuntu build environments need both `ncurses-base` and `ncurses-term`.
+The builder includes these resources in the bundle manifest, so managed clients
+can find them after the bundle is moved to another machine. Older bundles
+without the catalog retain their existing host-dependent behavior; rebuild
+them for portable terminal attachment. Use the managed app entry point below
+to select the bundle and its terminal resources together.
+
 Compare the two status documents: instance IDs, worktree paths, daemon identities
 and tmux sockets must differ. Each command selects the current worktree and name;
 use the same `--name demo` throughout this example. The default private store is
@@ -84,6 +93,22 @@ After making changes:
 pnpm --silent dev:instance rebuild --name demo --json
 pnpm --silent dev:instance restart --name demo --apply-build --json
 ```
+
+To test experimental native interaction observation in a development instance,
+select it explicitly when rebuilding:
+
+```sh
+pnpm --silent dev:instance rebuild --name demo --native-observation enabled --json
+pnpm --silent dev:instance restart --name demo --apply-build --json
+```
+
+The selection is recorded in the hashed build manifest. New instances and legacy
+manifests default to disabled; later rebuilds preserve the selected mode when the
+option is omitted. Use `--native-observation disabled` on a rebuild to turn it off
+in the next applied build. Ambient `TMUX_IDE_NATIVE_OBSERVATION` values are ignored
+by the instance manager. This option is only accepted for non-container rebuilds.
+Observation still requires a capable tmux server; selecting the option does not
+replace tmux, migrate sessions, or establish that native observation is ready.
 
 Later rebuilds can reuse the verified Bun path from the selected manifest.
 Rebuild publishes artifacts without restarting anything. `restart --apply-build`

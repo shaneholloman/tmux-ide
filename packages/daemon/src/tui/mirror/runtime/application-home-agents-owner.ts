@@ -1,3 +1,4 @@
+import { createApplicationNewAgentOwner } from "./application-new-agent-owner.ts";
 import type { ApplicationPaletteCommand } from "./application-palette-input.ts";
 import { createEffect, createSignal, onCleanup, untrack, type Accessor } from "solid-js";
 
@@ -27,6 +28,13 @@ import {
 
 export type ApplicationHomeAgentPresentation = Pick<
   ApplicationHomeSurfaceProps,
+  | "agentQuery"
+  | "onAgentQueryChange"
+  | "agentFilterLabel"
+  | "agentActivityFilter"
+  | "onSetAgentActivityFilter"
+  | "onCycleAgentMachine"
+  | "onToggleAgentAttention"
   | "agentRoster"
   | "agentSelection"
   | "agentInputActive"
@@ -197,6 +205,7 @@ export function createApplicationHomeAgentsOwner(options: {
 
 /** Compose Home navigation with competing chrome intents; physical input stays in the root. */
 export function createApplicationHomeNavigationOwner(options: {
+  readonly fleetHome?: ApplicationHomeAgentPresentation;
   readonly fleetCommands?: () => readonly ApplicationPaletteCommand[];
   readonly openFleet?: (
     command: Exclude<ApplicationPaletteCommand, string>,
@@ -215,9 +224,12 @@ export function createApplicationHomeNavigationOwner(options: {
   readonly startGeneration: ReturnType<typeof createApplicationGenerationStarter>;
   readonly interaction: Pick<
     ReturnType<typeof createApplicationTerminalInteractionController>,
-    "selectPane" | "renamePane" | "newWindow" | "splitPane" | "closePane"
+    "selectPane" | "renamePane" | "newWindow" | "newAgent" | "splitPane" | "closePane"
   >;
+  readonly openSessions?: () => void;
   readonly openAppearance?: () => void;
+  readonly sidebarVisible?: Accessor<boolean>;
+  readonly toggleSidebar?: () => void;
   readonly zoomPane?: () => Promise<string>;
   readonly appearanceOpen?: () => boolean;
   readonly rendererFocused: Accessor<boolean>;
@@ -230,16 +242,28 @@ export function createApplicationHomeNavigationOwner(options: {
     sessionOwner: () => options.sessionOwner()!,
     selectPane: options.interaction.selectPane,
   });
+  const newAgent = createApplicationNewAgentOwner({
+    targetKey: () =>
+      JSON.stringify([
+        applicationGenerationNavigationKey(options.sessionOwner()?.snapshot() ?? null),
+        options.sessionOwner()?.snapshot()?.connection?.workspaceName,
+        options.sessionOwner()?.sessionName(),
+      ]),
+    workspace: () => options.sessionOwner()?.snapshot()?.connection?.workspaceName ?? null,
+    create: (draft) => options.interaction.newAgent(draft.name, draft.harness),
+    setNote: options.setNote,
+  });
   const paneRename = createApplicationPaneRenameOwner(
     options.interaction.renamePane,
     options.setNote,
   );
   const homeAgents = createApplicationHomeAgentsOwner({
     catalog: options.catalog.snapshot,
-    active: () => options.activeSurface() === "home",
+    active: () => !options.fleetHome && options.activeSurface() === "home",
     inputActive: () =>
       options.activeSurface() === "home" &&
       !paneRename.draft() &&
+      !newAgent.draft() &&
       !options.appearanceOpen?.() &&
       !options.shell().semantic?.focus.palette.open &&
       !options.shell().localPaletteOpen &&
@@ -265,15 +289,23 @@ export function createApplicationHomeNavigationOwner(options: {
     observer: options.observer,
   });
   const paletteCommands = createApplicationPaletteCommandOwner({
-    commands: () =>
-      options.fleetCommands
+    commands: () => [
+      ...(options.fleetCommands
         ? [
             ...applicationPaletteCommands(options.shell().semantic).filter(
               (c) => typeof c === "string",
             ),
             ...options.fleetCommands(),
           ]
-        : applicationPaletteCommands(options.shell().semantic, options.catalog.sessionNames()),
+        : applicationPaletteCommands(options.shell().semantic, options.catalog.sessionNames())),
+      ...(options.toggleSidebar
+        ? [
+            options.sidebarVisible?.() === false
+              ? ("show-sidebar" as const)
+              : ("hide-sidebar" as const),
+          ]
+        : []),
+    ],
     isOpen: () =>
       Boolean(options.shell().semantic?.focus.palette.open ?? options.shell().localPaletteOpen),
     targetKey: () =>
@@ -285,18 +317,29 @@ export function createApplicationHomeNavigationOwner(options: {
         typeof command === "object" ||
         command === "home" ||
         command === "terminals" ||
-        command === "appearance"
+        command === "appearance" ||
+        command === "hide-sidebar" ||
+        command === "show-sidebar" ||
+        command === "help" ||
+        command === "shortcuts" ||
+        command === "whats-new" ||
+        command === "switch-session"
       )
         return null;
       if (options.sessionOwner()?.snapshot()?.status !== "live") return "Open a live session first";
-      return command !== "new-window" && !options.focusedPane() ? "Select a live pane first" : null;
+      return command !== "new-window" && command !== "new-agent" && !options.focusedPane()
+        ? "Select a live pane first"
+        : null;
     },
     activeSurface: options.activeSurface,
     binding: options.binding,
     commandSource: applicationPaletteCommandSource,
     setSurface: options.setSurface,
     setNote: options.setNote,
+    openNewAgent: newAgent.begin,
     openAppearance: options.openAppearance,
+    toggleSidebar: options.toggleSidebar,
+    openSessions: options.openSessions,
     zoomPane: options.zoomPane,
     newWindow: options.interaction.newWindow,
     splitPane: options.interaction.splitPane,
@@ -307,5 +350,12 @@ export function createApplicationHomeNavigationOwner(options: {
     onNavigationIntent: homeAgents.cancel,
   });
   const paletteCommandList = paletteCommands.commands;
-  return { homeAgents, paneRename, paletteCommands, paletteCommandList, openAgent };
+  return {
+    homeAgents: options.fleetHome ? { ...homeAgents, presentation: options.fleetHome } : homeAgents,
+    paneRename,
+    newAgent,
+    paletteCommands,
+    paletteCommandList,
+    openAgent,
+  };
 }

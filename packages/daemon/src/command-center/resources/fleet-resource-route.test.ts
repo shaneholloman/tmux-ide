@@ -43,6 +43,10 @@ function paneLine(
     statusText,
     displayName,
     hint,
+    "",
+    "",
+    "",
+    "",
     SENTINEL,
   ].join(SEP);
 }
@@ -61,7 +65,9 @@ function pinRunner(sessions: string, panes: string): () => void {
 function appWith(options: {
   ownerToken: string | null;
   registry?: { list(): { sessionName: string }[] };
-  readFleet?: () => ReturnType<typeof readAdoptedFleet>;
+  readFleet?: () =>
+    | ReturnType<typeof readAdoptedFleet>
+    | Promise<ReturnType<typeof readAdoptedFleet>>;
 }): Hono {
   const app = new Hono();
   mountFleetResourceRoute(app, {
@@ -265,4 +271,52 @@ describe("GET /api/resources/fleet-catalog", () => {
     const name = parsed.sessions[0]!.agents[0]!.name;
     expect([...name].every((ch) => ch.charCodeAt(0) >= 32 && ch.charCodeAt(0) !== 127)).toBe(true);
   });
+});
+
+it.each([false, true])(
+  "binds fleet births only to a stable current server epoch (race=%s)",
+  (race) => {
+    let epoch: string | null = DAEMON.instanceId;
+    const raw = paneLine("alpha", "%1", true, "claude", "/tmp", "", "", "").replace(
+      `${SEP}${SEP}${SEP}${SEP}${SEP}${SENTINEL}`,
+      `${SEP}7${SEP}${SEP}${SEP}${SEP}${SENTINEL}`,
+    );
+    const result = readAdoptedFleet(
+      { list: () => [] },
+      (args) => {
+        if (args[0] === "list-sessions") return "alpha\t1";
+        if (args[0] === "list-panes") {
+          if (race) epoch = null;
+          return raw;
+        }
+        return "";
+      },
+      undefined,
+      () => epoch,
+    );
+    expect(result?.[0]?.panes[0]?.nativeIdentity).toEqual(
+      race ? null : { serverEpoch: DAEMON.instanceId, paneBirthId: "7" },
+    );
+  },
+);
+
+it("awaits async team enrichment and preserves unavailable errors", async () => {
+  const app = appWith({ ownerToken: OWNER, readFleet: async () => [] });
+  const res = await app.request("/api/resources/fleet-catalog", {
+    headers: { Authorization: `Bearer ${OWNER}` },
+  });
+  expect(res.status).toBe(200);
+  const failed = appWith({
+    ownerToken: OWNER,
+    readFleet: async () => {
+      throw new Error("read failed");
+    },
+  });
+  expect(
+    (
+      await failed.request("/api/resources/fleet-catalog", {
+        headers: { Authorization: `Bearer ${OWNER}` },
+      })
+    ).status,
+  ).toBe(503);
 });

@@ -22,6 +22,26 @@ function live(resize: ReturnType<typeof vi.fn>, overrides = {}) {
 }
 
 describe("semantic shell viewport resize owner", () => {
+  it("fits reclaimed sidebar columns and restores them without redundant resizes", async () => {
+    let visible = true;
+    const resize = vi.fn(async () => ({ status: "applied" as const }));
+    const owner = createSemanticShellViewportResizeOwner(undefined, () => visible);
+    const generation = live(resize);
+    const semantic = {} as never;
+    owner.adopt({ width: 120, height: 30 }, semantic, generation);
+    expect(resize).toHaveBeenLastCalledWith({ cols: 92, rows: 27 });
+    await Promise.resolve();
+    visible = false;
+    owner.adopt({ width: 120, height: 30 }, semantic, generation);
+    expect(resize).toHaveBeenLastCalledWith({ cols: 120, rows: 27 });
+    await Promise.resolve();
+    owner.adopt({ width: 120, height: 30 }, semantic, generation);
+    expect(resize).toHaveBeenCalledTimes(2);
+    visible = true;
+    owner.adopt({ width: 120, height: 30 }, semantic, generation);
+    expect(resize).toHaveBeenLastCalledWith({ cols: 92, rows: 27 });
+    owner.dispose();
+  });
   it("replays the applied size when a pending resize reverses back to it", async () => {
     let settleMiddle!: (value: { status: "applied" }) => void;
     const resize = vi
@@ -160,6 +180,48 @@ describe("scoped semantic shell viewport reconciliation", () => {
       owner.adopt({ width, height: 44 }, {} as never, active);
     return { owner, layout, resize, generation, adopt };
   }
+
+  it("fits a replacement runtime immediately while a retired resize receipt is stalled", async () => {
+    let releaseOld!: (value: { status: "applied" }) => void;
+    let releaseNew!: (value: { status: "applied" }) => void;
+    const oldResize = vi.fn(
+      () =>
+        new Promise<{ status: "applied" }>((resolve) => {
+          releaseOld = resolve;
+        }),
+    );
+    const rig = setup(oldResize);
+    rig.adopt();
+    const newResize = vi.fn(async () => ({ status: "applied" as const }));
+    newResize.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseNew = resolve;
+        }),
+    );
+    const replacement = live(newResize, {
+      rendererEpoch: 2,
+      daemonGeneration: "00000000-0000-4000-8000-000000000002",
+    });
+    rig.adopt(180, replacement);
+    expect(newResize).toHaveBeenCalledOnce();
+    // The old receipt cannot clear the new flight's lock or publish old dimensions.
+    releaseOld({ status: "applied" });
+    await settle();
+    rig.adopt(190, replacement);
+    expect(newResize).toHaveBeenCalledOnce();
+    releaseNew({ status: "applied" });
+    await settle();
+    expect(newResize.mock.calls.map(([target]) => target)).toEqual([
+      { cols: 152, rows: 40 },
+      { cols: 162, rows: 40 },
+      { semanticWindowId: "window.top", cols: 162, rows: 41 },
+      { semanticWindowId: "window.off", cols: 162, rows: 40 },
+      { semanticWindowId: "window.bottom", cols: 162, rows: 41 },
+    ]);
+    expect(oldResize).toHaveBeenCalledOnce();
+    rig.owner.dispose();
+  });
 
   it("fits every window once and switches mixed border policies without geometry churn", async () => {
     const rig = setup();

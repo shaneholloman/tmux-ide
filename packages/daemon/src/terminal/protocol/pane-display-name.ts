@@ -98,7 +98,14 @@ const GENERIC_TITLES = new Set(["shell", "terminal", "tmux"]);
 
 function boundedName(value: string | null | undefined): string | null {
   const name = value?.trim() ?? "";
-  return name.length > 0 && name.length <= 80 && !/[\0\r\n\t]/u.test(name) ? name : null;
+  return name.length > 0 &&
+    name.length <= 80 &&
+    [...name].every((c) => {
+      const code = c.codePointAt(0)!;
+      return code > 31 && (code < 127 || code > 159);
+    })
+    ? name
+    : null;
 }
 
 function commandBasename(value: string | null | undefined): string | null {
@@ -125,25 +132,29 @@ export function memorablePaneName(seed: string): string {
   return `${ADJECTIVES[first % ADJECTIVES.length]}-${NOUNS[second % NOUNS.length]}`;
 }
 
-function meaningfulTitle(
+export function meaningfulPaneTitle(
   value: string | null | undefined,
   currentCommand: string | null,
   hostName?: string | null,
 ): string | null {
   const title = boundedName(value);
   if (!title || GENERIC_TITLES.has(title.toLowerCase())) return null;
+  if (
+    ["claude", "claude code", "codex", "node", "bun", currentCommand?.toLowerCase()].includes(
+      title.toLowerCase(),
+    )
+  )
+    return null;
   if (title.startsWith("/") || title.startsWith("~") || title.includes("@")) return null;
   // Interactive shells commonly publish the machine hostname as their tmux
   // title. It identifies the computer, not the work happening in this pane,
   // so keep the memorable pane identity until a real foreground process runs.
   if (
-    currentCommand &&
-    GENERIC_SHELLS.has(currentCommand.toLowerCase()) &&
-    (/^[a-z0-9][a-z0-9.-]*\.[a-z0-9-]{2,}$/iu.test(title) ||
-      (hostName &&
-        [hostName, hostName.split(".")[0]].some(
-          (host) => host?.toLowerCase() === title.toLowerCase(),
-        )))
+    /^[a-z0-9][a-z0-9.-]*\.[a-z0-9-]{2,}$/iu.test(title) ||
+    (hostName &&
+      [hostName, hostName.split(".")[0]].some(
+        (host) => host?.toLowerCase() === title.toLowerCase(),
+      ))
   )
     return null;
   return title;
@@ -153,6 +164,8 @@ export function resolvePaneDisplayName(
   input: Readonly<{
     semanticPaneId: string;
     configuredName?: string | null;
+    agentDisplayName?: string | null;
+    teamMemberName?: string | null;
     configuredNameSource?: string | null;
     currentCommand?: string | null;
     title?: string | null;
@@ -164,26 +177,51 @@ export function resolvePaneDisplayName(
   const configuredName = boundedName(input.configuredName);
   const configuredSource = input.configuredNameSource?.trim().toLowerCase() ?? "";
   const generatedName = memorablePaneName(input.semanticPaneId);
+  const automaticHarnessName = [
+    "claude",
+    "claude code",
+    "codex",
+    "node",
+    "bun",
+    input.currentCommand?.toLowerCase(),
+  ].includes(configuredName?.toLowerCase() ?? "");
   const legacyConfiguredName =
     configuredName &&
     configuredName !== generatedName &&
+    !automaticHarnessName &&
     !GENERIC_TITLES.has(configuredName.toLowerCase())
       ? configuredName
       : null;
 
   if (configuredName && configuredSource === "manual")
     return { name: configuredName, source: "manual" };
-  if (configuredName && (configuredSource === "agent" || input.paneType === "agent"))
+  const teamName = boundedName(input.teamMemberName);
+  if (teamName) return { name: teamName, source: "agent" };
+  const reportedName = boundedName(input.agentDisplayName);
+  if (
+    reportedName &&
+    !["claude", "claude code", "codex", input.currentCommand?.toLowerCase()].includes(
+      reportedName.toLowerCase(),
+    )
+  )
+    return { name: reportedName, source: "agent" };
+  if (
+    configuredName &&
+    !automaticHarnessName &&
+    (configuredSource === "agent" || input.paneType === "agent")
+  )
     return { name: configuredName, source: "agent" };
   if (legacyConfiguredName && configuredSource !== "generated")
     return { name: legacyConfiguredName, source: "manual" };
 
   const command = commandBasename(input.currentCommand);
+  const title = meaningfulPaneTitle(input.title, command, input.hostName);
+  if (title) return { name: title, source: "title" };
+  if (reportedName) return { name: reportedName, source: "agent" };
+  if (configuredName && configuredSource === "agent")
+    return { name: configuredName, source: "agent" };
   if (command && !GENERIC_SHELLS.has(command.toLowerCase()))
     return { name: command, source: "process" };
-
-  const title = meaningfulTitle(input.title, command, input.hostName);
-  if (title) return { name: title, source: "title" };
 
   return {
     name: configuredName && configuredSource === "generated" ? configuredName : generatedName,

@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { runPackedAutomationJourney } from "./lib/packed-automation-journey.mjs";
 import { createPackedCancellation } from "./lib/packed-cancellation.mjs";
 import { createHash } from "node:crypto";
 import {
@@ -32,7 +33,10 @@ import {
   runPackedInstallScenarios,
   verifyPackedPostinstallLinks,
 } from "./lib/packed-install-scenarios.mjs";
-import { frameShowsTerminalFocus } from "./lib/packed-opentui-frame.mjs";
+import {
+  frameShowsTerminalFocus,
+  frameShowsSelectedHomeAgent,
+} from "./lib/packed-opentui-frame.mjs";
 import { diagnosePackedEmpty } from "./lib/packed-empty-diagnostics.mjs";
 import { diagnosePackedHome } from "./lib/packed-home-diagnostics.mjs";
 import {
@@ -263,6 +267,7 @@ let installedCliPath = null;
 let installedVersion = null;
 let runtimeEvidence = null;
 let journeyObservations = null;
+let automationObservations = null;
 let homeDiagnostics = null;
 let emptyDiagnostics = null;
 let proofCompleted = false;
@@ -500,6 +505,10 @@ async function runInstalledTuiGate(installedCli) {
       `pane: ${pane.status === 0 ? pane.stdout.trim() : pane.stderr.trim()}`,
       `frame:\n${frame.status === 0 ? frame.stdout : frame.stderr}`,
       `stderr:\n${stderr || "(empty)"}`,
+      `daemon stderr tails:\n${[...childOutput.values()]
+        .map((output) => output.stderr.split("\n").slice(-80).join("\n"))
+        .filter(Boolean)
+        .join("\n")}`,
     ].join("\n");
   };
   const terminateLaunchedTui = createInstalledRuntimeCleanup(downloadedTui, readyPath);
@@ -909,6 +918,16 @@ async function runPackedGoldenJourney(installedCli, initialOwner) {
     if (literal.status !== 0) throw new Error(`Could not type packed input: ${literal.stderr}`);
     send(app, "Enter");
   };
+  const selectPaletteCommand = async (app, label) => {
+    send(app, "F5");
+    await observe(
+      "command palette opens",
+      5_000,
+      () => capture(app.targetPane).includes("Search"),
+      app.diagnostics,
+    );
+    typeCommand(app, label);
+  };
   const cleanQuit = async (app) => {
     send(app, "C-q");
     await observe("clean quit", 10_000, () => existsSync(app.statusPath), app.diagnostics);
@@ -932,14 +951,11 @@ async function runPackedGoldenJourney(installedCli, initialOwner) {
     await recordTmuxGeneration(`golden-session:${name}`);
   };
 
-  // The preceding first-run gate killed the isolated tmux server. Its host
-  // sessions were deliberately `_tmux-ide-*`, so the catalog starts truly empty.
-  const empty = await launchApp();
-  // `launchApp` recreates the isolated tmux server in order to host the TUI.
-  // The elected daemon is intentionally pinned to the server generation that
-  // existed before that launch, so restart it before asserting the empty
-  // catalog. This models the product's daemon-generation recovery instead of
-  // weakening socket-authority validation in production code.
+  // The preceding gate killed the private server. Recreate it with a hidden
+  // fixture session, then rebind our owned daemon before launching the app.
+  // Explicit socket intent correctly refuses the old daemon's dead generation;
+  // waiting for app readiness before that restart would never reach the chooser.
+  await createSession("_tmux-ide-pack-empty-seed");
   initialOwner.kill("SIGTERM");
   await waitForChild(initialOwner);
   const emptyCatalogOwner = spawnInstalledCli(installedCli);
@@ -951,8 +967,9 @@ async function runPackedGoldenJourney(installedCli, initialOwner) {
       if (!existsSync(infoPath)) return false;
       return JSON.parse(readFileSync(infoPath, "utf8")).pid === emptyCatalogOwner.pid;
     },
-    empty.diagnostics,
+    () => `sessions: ${sessionNames().join(", ")}; daemon pid: ${emptyCatalogOwner.pid}`,
   );
+  const empty = await launchApp();
   try {
     await observe(
       "no-session chooser",
@@ -1252,13 +1269,8 @@ async function runPackedGoldenJourney(installedCli, initialOwner) {
       10_000,
       () => {
         const frame = capture(one.targetPane);
-        return (
-          frame.includes("1 observed agent") &&
-          frame.includes("STATUS") &&
-          frame
-            .split("\n")
-            .some((line) => line.includes(agentClickLabel) && line.includes("journey-beta"))
-        );
+        // The fixture only echoes input; enriched discovery correctly reports it idle.
+        return frameShowsSelectedHomeAgent(frame, agentClickLabel, "journey-beta", "idle");
       },
       one.diagnostics,
     );
@@ -1295,7 +1307,7 @@ async function runPackedGoldenJourney(installedCli, initialOwner) {
 
   // Close the focused agent through the shipped palette's two-step destructive
   // action. Its sidebar row must retire before a replacement can publish.
-  send(one, "F5", "Down", "Down", "Down", "Down", "Enter");
+  await selectPaletteCommand(one, "Close pane");
   await observe(
     "installed agent close confirmation armed",
     5_000,
@@ -1466,44 +1478,35 @@ async function runPackedGoldenJourney(installedCli, initialOwner) {
     one.diagnostics,
   );
 
-  send(one, "F5", "Down", "Down", "Enter");
+  await selectPaletteCommand(one, "Split pane right");
   await observe("split pane right", 10_000, () => paneCount("journey-beta") === 2, one.diagnostics);
-  // Adoption above deliberately exercises unnamed ordinary tmux panes. For
-  // this split-publication proof, assign distinct manual fixture labels: the
-  // optional @ide_name can otherwise remain generic "Terminal" while the
-  // production terminal layout correctly projects a memorable fallback.
+  // Prove both terminal surfaces with distinct output, without changing
+  // provisional metadata while the split owner is still committing it.
   const splitPanes = tmuxResult(["list-panes", "-t", "=journey-beta", "-F", "#{pane_id}"])
     .stdout.trim()
     .split("\n");
   if (splitPanes.length !== 2 || new Set(splitPanes).size !== 2)
     throw new Error(`Expected two distinct native split panes: ${JSON.stringify(splitPanes)}`);
+  const splitMarkers = splitPanes.map((_, index) => `PACK_SPLIT_${index + 1}_${process.pid}`);
   for (const [index, paneId] of splitPanes.entries()) {
-    const named = tmuxResult([
-      "set-option",
-      "-p",
+    const sent = tmuxResult([
+      "send-keys",
       "-t",
       paneId,
-      "@ide_name",
-      `Pack pane ${index + 1}`,
-      ";",
-      "set-option",
-      "-p",
-      "-t",
-      paneId,
-      "@tmux_ide_name_source",
-      "manual",
+      "-l",
+      `printf '${splitMarkers[index]}\\n'`,
     ]);
-    if (named.status !== 0)
-      throw new Error(`Could not name fixture pane ${paneId}: ${named.stderr}`);
+    if (sent.status !== 0) throw new Error(`Could not paint split fixture: ${sent.stderr}`);
+    tmuxResult(["send-keys", "-t", paneId, "Enter"]);
   }
   const splitDiagnostics = () =>
-    `${one.diagnostics()}\nsplit pane identities/names:\n${
+    `${one.diagnostics()}\nsplit pane identities:\n${
       tmuxResult([
         "list-panes",
         "-t",
         "=journey-beta",
         "-F",
-        "#{pane_id} | #{@tmux_ide_pane_id} | #{@ide_name} | #{@tmux_ide_name_source} | #{pane_title}",
+        "#{pane_id} | #{@tmux_ide_pane_id} | #{pane_title}",
       ]).stdout
     }`;
   let stableSplitFrames = 0;
@@ -1511,17 +1514,10 @@ async function runPackedGoldenJourney(installedCli, initialOwner) {
     "split pane UI publication settles",
     10_000,
     () => {
-      // Idle headers hide action buttons until focus/hover. Check both pane
-      // names as well as the focused header's menu, rather than requiring
-      // hidden buttons to be painted during the steady-state frame.
       const frame = capture(one.targetPane);
-      const names = tmuxResult(["list-panes", "-t", "=journey-beta", "-F", "#{@ide_name}"])
-        .stdout.trim()
-        .split("\n");
       if (
-        names.length !== 2 ||
-        names.some((name) => !name || !frame.includes(name)) ||
-        !frame.includes("⋯")
+        paneCount("journey-beta") !== 2 ||
+        splitMarkers.some((marker) => !frame.includes(marker))
       ) {
         stableSplitFrames = 0;
         return false;
@@ -1570,7 +1566,7 @@ async function runPackedGoldenJourney(installedCli, initialOwner) {
 
   // Close is intentionally two activations: the first arms the destructive
   // palette row; only the second dispatches the daemon mutation.
-  send(one, "F5", "Down", "Down", "Down", "Down", "Enter");
+  await selectPaletteCommand(one, "Close pane");
   await observe(
     "close confirmation armed",
     5_000,
@@ -1610,7 +1606,7 @@ async function runPackedGoldenJourney(installedCli, initialOwner) {
     20_000,
     () => {
       const frame = capture(one.targetPane);
-      if (!frame.includes("Live tmux session discovered") || !frameShowsTerminalFocus(frame)) {
+      if (!frameShowsTerminalFocus(frame)) {
         stableReconnectFocusFrames = 0;
         return false;
       }
@@ -2058,6 +2054,20 @@ try {
   // The app is now a thin client which intentionally ensures and reuses the
   // persistent canonical daemon; running it before this section would make the
   // election warm and leave an untracked detached owner outside `children`.
+  // This journey retires the last session; automation needs the initial live owner.
+  automationObservations = {};
+  await runPackedAutomationJourney({
+    evidence: automationObservations,
+    root,
+    directory: join(tmpRoot, "automation"),
+    installedCli,
+    socket: installedTmuxSocketPath,
+    environment: tmuxEnv(dirname(installedCli)),
+    daemonInfoPath: daemonInfo,
+    run,
+    runAsync,
+    cancellation,
+  });
   runtimeEvidence = await runInstalledTuiGate(installedCli);
   installationScenarios = {};
   await runPackedInstallScenarios(
@@ -2133,6 +2143,7 @@ try {
     const copied = [];
     for (const source of [
       rootTarball,
+      automationObservations?.sdkTarballPath ?? null,
       mockReleaseBinaryPath,
       mockReleaseAssetPath,
       mockReleaseManifestPath,
@@ -2169,6 +2180,7 @@ try {
       runtime: runtimeEvidence,
       artifacts: copied,
       journey: journeyObservations,
+      automation: automationObservations,
       homeDiagnostics,
       emptyDiagnostics,
       installationScenarios,

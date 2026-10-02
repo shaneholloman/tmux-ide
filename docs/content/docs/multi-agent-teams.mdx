@@ -14,6 +14,49 @@ Because every agent is just a process in a tmux pane, the coordination layer is
 integration hooks); any other agent either self-reports with a one-line pane
 option or is recognized by the fallback detector.
 
+## Named groups in Home and the sidebar
+
+A team is a presentation group of existing tmux panes. It can contain Claude,
+Codex, other agents, and supporting terminals. Grouping does not start an
+orchestrator or change how a harness manages its own teammates.
+
+Assign existing panes on the same tmux server to a named group:
+
+```bash
+tmux-ide team assign %2 "Release crew" --json
+tmux-ide team assign %5 "Release crew" --json
+tmux-ide team unassign %5 --json
+```
+
+Use `--socket-name NAME` or `--socket-path /absolute/socket` to select another
+server explicitly. Run these commands on the machine that owns the panes.
+The same team name deliberately selects the same explicit group on that server;
+equal names on different machines or servers stay separate. These commands
+require exact pane IDs and do not send terminal input.
+
+Home and the sidebar keep members together and display their team alongside the
+existing machine/session context. Home search also matches team names. A manual
+assignment takes precedence over discovered grouping. Removing it allows native
+team discovery to apply again. Member names still use the shared name resolver,
+including any manual pane-name override.
+
+Assignments are pane-local: they survive moving a pane between windows or
+sessions and restarting the daemon. Replacing the pane process clears the
+assignment from the displayed inventory; assign the new process explicitly.
+Assignments do not restore deleted panes or join groups across machines.
+
+### Native Claude teams
+
+For Claude Code teammates running in their own tmux panes, tmux-ide can discover
+the member name and team through a read-only compatibility adapter. A match
+requires both native team metadata and the live Claude process in that pane.
+Missing or changed metadata falls back to normal pane naming and discovery.
+
+Claude owns team creation, tasks, messaging, and shutdown. tmux-ide does not edit
+Claude's team files. In-process teammates do not have separate panes and are not
+shown as separate terminals. A lead recorded only as the logical `leader` is not
+automatically associated with a pane; use explicit grouping when needed.
+
 ## A mixed fleet
 
 ```

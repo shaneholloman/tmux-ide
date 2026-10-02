@@ -1,7 +1,10 @@
+import { CHROME_ACTIONS } from "./application-action-descriptions.ts";
+import type { TmuxServerScope } from "@tmux-ide/contracts";
 import { fuzzyTermsMatch as commandSearchMatch } from "../../team/fuzzy.ts";
 export { fuzzyTermsMatch as commandSearchMatch } from "../../team/fuzzy.ts";
 import { PANE_ACTION_MENU_ITEMS } from "./pane-action-menu-model.ts";
 export interface FleetPaletteTarget {
+  readonly server?: TmuxServerScope;
   readonly machineId: string;
   readonly liveSessionId: string;
   readonly hostLabel: string;
@@ -35,10 +38,17 @@ export interface ApplicationMachinePaletteCommand {
 }
 
 export type ApplicationPaletteCommand =
+  | "hide-sidebar"
+  | "show-sidebar"
+  | "switch-session"
+  | "help"
+  | "shortcuts"
+  | "whats-new"
   | "home"
   | "terminals"
   | "appearance"
   | "zoom-pane"
+  | "new-agent"
   | "new-window"
   | "split-right"
   | "split-down"
@@ -47,12 +57,52 @@ export type ApplicationPaletteCommand =
   | ApplicationAgentPaletteCommand
   | ApplicationSessionPaletteCommand;
 
+export const PALETTE_REFERENCE_COMMANDS = {
+  shortcuts: { label: "Keyboard shortcuts", shortcut: "Ctrl+K", key: "k", page: "shortcuts" },
+  "whats-new": { label: "What's new", shortcut: "Ctrl+B", key: "b", page: "changes" },
+} as const;
+
 /** Presentation only: execution remains in the existing application owners. */
-export function applicationCommandDescription(command: ApplicationPaletteCommand) {
+export function applicationCommandDescription(command: ApplicationPaletteCommand): {
+  id: string;
+  label: string;
+  detail: string;
+  shortcut?: string;
+} {
+  if (command === "new-agent")
+    return {
+      id: command,
+      label: "New agent…",
+      detail: "Named Claude or Codex agent in this workspace",
+    };
+  if (command === "help")
+    return { id: command, label: "Using tmux-ide", detail: "Help and getting started" };
+  if (command === "hide-sidebar" || command === "show-sidebar")
+    return {
+      id: command,
+      label: command === "hide-sidebar" ? "Hide sidebar" : "Show sidebar",
+      detail: "Terminal layout",
+      shortcut: CHROME_ACTIONS.sidebar.keys,
+    };
+  if (command === "switch-session")
+    return {
+      id: command,
+      label: "Switch session",
+      shortcut: CHROME_ACTIONS.sessions.keys,
+      detail: "Sessions across machines",
+    };
+  if (command === "shortcuts" || command === "whats-new")
+    return { id: command, ...PALETTE_REFERENCE_COMMANDS[command], detail: "Help and reference" };
   if (typeof command === "object" && command.kind === "open-machine")
     return {
-      id: JSON.stringify([command.kind, command.fleet.machineId]),
-      label: `Machine · ${command.label}`,
+      id: JSON.stringify([
+        command.kind,
+        command.fleet.machineId,
+        ...(command.fleet.server
+          ? [command.fleet.server.serverId, command.fleet.server.generation]
+          : []),
+      ]),
+      label: `${command.fleet.server ? "Server" : "Machine"} · ${command.label}`,
       detail: command.fleet.disabled ? "Unavailable" : "Browse sessions or create on this host",
     };
   if (typeof command === "object") {
@@ -63,6 +113,9 @@ export function applicationCommandDescription(command: ApplicationPaletteCommand
           ? [
               command.kind,
               command.fleet.machineId,
+              ...(command.fleet.server
+                ? [command.fleet.server.serverId, command.fleet.server.generation]
+                : []),
               command.fleet.liveSessionId,
               session ? null : command.paneId,
             ]
@@ -90,11 +143,13 @@ export function applicationCommandDescription(command: ApplicationPaletteCommand
         : command === "zoom-pane"
           ? "Zoom / unzoom pane"
           : undefined) ??
-      (command === "home"
-        ? "F1 Home"
+      (command === "home" ? "Home" : command === "terminals" ? "Terminals" : "New terminal window"),
+    shortcut:
+      command === "home"
+        ? CHROME_ACTIONS.home.keys
         : command === "terminals"
-          ? "F2 Terminals"
-          : "New terminal window"),
+          ? CHROME_ACTIONS.terminals.keys
+          : undefined,
     detail:
       command === "home"
         ? "sessions and agent state"
@@ -110,8 +165,8 @@ export function filterApplicationCommands(
 ) {
   return commands
     .map((command, index) => {
-      const { label, detail } = applicationCommandDescription(command);
-      const score = commandSearchMatch(`${label} ${detail}`, query)?.score;
+      const { label, detail, shortcut } = applicationCommandDescription(command);
+      const score = commandSearchMatch(`${label} ${detail} ${shortcut ?? ""}`, query)?.score;
       const fleet = typeof command === "object" ? command.fleet : undefined;
       return {
         command,

@@ -14,22 +14,40 @@
   },
   "main": "src/index.ts",
   "files": [
-    "src",
-    "README.md"
+    "dist",
+    "README.md",
+    "LICENSE"
   ],
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "main": "dist/index.js",
+    "types": "dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      }
+    }
   },
   "scripts": {
     "lint": "eslint src",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "build": "node scripts/build.mjs",
+    "prepack": "pnpm build",
+    "test:pack": "node scripts/pack-check.mjs"
   },
   "dependencies": {
-    "@tmux-ide/contracts": "workspace:*"
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "typescript": "^5.9.3",
-    "vitest": "^4.1.6"
-  }
+    "vitest": "^4.1.6",
+    "@tmux-ide/daemon-client": "workspace:*",
+    "@tmux-ide/contracts": "workspace:*",
+    "esbuild": "0.28.2",
+    "rollup": "4.63.5",
+    "rollup-plugin-dts": "6.5.1"
+  },
+  "types": "src/index.ts"
 }

@@ -304,9 +304,16 @@ describe("ShellChrome OpenTUI renderer", () => {
     const spans = setup!.captureSpans().lines.flatMap((line) => line.spans);
     expectFrameBounds(harness.frame(), width, height);
     expect(stableFrame(harness.frame())).toContain("workspace");
-    expect(spans.some((span) => colorKey(span.bg) === colorKey(theme.roles.surfaces.header))).toBe(
-      true,
-    );
+    // Header, sidebar and footer share one neutral frame surface.
+    for (const y of [0, height - 1]) {
+      expect(
+        setup!
+          .captureSpans()
+          .lines[
+            y
+          ]!.spans.some((span) => colorKey(span.bg) === colorKey(theme.roles.surfaces.panel)),
+      ).toBe(true);
+    }
     expect(spans.some((span) => colorKey(span.bg) === colorKey(theme.roles.surfaces.panel))).toBe(
       true,
     );
@@ -323,9 +330,9 @@ describe("ShellChrome OpenTUI renderer", () => {
   });
 
   it.each([
-    [80, 24, ["web", "F5"], ["tmux-ide", "terminal", "Commands", "Claude Code"]],
-    [120, 40, ["web", "terminal", "F5 Commands"], ["tmux-ide", "Claude Code"]],
-    [200, 60, ["tmux-ide", "web", "terminal", "Claude Code", "F5 Commands"], []],
+    [80, 24, ["F6 Sessions", "F5 Commands"], ["web", "terminal", "Live", "Claude Code"]],
+    [120, 40, ["F6 Sessions", "F5 Commands"], ["web", "Claude Code", "terminal"]],
+    [200, 60, ["F6 Sessions", "F7 Attention", "F5 Commands"], ["web", "Claude Code", "terminal"]],
   ] as const)(
     "collapses contextual footer segments deliberately at %sx%s",
     async (width, height, visible, hidden) => {
@@ -399,14 +406,13 @@ describe("ShellChrome OpenTUI renderer", () => {
     await renderShell(120, 40);
     const theme = createSemanticThemeSnapshot({ mode: "dark" });
     const attentionPalette = shellVisualPalette(theme, { attention: true });
-    const contextPalette = shellVisualPalette(theme, { context: true });
     const selectedAttention = shellVisualPalette(theme, { selected: true, attention: true });
     const spans = setup!.captureSpans();
     const contextChip = spans.lines
       .flatMap((line) => line.spans)
       .find((span) => span.text.includes("⧉ web"));
     expect(contextChip).toBeDefined();
-    expect(colorKey(contextChip!.bg)).toBe(colorKey(contextPalette.bg));
+    expect(colorKey(contextChip!.bg)).toBe(colorKey(theme.roles.surfaces.panel));
     expect(colorKey(contextChip!.bg)).not.toBe(colorKey(theme.derived.attentionSurface));
 
     const tabAttentionMarker = spans.lines[0]!.spans.find((span) => span.text === "!");
@@ -448,12 +454,14 @@ describe("ShellChrome OpenTUI renderer", () => {
 
     setup = await renderForTest(() => <ThemeModeShell />, { width: 80, height: 4 });
     await setup.renderOnce();
-    const darkBg = setup.captureSpans().lines[0]!.spans.find((span) => span.text.includes("❯"))!.bg;
+    const darkBg = setup
+      .captureSpans()
+      .lines[0]!.spans.find((span) => span.text.includes("F2"))!.bg;
     source.emit("light");
     await setup.renderOnce();
     const lightBg = setup
       .captureSpans()
-      .lines[0]!.spans.find((span) => span.text.includes("❯"))!.bg;
+      .lines[0]!.spans.find((span) => span.text.includes("F2"))!.bg;
     expect(colorKey(lightBg)).not.toBe(colorKey(darkBg));
   });
 });
@@ -490,4 +498,95 @@ it("renders distinct DEV identities from launch metadata without changing keyboa
       else process.env[key] = previous[index];
     });
   }
+});
+
+it.each(["Home", "Terminals"])(
+  "shows actionable %s hints on the shared frame surface",
+  async (mode) => {
+    const theme = createSemanticThemeSnapshot({ mode: "light" });
+    setup = await renderForTest(
+      () => (
+        <ContextStatusBar
+          theme={theme}
+          layout={{
+            ...shellChromeLayout(80, 24, 0),
+            status: { x: 0, y: 23, width: 80, height: 1 },
+          }}
+          project="example"
+          session="example"
+          mode={mode}
+          notification="Live tmux session discovered"
+          help="F5 Commands"
+        />
+      ),
+      { width: 80, height: 1 },
+    );
+    await setup.renderOnce();
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain(mode === "Home" ? "↑↓ Select" : "F6 Sessions");
+    expect(frame).toContain(mode === "Home" ? "/ Search" : "F7 Attention");
+    expect(frame).toContain("F5 Commands");
+    if (mode === "Terminals") expect(frame).toContain("F10 Sidebar");
+    expect(frame).not.toContain("example");
+    expect(frame).not.toContain("Live");
+    const key = setup.captureSpans().lines[0]!.spans.find((span) => span.text.includes("F5"));
+    expect(colorKey(key!.fg)).toBe(colorKey(theme.roles.selection.selectionText));
+    expect(colorKey(key!.bg)).toBe(colorKey(theme.roles.selection.selection));
+  },
+);
+
+it("restores terminal shortcuts after the focused pane returns to live", async () => {
+  const [history, setHistory] = createSignal(true);
+  setup = await renderForTest(
+    () => (
+      <ContextStatusBar
+        theme={createSemanticThemeSnapshot({ mode: "dark" })}
+        layout={{ ...shellChromeLayout(80, 24, 0), status: { x: 0, y: 23, width: 80, height: 1 } }}
+        project="web"
+        session="main"
+        mode="Terminals"
+        notification={null}
+        scrollback={history()}
+        help="F5 Commands"
+      />
+    ),
+    { width: 80, height: 1 },
+  );
+  await setup.renderOnce();
+  expect(setup.captureCharFrame()).toContain("Esc Back to live");
+  expect(setup.captureCharFrame()).not.toContain("F6 Sessions");
+  setHistory(false);
+  await setup.renderOnce();
+  expect(setup.captureCharFrame()).toContain("F10 Sidebar");
+  expect(setup.captureCharFrame()).not.toContain("Back to live");
+});
+
+it("routes each footer button once without forwarding the click to the workspace", async () => {
+  const actions: string[] = [];
+  let backgroundClicks = 0;
+  setup = await renderForTest(
+    () => (
+      <box onMouseDown={() => backgroundClicks++}>
+        <ContextStatusBar
+          theme={createSemanticThemeSnapshot({ mode: "dark" })}
+          layout={{ ...shellChromeLayout(80, 24, 0), status: { x: 0, y: 0, width: 80, height: 1 } }}
+          project="web"
+          session="main"
+          mode="Terminals"
+          notification={null}
+          help="F5 Commands"
+          onFooterAction={(key) => actions.push(key)}
+          onHelp={() => actions.push("F5")}
+        />
+      </box>
+    ),
+    { width: 80, height: 1 },
+  );
+  await setup.renderOnce();
+  const frame = setup.captureCharFrame();
+  for (const key of ["F6", "F7", "F10", "F5"]) {
+    await setup.mockMouse.click(frame.indexOf(key), 0, MouseButtons.LEFT);
+  }
+  expect(actions).toEqual(["F6", "F7", "F10", "F5"]);
+  expect(backgroundClicks).toBe(0);
 });

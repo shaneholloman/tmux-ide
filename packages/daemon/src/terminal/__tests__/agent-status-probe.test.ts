@@ -1,3 +1,4 @@
+import { manualPaneTeamStamp } from "../attachments/manual-pane-team.ts";
 import { describe, expect, it } from "vitest";
 import type { AgentManifest } from "../../tui/detect/manifest.ts";
 import type { ProcEntry } from "../../tui/detect/process-tree.ts";
@@ -533,4 +534,117 @@ describe("createTmuxAgentStatusProbe", () => {
     expect(processReads).toBe(2);
     expect(captures).toEqual(["%3", "%4", "%3", "%4"]);
   });
+});
+it("uses native viewer capture without stock marker writes, preserving scrape cache", async () => {
+  let nativeCalls = 0,
+    stockCalls = 0;
+  const nativeIdentity = { serverEpoch: "11111111-1111-4111-8111-111111111111", paneBirthId: "7" };
+  const probe = createTmuxAgentStatusProbe({
+    run: async () => optionsLine("%3", { pid: "4242" }),
+    readProcessTable: async () => [],
+    manifests: MANIFESTS,
+    capture: async () => {
+      stockCalls++;
+      return "";
+    },
+    captureNative: async (pane) => {
+      nativeCalls++;
+      expect(pane.nativeIdentity).toEqual(nativeIdentity);
+      return { output: "PROMPT? waiting\n" };
+    },
+  });
+  const input = {
+    sessionId: "$1",
+    nowSec: NOW,
+    panes: [{ runtimePaneId: "%3", currentCommand: "claude", title: "Agent", nativeIdentity }],
+  };
+  expect((await probe.probe(input)).get("%3")?.agentScrapeState).toBe("blocked");
+  await probe.probe({ ...input, nowSec: NOW + 1 });
+  expect(nativeCalls).toBe(1);
+  expect(stockCalls).toBe(0);
+});
+it("falls back only for predispatch native unavailability and never on capture failure", async () => {
+  let stockCalls = 0,
+    failed = false;
+  const probe = createTmuxAgentStatusProbe({
+    run: async () => optionsLine("%3", { pid: "4242" }),
+    readProcessTable: async () => [],
+    manifests: MANIFESTS,
+    capture: async () => {
+      stockCalls++;
+      return "PROMPT?";
+    },
+    captureNative: async () => {
+      if (failed) throw Error("attempted native failure");
+      return null;
+    },
+  });
+  const input = {
+    sessionId: "$1",
+    nowSec: NOW,
+    panes: [{ runtimePaneId: "%3", currentCommand: "claude", title: "Agent" }],
+  };
+  await probe.probe(input);
+  expect(stockCalls).toBe(1);
+  failed = true;
+  await expect(probe.probe({ ...input, nowSec: NOW + 10 })).rejects.toThrow(
+    "attempted native failure",
+  );
+  expect(stockCalls).toBe(1);
+});
+
+it("refreshes team naming independently from status and removes absent members", async () => {
+  let present = true;
+  const probe = createTmuxAgentStatusProbe({
+    run: async () => optionsLine("%3", { state: `working:${NOW}`, pid: "4242" }),
+    readTeamNames: async (panes) => {
+      expect(panes).toEqual([{ runtimePaneId: "%3", pid: 4242 }]);
+      return new Map(present ? [["%3", "researcher"]] : []);
+    },
+    manifests: MANIFESTS,
+  });
+  const input = {
+    sessionId: "$1",
+    panes: [{ runtimePaneId: "%3", currentCommand: "claude", title: "Working" }],
+    nowSec: NOW,
+  };
+  expect((await probe.probe(input)).get("%3")?.teamMemberName).toBe("researcher");
+  present = false;
+  expect((await probe.probe(input)).get("%3")?.teamMemberName).toBeUndefined();
+});
+
+it("prefers explicit grouping, retains native member naming, and clears stale membership", async () => {
+  let stamp: string | undefined = manualPaneTeamStamp("Mixed crew", 4242);
+  let present = true;
+  const nativeTeam = {
+    id: "team.1234567890123456",
+    name: "Claude team",
+    source: "claude-code" as const,
+  };
+  const probe = createTmuxAgentStatusProbe({
+    run: async () =>
+      optionsLine("%3", { state: `working:${NOW}`, pid: "4242" }).replace(
+        AGENT_LINE_SENTINEL,
+        `${stamp ?? ""}${AGENT_FIELD_SEPARATOR}${AGENT_LINE_SENTINEL}`,
+      ),
+    readTeamMemberships: async () =>
+      new Map(present ? [["%3", { name: "reader", team: nativeTeam }]] : []),
+    manifests: MANIFESTS,
+  });
+  const input = {
+    sessionId: "$1",
+    panes: [{ runtimePaneId: "%3", currentCommand: "claude", title: "Busy" }],
+    nowSec: NOW,
+  };
+  expect((await probe.probe(input)).get("%3")).toMatchObject({
+    teamMemberName: "reader",
+    team: { name: "Mixed crew", source: "manual" },
+    agentStateRaw: `working:${NOW}`,
+  });
+  stamp = undefined;
+  expect((await probe.probe(input)).get("%3")?.team).toEqual(nativeTeam);
+  present = false;
+  const gone = (await probe.probe(input)).get("%3");
+  expect(gone?.team).toBeUndefined();
+  expect(gone?.teamMemberName).toBeUndefined();
 });

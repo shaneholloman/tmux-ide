@@ -173,6 +173,25 @@ export class WorkspaceRegistry {
     return this.workspaces.some((w) => w.name === name);
   }
 
+  /** Whether this entry is discovered live state, never durable user intent. */
+  isVolatile(name: string): boolean {
+    return this.volatileNames.has(name);
+  }
+
+  /** Commit explicit user intent without replacing a discovered identity. */
+  persist(name: string): Workspace {
+    const workspace = this.get(name);
+    if (!workspace) throw new WorkspaceNotFoundError(name);
+    if (!this.volatileNames.delete(name)) return workspace;
+    try {
+      this.writeDisk();
+    } catch (error) {
+      this.volatileNames.add(name);
+      throw error;
+    }
+    return workspace;
+  }
+
   add(input: AddWorkspaceInput): Workspace {
     if (this.has(input.name)) {
       throw new WorkspaceAlreadyExistsError(input.name);

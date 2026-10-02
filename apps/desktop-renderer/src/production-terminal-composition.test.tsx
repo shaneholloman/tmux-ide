@@ -102,6 +102,8 @@ function shellInput(extraTerminalId?: string): ApplicationShellProjectionInputV2
             title: agent.name,
             kind: "agent" as const,
             active: false,
+            interactionEndpoint: null,
+            nativeIdentity: null,
             attachability: {
               status: "unavailable" as const,
               reason: "invalid-runtime-proof" as const,
@@ -123,6 +125,8 @@ function shellInput(extraTerminalId?: string): ApplicationShellProjectionInputV2
           title: "Project shell",
           kind: "terminal",
           active: true,
+          interactionEndpoint: null,
+          nativeIdentity: null,
           attachability: { status: "available", semanticPaneId: "pane.shell" },
         },
         {
@@ -130,6 +134,8 @@ function shellInput(extraTerminalId?: string): ApplicationShellProjectionInputV2
           title: "Logs shell",
           kind: "terminal",
           active: false,
+          interactionEndpoint: null,
+          nativeIdentity: null,
           attachability: { status: "available", semanticPaneId: "pane.logs" },
         },
         {
@@ -137,6 +143,8 @@ function shellInput(extraTerminalId?: string): ApplicationShellProjectionInputV2
           title: "Unavailable shell",
           kind: "terminal",
           active: false,
+          interactionEndpoint: null,
+          nativeIdentity: null,
           attachability: { status: "unavailable", reason: "invalid-runtime-proof" },
         },
         ...(extraTerminalId
@@ -146,6 +154,8 @@ function shellInput(extraTerminalId?: string): ApplicationShellProjectionInputV2
                 title: "Release shell",
                 kind: "terminal" as const,
                 active: false,
+                interactionEndpoint: null,
+                nativeIdentity: null,
                 attachability: {
                   status: "available" as const,
                   semanticPaneId: extraTerminalId,

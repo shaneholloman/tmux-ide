@@ -9,7 +9,7 @@ names, and direct controls. tmux remains the authority for processes, PTYs,
 topology, persistence, and SSH.
 
 ```bash
-npm install -g tmux-ide@beta
+curl -fsSL https://tmux.thijsverreck.com/install.sh | sh
 tmux-ide app
 ```
 
@@ -26,7 +26,7 @@ they are present in `.tmux-ide/workspace.yml`:
 - **Commands** exposes contextual actions and settings.
 - Mouse and keyboard control pane focus, windows, splitting, resizing,
   renaming, creation, and confirmed closing.
-- `tmux-ide web` is intentionally unavailable in this beta; the canonical
+- `tmux-ide web` is intentionally unavailable in this release; the canonical
   daemon API remains renderer-neutral.
 
 ## Why tmux stays underneath
@@ -45,5 +45,5 @@ flowchart LR
 ```
 
 Continue with [Getting started](/docs/getting-started) or read the
-[2.9 release cut](/docs/release-2-9-0-beta-1). The
+[2.9 release cut](/docs/release-2-9-0). The
 [OpenTUI demo](/docs/demo) is generated from the production component tree.

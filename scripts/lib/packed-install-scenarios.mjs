@@ -327,17 +327,21 @@ export async function runPackedInstallScenarios(options, receipt) {
     const which = success(command("sh", ["-c", "command -v which"])).stdout.trim();
     symlinkSync(which, join(emptyPath, "which"));
     await caseRun("missing-tmux-doctor", async () => {
-      const raw = command(node, [cli, "doctor", "--json"], { PATH: emptyPath });
+      // An explicit unavailable binary must fail even when the package bundles tmux.
+      const raw = command(node, [cli, "doctor", "--json"], {
+        PATH: emptyPath,
+        TMUX_IDE_TMUX_BIN: join(emptyPath, "missing-tmux"),
+      });
       assert.equal(raw.error, undefined);
       assert.equal(raw.signal, null);
       const diagnostic = JSON.parse(raw.stdout);
       assert.equal(diagnostic.ok, false);
-      const row = diagnostic.checks.find((item) => item.label === "tmux installed");
+      const row = diagnostic.checks.find((item) => item.label === "tmux version ≥ 3.7");
       assert.equal(row?.pass, false);
-      assert.ok(row.detail.includes("not found on PATH"));
+      assert.ok(row.detail.includes("tmux_executable_unavailable"));
       assert.equal(existsSync(info), false);
       return {
-        expectedFailure: "tmux-not-on-path",
+        expectedFailure: "configured-tmux-unavailable",
         daemonStarted: false,
         exitCode: raw.status,
         check: { label: row.label, pass: row.pass },

@@ -152,7 +152,8 @@ try {
       entry.audit = audit;
       entry.cleanup = proof.cleanup;
       entry.artifactsVerified = 0;
-      if (!Array.isArray(proof.artifacts) || proof.artifacts.length !== 5)
+      // Package, SDK, TUI executable/archive/checksum, and installed CLI.
+      if (!Array.isArray(proof.artifacts) || proof.artifacts.length !== 6)
         throw new Error("artifact-inventory");
       for (const artifact of proof.artifacts) {
         if (basename(artifact.name) !== artifact.name) throw new Error("artifact-name");

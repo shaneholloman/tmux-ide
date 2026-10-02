@@ -1,16 +1,24 @@
+import { PANE_STREAM_PROTOCOL_VERSION } from "../packages/contracts/src/pane-stream.ts";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { openPaneStreamRuntimeClient } from "@tmux-ide/daemon-client/pane-stream-client";
-import type { PaneStreamServerFrame } from "@tmux-ide/contracts";
+import { openPaneStreamRuntimeClient } from "../packages/daemon-client/src/pane-stream-client.ts";
+import type { PaneStreamServerFrame } from "../packages/contracts/src/pane-stream.ts";
 
 import { createOpenTuiPaneStreamSocket } from "../packages/daemon/src/tui/mirror/open-tui-pane-stream-socket.ts";
 
 const workspaceName = required("TMUX_IDE_REFERENCE_WORKSPACE");
 const semanticPaneId = required("TMUX_IDE_REFERENCE_PANE");
 const daemon = JSON.parse(
-  readFileSync(join(process.env.HOME ?? "", ".tmux-ide", "daemon.json"), "utf8"),
+  readFileSync(
+    join(
+      process.env.TMUX_IDE_TESTDRIVE_CANONICAL_HOME?.trim() ||
+        join(process.env.HOME ?? "", ".tmux-ide"),
+      "daemon.json",
+    ),
+    "utf8",
+  ),
 ) as {
   bindHostname: string;
   port: number;
@@ -31,10 +39,11 @@ const client = await openPaneStreamRuntimeClient({
   ownerToken: daemon.authToken,
   daemonInstanceId: daemon.instanceId,
   origin: "tmux-ide://opentui",
+  requestInitialInputAuthority: false,
   hostClientId: `reference-bun:${process.pid}`,
   requestId: randomUUID(),
   stream: {
-    protocolVersion: 1,
+    protocolVersion: PANE_STREAM_PROTOCOL_VERSION,
     workspaceName,
     panes: [semanticPaneId],
     viewerMode: "read-only",
@@ -45,16 +54,28 @@ const client = await openPaneStreamRuntimeClient({
     },
   },
   createSocket: createOpenTuiPaneStreamSocket,
-  onNegotiated: (_pane, result) => resolveNegotiation(result),
+  onNegotiated: (pane, result) => {
+    if (pane === semanticPaneId) resolveNegotiation(result);
+  },
   onTerminalDelivery: () => undefined,
   onLayout: resolveLayout,
+  onLayoutSnapshot: (snapshot) => {
+    const requested = snapshot.layouts.find(({ panes }) =>
+      panes.some(({ pane }) => pane === semanticPaneId),
+    );
+    if (requested) resolveLayout(requested);
+  },
 });
+let timer: ReturnType<typeof setTimeout> | undefined;
 try {
   const [layoutFrame, negotiated] = await Promise.race([
     Promise.all([layout, negotiation]),
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error("Bun pane-stream live preflight timed out")), 2_000),
-    ),
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error("Bun pane-stream live preflight timed out")),
+        2_000,
+      );
+    }),
   ]);
   if (!negotiated.accepted) throw new Error("Bun pane-stream terminal delivery was rejected");
   if (!layoutFrame.panes.some(({ pane }) => pane === semanticPaneId)) {
@@ -64,6 +85,7 @@ try {
     `${JSON.stringify({ status: "passed", workspaceName, semanticPaneId, paneCount: layoutFrame.panes.length })}\n`,
   );
 } finally {
+  clearTimeout(timer);
   client.close();
 }
 

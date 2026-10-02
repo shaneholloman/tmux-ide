@@ -1,7 +1,16 @@
+import { cleanupOwnedSshRegistry } from "../../../../scripts/lib/owned-ssh-registry-cleanup.ts";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -126,3 +135,98 @@ it("does not let a retained reset receipt reclaim another store after ownership 
     true,
   );
 });
+
+it.each([false, true])(
+  "resets only admitted default registration metadata (empty=%s)",
+  async (empty) => {
+    const { instances } = await fixture();
+    const instance = instances[0]!;
+    claimDevelopmentRuntimeOwner(instance, (await readDevelopmentIdentity(instance))!);
+    writeDevelopmentRecord(join(instance.runtimeDir, "tmux-servers.json"), {
+      version: 1,
+      servers: empty
+        ? []
+        : [
+            {
+              serverId: "tmux-server.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              label: "Default",
+              selector: { kind: "path", path: join(instance.runtimeDir, "tmux.sock") },
+            },
+          ],
+    });
+    await expect(resetDevelopmentInstance(instance, { yes: true })).resolves.toMatchObject({
+      status: "reset",
+    });
+    expect(existsSync(instance.runtimeDir)).toBe(false);
+    expect(existsSync(join(instance.root, "reset.json"))).toBe(true);
+  },
+);
+it.each(["foreign", "malformed", "symlink", "unrelated"])(
+  "preserves unverified registration state: %s",
+  async (kind) => {
+    const { root, instances } = await fixture();
+    const instance = instances[0]!;
+    claimDevelopmentRuntimeOwner(instance, (await readDevelopmentIdentity(instance))!);
+    const path = join(instance.runtimeDir, "tmux-servers.json");
+    const value = {
+      version: 1,
+      servers: [
+        {
+          serverId: "tmux-server.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          label: "Default",
+          selector: {
+            kind: "path",
+            path:
+              kind === "foreign" ? "/foreign/tmux.sock" : join(instance.runtimeDir, "tmux.sock"),
+          },
+        },
+      ],
+    };
+    if (kind === "symlink") {
+      const target = join(root, "foreign.json");
+      writeDevelopmentRecord(target, value);
+      symlinkSync(target, path);
+    } else if (kind === "malformed") writeFileSync(path, "not json", { mode: 0o600 });
+    else writeDevelopmentRecord(path, value);
+    if (kind === "unrelated") writeFileSync(join(instance.runtimeDir, "keep"), "untouched");
+    const before = readFileSync(path);
+    await expect(resetDevelopmentInstance(instance, { yes: true })).rejects.toThrow();
+    expect(readFileSync(path)).toEqual(before);
+    expect(existsSync(join(instance.runtimeDir, "development-owner.json"))).toBe(true);
+    if (kind === "unrelated")
+      expect(readFileSync(join(instance.runtimeDir, "keep"), "utf8")).toBe("untouched");
+  },
+);
+
+it.each(["empty", "populated", "unknown", "symlink"])(
+  "fixture secondary registry cleanup: %s",
+  async (kind) => {
+    const { instances, root } = await fixture();
+    const instance = instances[0]!;
+    claimDevelopmentRuntimeOwner(instance, (await readDevelopmentIdentity(instance))!);
+    const id = "tmux-server." + "a".repeat(32);
+    const directory = join(instance.runtimeDir, "server-owners", id);
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const path = join(directory, "workspaces.json");
+    const value = { version: 1, workspaces: kind === "populated" ? [{ name: "preserve" }] : [] };
+    if (kind === "symlink") {
+      const target = join(root, "registry");
+      writeDevelopmentRecord(target, value);
+      symlinkSync(target, path);
+    } else writeDevelopmentRecord(path, value);
+    if (kind === "unknown") writeFileSync(join(directory, "unknown"), "keep");
+    if (kind === "empty") {
+      expect(await cleanupOwnedSshRegistry(instance, id)).toMatchObject({
+        createdServerId: id,
+        bytes: 29,
+      });
+      expect(existsSync(join(instance.runtimeDir, "server-owners"))).toBe(false);
+      await expect(resetDevelopmentInstance(instance, { yes: true })).resolves.toMatchObject({
+        status: "reset",
+      });
+    } else {
+      await expect(cleanupOwnedSshRegistry(instance, id)).rejects.toThrow();
+      expect(existsSync(path)).toBe(true);
+    }
+  },
+);

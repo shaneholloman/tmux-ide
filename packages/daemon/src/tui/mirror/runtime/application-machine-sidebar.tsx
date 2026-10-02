@@ -1,12 +1,20 @@
-import { fleetHostColor, summarizeFleetActivity } from "./fleet-presentation.ts";
-import { TuiButton } from "../ui/button.tsx";
+import { groupApplicationTeamRows } from "./application-team-groups.ts";
+import type { PaneTeamMembership } from "@tmux-ide/contracts";
+import type { NativePaneIdentity } from "@tmux-ide/contracts";
+import type { PaneInteractionEndpoint } from "../ui/pane-interaction-presentation.ts";
+import type { InteractionPaneEndpoint } from "@tmux-ide/contracts";
+import type { PaneInteractionEvent } from "../ui/pane-interaction-presentation.ts";
+import { CHROME_ACTIONS, SIDEBAR_ACTIONS } from "../workspace/application-action-descriptions.ts";
+import { AgentRow } from "../ui/agent-row.tsx";
+import type { TmuxServerDescriptor, TmuxServerScope } from "@tmux-ide/contracts";
+import { fleetHostColor } from "./fleet-presentation.ts";
+import type { SessionRowModel } from "../ui/session-row.tsx";
 /* @jsxImportSource @opentui/solid */
 import {
   fleetConnectionMessage,
   type FleetConnectionStatus,
 } from "@tmux-ide/daemon-client/fleet-connection-status";
 import type { AgentActivity } from "@tmux-ide/contracts";
-import { terminalAgentStatusLabel } from "./application-terminal-workspace-policy.ts";
 import type { ScrollBoxRenderable } from "@opentui/core";
 import {
   For,
@@ -17,13 +25,19 @@ import {
   type Accessor,
   type JSX,
 } from "solid-js";
-import { clipTerminal, friendlySessionLabel } from "../terminal-text.ts";
+import { friendlySessionLabel } from "../terminal-text.ts";
 import type { SemanticThemeSnapshot } from "../theme.ts";
+import { KeyHint } from "../ui/key-hint.tsx";
 import { NavigationRow } from "../ui/navigation-row.tsx";
 import { Surface } from "../ui/surface.tsx";
 import { useKeyboardRoute } from "../ui/keyboard-router.tsx";
 
 export interface ApplicationMachineAgent {
+  readonly team?: PaneTeamMembership;
+  readonly nativeIdentity: NativePaneIdentity | null;
+  readonly interactionEndpoint: Extract<InteractionPaneEndpoint, { kind: "pane" }> | null;
+  readonly daemonInstanceId?: string;
+  readonly server?: TmuxServerScope;
   readonly id: string;
   readonly name: string;
   readonly sessionName: string;
@@ -41,8 +55,11 @@ export interface ApplicationMachineGroup {
   readonly id: string;
   readonly label: string;
   readonly state: "ready" | "connecting" | "disconnected";
+  readonly servers?: readonly TmuxServerDescriptor[];
   readonly sessions: readonly {
     readonly id: string;
+    readonly server?: TmuxServerScope;
+    readonly serverLabel?: string;
     readonly name: string;
     readonly paneCount: number;
     readonly disabled?: boolean;
@@ -56,8 +73,15 @@ export interface ApplicationMachineSidebarModel {
   readonly onCollapse?: (key: string, enabled: boolean) => void;
   readonly activeMachineId: Accessor<string | null>;
   readonly activeSessionName: Accessor<string | null>;
+  readonly activeSessionKey?: Accessor<string | null>;
   readonly activePaneId?: Accessor<string | null>;
-  readonly onOpen: (machineId: string, sessionName: string, source: "keyboard" | "mouse") => void;
+  readonly onOpen: (
+    machineId: string,
+    sessionName: string,
+    source: "keyboard" | "mouse",
+    sessionKey?: string,
+  ) => void;
+  readonly onSelectServer?: (machineId: string, server: TmuxServerScope) => void;
   readonly onSelectMachine: (machineId: string, source: "keyboard" | "mouse") => void;
   readonly onOpenAgent?: (
     machineId: string,
@@ -65,15 +89,7 @@ export interface ApplicationMachineSidebarModel {
     paneId: string,
     source: "keyboard" | "mouse",
   ) => void;
-  readonly tabs?: Accessor<
-    readonly {
-      key: string;
-      label: string;
-      hostLabel: string;
-      active: boolean;
-      available: boolean;
-    }[]
-  >;
+  readonly tabs?: Accessor<readonly SessionRowModel[]>;
   readonly onOpenTab?: (key: string) => void;
   readonly onCloseTab?: (key: string) => void;
   readonly onOpenSwitcher?: () => void;
@@ -91,18 +107,23 @@ type Row = {
   group: ApplicationMachineGroup;
   session?: ApplicationMachineGroup["sessions"][number];
   agent?: ApplicationMachineAgent;
-  agentHeading?: boolean;
+  serverHeading?: string;
+  server?: TmuxServerDescriptor;
 };
 /** Pure machine navigation. All connection and session authority stays with the caller. */
 export function ApplicationMachineSidebar(props: {
+  readonly interactionForAgent?: (
+    agent: ApplicationMachineAgent,
+  ) => PaneInteractionEvent | undefined;
+  readonly paneName?: (endpoint: PaneInteractionEndpoint) => string | undefined;
   readonly model: ApplicationMachineSidebarModel;
   readonly width: number;
   readonly height: number;
   readonly theme: SemanticThemeSnapshot;
   readonly agents?: JSX.Element;
   readonly agentRows?: number;
+  readonly onHelp?: (source: "keyboard" | "mouse") => void;
 }) {
-  const [showHelp, setShowHelp] = createSignal(false);
   const [localFocused, setLocalFocused] = createSignal(false);
   const focused = () => props.model.focused?.() ?? localFocused();
   const [localCollapsed, setCollapsed] = createSignal<ReadonlySet<string>>(new Set());
@@ -117,16 +138,7 @@ export function ApplicationMachineSidebar(props: {
   const controlsHeight = () => (props.height >= 8 && controlGroup() ? 4 : 0);
   const searchHeight = () =>
     (props.model.onOpenSwitcher ? 1 : 0) + (props.model.onOpenAttention ? 1 : 0);
-  const tabHeight = () =>
-    Math.min(props.model.tabs?.().length ?? 0, Math.max(0, Math.floor(props.height / 3)));
-  const visibleTabs = () => {
-    const tabs = props.model.tabs?.() ?? [];
-    const active = tabs.findIndex((tab) => tab.active);
-    const start = Math.max(0, active - tabHeight() + 1);
-    return tabs.slice(start, start + tabHeight());
-  };
-  const helpHeight = () =>
-    showHelp() ? Math.min(5, Math.max(0, Math.floor(props.height / 3))) : 0;
+
   const machineHeight = () =>
     Math.max(
       0,
@@ -135,22 +147,43 @@ export function ApplicationMachineSidebar(props: {
         (props.model.onAddMachine ? 1 : 0) -
         agentHeight() -
         controlsHeight() -
-        searchHeight() -
-        helpHeight() -
-        tabHeight(),
+        searchHeight(),
     );
   const active = (row: Row) =>
     row.group.id === props.model.activeMachineId() &&
     (row.agent
       ? row.group.state === "ready" &&
+        row.group.agentsAvailable !== false &&
         !row.agent.disabled &&
         row.agent.sessionName === props.model.activeSessionName() &&
+        (!props.model.activeSessionKey ||
+          row.group.sessions.some(
+            (session) =>
+              session.id === props.model.activeSessionKey?.() &&
+              session.server?.serverId === row.agent?.server?.serverId &&
+              session.server?.generation === row.agent?.server?.generation,
+          )) &&
         row.agent.paneId !== null &&
         row.agent.paneId === props.model.activePaneId?.()
-      : row.session?.name === props.model.activeSessionName());
+      : props.model.activeSessionKey
+        ? row.session?.id === props.model.activeSessionKey()
+        : row.session?.name === props.model.activeSessionName());
   const preferenceKey = (group: ApplicationMachineGroup) => group.environmentId ?? group.id;
-  const rows = createMemo<readonly Row[]>(() =>
-    props.model.groups().flatMap((group) => [
+  const rows = createMemo<readonly Row[]>(() => [
+    ...props.model.groups().flatMap((group) =>
+      groupApplicationTeamRows(group.agents ?? []).map((agent) => ({
+        key: JSON.stringify([
+          group.id,
+          "agent",
+          agent.server?.serverId,
+          agent.server?.generation,
+          agent.id,
+        ]),
+        group,
+        agent,
+      })),
+    ),
+    ...props.model.groups().flatMap((group) => [
       { key: JSON.stringify([group.id]), group },
       ...group.sessions
         .filter(
@@ -158,23 +191,37 @@ export function ApplicationMachineSidebar(props: {
             !collapsed().has(preferenceKey(group)) ||
             props.model.favorites?.().includes(session.id) ||
             (group.id === props.model.activeMachineId() &&
-              session.name === props.model.activeSessionName()),
+              (props.model.activeSessionKey
+                ? session.id === props.model.activeSessionKey()
+                : session.name === props.model.activeSessionName())),
         )
-        .map((session) => ({
+        .map((session, index, sessions) => ({
+          serverHeading:
+            (group.servers?.length ??
+              new Set(group.sessions.map((row) => row.server?.serverId)).size) > 1 &&
+            session.server &&
+            (index === 0 || sessions[index - 1]?.server?.serverId !== session.server.serverId)
+              ? `${session.serverLabel ?? "Server"} · ${session.server.serverId.slice(-6)}`
+              : undefined,
           key: JSON.stringify([group.id, "session", session.id]),
           group,
           session,
         })),
-      ...(!collapsed().has(preferenceKey(group))
-        ? (group.agents ?? []).map((agent, index) => ({
-            key: JSON.stringify([group.id, "agent", agent.id]),
-            group,
-            agent,
-            agentHeading: index === 0,
-          }))
-        : []),
+      ...(collapsed().has(preferenceKey(group))
+        ? []
+        : (group.servers ?? [])
+            .filter(
+              (server) =>
+                !group.sessions.some((session) => session.server?.serverId === server.serverId),
+            )
+            .map((server) => ({
+              key: JSON.stringify([group.id, "server", server.serverId]),
+              group,
+              server,
+            }))),
     ]),
-  );
+  ]);
+  const hasAgents = createMemo(() => rows().some((row) => row.agent));
   const rowsByKey = createMemo(() => new Map(rows().map((row) => [row.key, row])));
   const index = () =>
     Math.max(
@@ -190,13 +237,6 @@ export function ApplicationMachineSidebar(props: {
       ? group
       : null;
   };
-  const activity = (row: Row) =>
-    summarizeFleetActivity(
-      (row.group.agents ?? []).filter(
-        (agent) => !row.session || agent.sessionName === row.session.name,
-      ),
-      row.group.state === "ready" && row.group.agentsAvailable !== false && !row.session?.disabled,
-    );
   const connectionDetail = (group: ApplicationMachineGroup) => {
     const diagnostic = group.diagnostic;
     if (!diagnostic)
@@ -229,9 +269,18 @@ export function ApplicationMachineSidebar(props: {
     setSelectedKey(row.key);
     setLocalFocused(true);
     props.model.onFocus?.();
+    if (row.server) {
+      if (row.server.state === "online")
+        props.model.onSelectServer?.(row.group.id, {
+          serverId: row.server.serverId,
+          generation: row.server.generation,
+        });
+      return;
+    }
     if (row.agent) {
       if (
         row.group.state === "ready" &&
+        row.group.agentsAvailable !== false &&
         !row.agent.disabled &&
         row.agent.paneId &&
         props.model.onOpenAgent
@@ -242,7 +291,7 @@ export function ApplicationMachineSidebar(props: {
       }
     } else if (row.session) {
       if (row.group.state === "ready" && !row.session.disabled)
-        props.model.onOpen(row.group.id, row.session.name, source);
+        props.model.onOpen(row.group.id, row.session.name, source, row.session.id);
     } else if (
       row.group.state !== "ready" ||
       (row.group.sessions.length === 0 && !row.group.agents?.length)
@@ -250,9 +299,13 @@ export function ApplicationMachineSidebar(props: {
       props.model.onSelectMachine(row.group.id, source);
     else toggle(row.group);
   };
+  const sectionGap = (row: Row) => (!row.session && !row.agent && !row.server ? 1 : 0);
+  const rowHeight = (row: Row) =>
+    (row.agent ? 2 : row.serverHeading ? 2 : 1) +
+    sectionGap(row) +
+    (hasAgents() && row.key === JSON.stringify([props.model.groups()[0]?.id]) ? 1 : 0);
   const revealFocusedRow = () => {
     if (!focused() || !scroll) return;
-    const rowHeight = (row: Row) => (row.agent ? (row.agentHeading ? 3 : 2) : 1);
     const y = rows()
       .slice(0, index())
       .reduce((sum, row) => sum + rowHeight(row), 0);
@@ -270,6 +323,15 @@ export function ApplicationMachineSidebar(props: {
   useKeyboardRoute((event) => {
     if (!focused() || event.eventType !== "press" || event.meta) return false;
     let key = event.name.toLowerCase();
+    if (key === "tab") {
+      const target = rows()[index()]?.agent
+        ? rows().find((row) => !row.agent)
+        : rows().find((row) => row.agent);
+      if (target) setSelectedKey(target.key);
+      event.preventDefault();
+      event.stopPropagation();
+      return true;
+    }
     if (event.ctrl && key === "d") key = "halfdown";
     else if (event.ctrl && key === "u") key = "halfup";
     else if (!event.ctrl && !event.meta)
@@ -282,7 +344,7 @@ export function ApplicationMachineSidebar(props: {
             l: "right",
             g: event.shift ? "end" : "home",
             "/": "search",
-            "?": "help",
+            [SIDEBAR_ACTIONS.help.key]: "help",
             question: "help",
           } as Record<string, string>
         )[key] ?? key;
@@ -305,9 +367,9 @@ export function ApplicationMachineSidebar(props: {
         "return",
         "space",
         "escape",
-        "a",
-        "r",
-        "d",
+        SIDEBAR_ACTIONS.add.key,
+        SIDEBAR_ACTIONS.retry.key,
+        SIDEBAR_ACTIONS.disconnect.key,
         "f",
       ].includes(key)
     )
@@ -315,7 +377,7 @@ export function ApplicationMachineSidebar(props: {
     event.preventDefault();
     event.stopPropagation();
     if (key === "help") {
-      setShowHelp(!showHelp());
+      props.onHelp?.("keyboard");
       return true;
     }
     if (key === "search") {
@@ -323,15 +385,11 @@ export function ApplicationMachineSidebar(props: {
       return true;
     }
     if (key === "escape") {
-      if (showHelp()) {
-        setShowHelp(false);
-        return true;
-      }
       setLocalFocused(false);
       props.model.onBlur?.();
       return true;
     }
-    if (key === "a") {
+    if (key === SIDEBAR_ACTIONS.add.key) {
       props.model.onAddMachine?.();
       return true;
     }
@@ -346,9 +404,9 @@ export function ApplicationMachineSidebar(props: {
         );
       return true;
     }
-    if (key === "r" || key === "d") {
+    if (key === SIDEBAR_ACTIONS.retry.key || key === SIDEBAR_ACTIONS.disconnect.key) {
       if (row.group.id !== "local") {
-        if (key === "r") props.model.onRetryMachine?.(row.group.id);
+        if (key === SIDEBAR_ACTIONS.retry.key) props.model.onRetryMachine?.(row.group.id);
         else props.model.onDisconnectMachine?.(row.group.id);
       }
       return true;
@@ -396,33 +454,18 @@ export function ApplicationMachineSidebar(props: {
       flexDirection="column"
       overflow="hidden"
     >
-      <text height={1} fg={props.theme.roles.text.secondary}>
-        {" "}
-        {props.model.tabs?.().length ? "Machines · F9 tabs · ?" : "Machines · ? help"}
-      </text>
-      <For each={visibleTabs()}>
-        {(tab) => (
-          <box height={1} flexDirection="row">
-            <NavigationRow
-              theme={props.theme}
-              width={Math.max(1, props.width - 4)}
-              id={`fleet-tab:${tab.key}`}
-              label={`${tab.hostLabel} / ${tab.label}`}
-              marker={tab.active ? "●" : "○"}
-              detail={tab.available ? "" : "offline"}
-              focused={false}
-              onActivate={() => props.model.onOpenTab?.(tab.key)}
-            />
-            <TuiButton
-              theme={props.theme}
-              label="×"
-              size="compact"
-              width={3}
-              onPress={() => props.model.onCloseTab?.(tab.key)}
-            />
-          </box>
-        )}
-      </For>
+      <box height={1} flexShrink={0} flexDirection="row" overflow="hidden">
+        <text fg={props.theme.roles.text.secondary}>{hasAgents() ? " Agents" : " Machines"}</text>
+        <box flexGrow={1} />
+        <KeyHint
+          theme={props.theme}
+          keys={SIDEBAR_ACTIONS.help.keys}
+          label={props.width >= 20 ? SIDEBAR_ACTIONS.help.label : undefined}
+          quiet
+          button
+          onPress={() => props.onHelp?.("mouse")}
+        />
+      </box>
       <scrollbox
         ref={(value) => {
           scroll = value;
@@ -457,81 +500,116 @@ export function ApplicationMachineSidebar(props: {
               get agent() {
                 return current().agent;
               },
-              get agentHeading() {
-                return current().agentHeading;
+              get server() {
+                return current().server;
+              },
+              get serverHeading() {
+                return current().serverHeading;
               },
             };
             return (
               <box
                 width={Math.max(1, props.width - 1)}
-                height={row.agent ? (row.agentHeading ? 3 : 2) : 1}
+                height={rowHeight(row)}
                 flexShrink={0}
                 flexDirection="column"
               >
-                <Show when={row.agentHeading}>
+                <box height={sectionGap(row)} flexShrink={0} />
+                <Show when={row.serverHeading}>
+                  <NavigationRow
+                    theme={props.theme}
+                    width={Math.max(1, props.width - 1)}
+                    id={`server:${row.group.id}:${row.session?.server?.serverId}`}
+                    label={row.serverHeading ?? "Server"}
+                    marker=" ▾"
+                    onActivate={() => {
+                      if (row.session?.server)
+                        props.model.onSelectServer?.(row.group.id, row.session.server);
+                    }}
+                  />
+                </Show>
+                <Show
+                  when={hasAgents() && row.key === JSON.stringify([props.model.groups()[0]?.id])}
+                >
                   <text height={1} fg={props.theme.roles.text.secondary}>
                     {" "}
-                    Agents
+                    Machines
                   </text>
                 </Show>
-                <NavigationRow
-                  theme={props.theme}
-                  id={`machine:${row.key}`}
-                  width={Math.max(1, props.width - 1)}
-                  labelColor={!row.agent && !row.session ? fleetHostColor(row.group) : undefined}
-                  label={
-                    row.agent
-                      ? row.agent.name
-                      : row.session
-                        ? friendlySessionLabel(row.session.name)
-                        : row.group.label
+                <Show
+                  when={row.agent}
+                  fallback={
+                    <NavigationRow
+                      theme={props.theme}
+                      id={`machine:${row.key}`}
+                      width={Math.max(1, props.width - 1)}
+                      labelColor={!row.session ? fleetHostColor(row.group) : undefined}
+                      label={
+                        row.server
+                          ? `  ${row.server.label} · ${row.server.serverId.slice(-6)}`
+                          : row.session
+                            ? friendlySessionLabel(row.session.name)
+                            : row.group.label
+                      }
+                      marker={
+                        row.server
+                          ? "  "
+                          : row.session
+                            ? props.model.favorites?.().includes(row.session.id)
+                              ? " ★"
+                              : "  "
+                            : collapsed().has(preferenceKey(row.group))
+                              ? "▸"
+                              : "▾"
+                      }
+                      detail={
+                        row.server
+                          ? row.server.state === "offline"
+                            ? "offline"
+                            : "empty"
+                          : row.session
+                            ? row.group.state !== "ready" || row.session.disabled
+                              ? "unavailable"
+                              : `${row.session.paneCount}p`
+                            : row.group.state === "ready"
+                              ? undefined
+                              : connectionDetail(row.group)
+                      }
+                      selected={Boolean(row.session && active(row))}
+                      focused={focused() && row.key === selectedKey()}
+                      onActivate={(source) => activate(row, source)}
+                    />
                   }
-                  marker={
-                    row.agent
-                      ? active(row)
-                        ? row.agent.attention
-                          ? "›!"
-                          : "›"
-                        : row.agent.attention
-                          ? "!"
-                          : "•"
-                      : row.session
-                        ? props.model.favorites?.().includes(row.session.id)
-                          ? " ★"
-                          : active(row)
-                            ? " ›"
-                            : "  "
-                        : collapsed().has(preferenceKey(row.group))
-                          ? "▸"
-                          : "▾"
-                  }
-                  detail={
-                    row.agent
-                      ? row.group.state !== "ready" || row.agent.disabled
-                        ? "unavailable"
-                        : `[${terminalAgentStatusLabel(row.agent.activity)}]`
-                      : row.session
-                        ? row.group.state !== "ready" || row.session.disabled
-                          ? "unavailable"
-                          : `${row.session.paneCount}p${row.group.agents?.length ? ` ${activity(row).label}` : ""}`
-                        : row.group.agents?.length && row.group.state === "ready"
-                          ? activity(row).label
-                          : `${connectionDetail(row.group)}${row.group.agents?.length ? " ?" : ""}`
-                  }
-                  selected={Boolean((row.session || row.agent) && active(row))}
-                  focused={Boolean(focused() && row.key === selectedKey())}
-                  attention={row.agent?.attention ?? activity(row).kind === "attention"}
-                  onActivate={(source) => activate(row, source)}
-                />
-                <Show when={row.agent}>
+                >
                   {(agent) => (
-                    <text
-                      height={1}
-                      fg={props.theme.roles.text.muted}
-                      content={clipTerminal(
-                        `  ${friendlySessionLabel(agent().sessionName)}`,
-                        Math.max(1, props.width - 1),
-                      )}
+                    <AgentRow
+                      theme={props.theme}
+                      id={`machine:${row.key}`}
+                      name={agent().name}
+                      team={agent().team}
+                      context={[
+                        row.group.label,
+                        row.group.sessions.find(
+                          (session) => session.server?.serverId === agent().server?.serverId,
+                        )?.serverLabel,
+                        friendlySessionLabel(agent().sessionName),
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
+                      width={Math.max(1, props.width - 1)}
+                      interaction={props.interactionForAgent?.(agent())}
+                      paneName={props.paneName}
+                      activity={agent().activity}
+                      attention={agent().attention}
+                      unavailable={
+                        row.group.state !== "ready" ||
+                        row.group.agentsAvailable === false ||
+                        !!agent().disabled ||
+                        !agent().paneId
+                      }
+                      selected={active(row)}
+                      focused={focused() && row.key === selectedKey()}
+                      onOpen={(source) => activate(row, source)}
                     />
                   )}
                 </Show>
@@ -553,31 +631,26 @@ export function ApplicationMachineSidebar(props: {
           </scrollbox>
         )}
       </For>
-      <Show when={helpHeight() > 0}>
-        <text height={helpHeight()} fg={props.theme.roles.text.secondary}>
-          {
-            "j/k ↑↓ move · g/G ends\nPgUp/Dn · Ctrl-U/D half\nh/l ←→ collapse/expand\nEnter open · / search\nf favorite · Esc terminal"
-          }
-        </text>
-      </Show>
       <Show when={props.model.onOpenSwitcher}>
-        <NavigationRow
+        <KeyHint
           theme={props.theme}
-          id="machine:switcher"
-          label="Search fleet (F6)"
-          marker="/"
+          keys={CHROME_ACTIONS.sessions.keys}
+          label="Browse all sessions"
           width={props.width}
-          onActivate={() => props.model.onOpenSwitcher?.()}
+          quiet
+          button
+          onPress={() => props.model.onOpenSwitcher?.()}
         />
       </Show>
       <Show when={props.model.onOpenAttention}>
-        <NavigationRow
+        <KeyHint
           theme={props.theme}
-          id="machine:attention"
-          label={`Attention (${props.model.groups().reduce((sum, group) => sum + (group.state === "ready" ? (group.agents ?? []).filter((agent) => agent.attention && !agent.disabled).length : 0), 0)}) · F7`}
-          marker="!"
+          keys={CHROME_ACTIONS.attention.keys}
+          label={`${CHROME_ACTIONS.attention.label} (${props.model.groups().reduce((sum, group) => sum + (group.state === "ready" ? (group.agents ?? []).filter((agent) => agent.attention && !agent.disabled).length : 0), 0)})`}
           width={props.width}
-          onActivate={() => props.model.onOpenAttention?.()}
+          quiet
+          button
+          onPress={() => props.model.onOpenAttention?.()}
         />
       </Show>
       <Show when={controlsHeight() > 0 && controlGroup()}>
@@ -588,34 +661,37 @@ export function ApplicationMachineSidebar(props: {
                 ? fleetConnectionMessage(group().diagnostic!)
                 : connectionDetail(group())}
             </text>
-            <NavigationRow
+            <KeyHint
               theme={props.theme}
-              id="machine:retry"
-              label="Retry connection (R)"
-              marker="↻"
+              keys={SIDEBAR_ACTIONS.retry.keys}
+              label={SIDEBAR_ACTIONS.retry.label}
               width={props.width}
-              onActivate={() => props.model.onRetryMachine?.(group().id)}
+              quiet
+              button
+              onPress={() => props.model.onRetryMachine?.(group().id)}
             />
-            <NavigationRow
+            <KeyHint
               theme={props.theme}
-              id="machine:disconnect"
-              label="Disconnect (D)"
-              marker="×"
+              keys={SIDEBAR_ACTIONS.disconnect.keys}
+              label={SIDEBAR_ACTIONS.disconnect.label}
               width={props.width}
-              onActivate={() => props.model.onDisconnectMachine?.(group().id)}
+              quiet
+              button
+              onPress={() => props.model.onDisconnectMachine?.(group().id)}
             />
           </>
         )}
       </Show>
       <For each={props.model.onAddMachine ? [props.model.onAddMachine] : []}>
         {(add) => (
-          <NavigationRow
+          <KeyHint
             theme={props.theme}
-            id="machine:add"
-            label="Add machine (A)"
-            marker="+"
+            keys={SIDEBAR_ACTIONS.add.keys}
+            label={SIDEBAR_ACTIONS.add.label}
             width={props.width}
-            onActivate={add}
+            quiet
+            button
+            onPress={add}
           />
         )}
       </For>

@@ -1,3 +1,7 @@
+import type { BackgroundNativeCaptureRequest } from "../../lib/background-native-capture.ts";
+import { nativePaneIdentity } from "../../lib/native-pane-identity.ts";
+import { liveSessionIdForNativeIdentity } from "../../terminal/protocol/live-session-identity.ts";
+import type { NativeOperationSessionGuard } from "../../lib/native-operation-command.ts";
 import type { Hono } from "hono";
 import type { DaemonInstanceIdentity } from "@tmux-ide/contracts";
 import { z } from "zod";
@@ -22,6 +26,13 @@ const cleanText = (value: string) => stripVTControlCharacters(value).replace(/[^
 
 export function createFleetPreviewCapture(
   run: (args: string[], signal?: AbortSignal) => string | Promise<string>,
+  native?: {
+    readonly serverEpoch: () => string | null;
+    readonly capture: (
+      request: BackgroundNativeCaptureRequest,
+      signal?: AbortSignal,
+    ) => Promise<{ output: string } | null>;
+  },
 ) {
   const snapshot = async (
     liveSessionId: string,
@@ -29,11 +40,28 @@ export function createFleetPreviewCapture(
     windowId?: string,
     paneId?: string,
   ): Promise<FleetPreviewSnapshot | null> => {
+    const nativeEpoch = native?.serverEpoch() ?? null;
+    let sessionGuard: NativeOperationSessionGuard | undefined;
     const readSessions = async () => {
       const raw = await run(
         ["list-panes", "-a", "-F", "#{pid}\t#{session_id}\t#{session_created}\t#{session_name}"],
         signal,
       );
+      if (!sessionGuard)
+        for (const line of raw.split("\n")) {
+          const [pid, id, created, name] = line.split("\t");
+          if (
+            pid &&
+            id &&
+            created &&
+            name &&
+            /^\d+$/.test(pid) &&
+            /^\$\d+$/.test(id) &&
+            /^\d+$/.test(created) &&
+            liveSessionIdForNativeIdentity(pid, id, created) === liveSessionId
+          )
+            sessionGuard = { id, created, name };
+        }
       return discoverLiveSessionSummaries(() => raw);
     };
     const session = (await readSessions()).find((s) => s.liveSessionId === liveSessionId);
@@ -47,7 +75,7 @@ export function createFleetPreviewCapture(
             "-t",
             `=${session.sessionName}`,
             "-F",
-            "#{pane_id}\t#{window_active}\t#{pane_active}\t#{window_id}\t#{window_index}",
+            "#{pane_id}\t#{window_active}\t#{pane_active}\t#{window_id}\t#{window_index}\t#{pane_birth_id}",
           ],
           signal,
         )
@@ -127,10 +155,36 @@ export function createFleetPreviewCapture(
     const pane = paneId ?? candidates.find((r) => r[2] === "1")?.[0] ?? candidates[0]?.[0];
     if (!pane || !/^%\d+$/u.test(pane)) return null;
     // Passive capture never changes active windows, size, input or terminal ownership.
-    const captured = await run(["capture-pane", "-p", "-t", pane, "-S", "-24"], signal);
+    const identity = nativePaneIdentity(
+      nativeEpoch === native?.serverEpoch() ? nativeEpoch : null,
+      candidates.find((row) => row[0] === pane)?.[5],
+    );
+    const owned =
+      native && identity && sessionGuard
+        ? await native.capture(
+            { paneId: pane, nativeIdentity: identity, sessionGuard, mode: "fleet-preview" },
+            signal,
+          )
+        : null;
+    const captured = owned
+      ? owned.output
+      : await run(["capture-pane", "-p", "-t", pane, "-S", "-24"], signal);
     const [currentSessions, currentPanes] = await Promise.all([readSessions(), readPanes()]);
     if (!currentSessions.some((s) => s.liveSessionId === liveSessionId)) return null;
     if (selectedWindowId && !currentPanes.some((r) => r[3] === selectedWindowId && r[0] === pane))
+      return null;
+    // A runtime pane ID can outlive its physical pane. Never publish a capture
+    // after the native pane birth or server epoch has changed.
+    if (
+      identity &&
+      (native?.serverEpoch() !== identity.serverEpoch ||
+        !currentPanes.some(
+          (row) =>
+            row[0] === pane &&
+            (!selectedWindowId || row[3] === selectedWindowId) &&
+            row[5] === identity.paneBirthId,
+        ))
+    )
       return null;
     return {
       windows,

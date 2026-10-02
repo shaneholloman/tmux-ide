@@ -1,3 +1,8 @@
+import { PaneTeamMembershipSchemaZ } from "./pane-team.ts";
+import {
+  InteractionPaneEndpointSchemaZ,
+  NativePaneIdentitySchemaZ,
+} from "./interaction-evidence.ts";
 /**
  * The fleet catalog — a read-only, path-free enumeration of the user's live
  * tmux fleet (every adopted session and the coding agents inside it), whether or
@@ -117,11 +122,15 @@ export type FleetAgentHarness = z.infer<typeof FleetAgentHarnessSchemaZ>;
 export const FleetCatalogAgentEntryV1SchemaZ = z
   .object({
     agentId: FleetAgentIdSchemaZ,
+    team: PaneTeamMembershipSchemaZ.optional(),
     name: FleetLabelSchemaZ,
     harness: FleetAgentHarnessSchemaZ,
     activity: AgentActivitySchemaZ,
     attention: z.boolean(),
     statusSource: AgentGraphStatusSourceSchemaZ,
+    /** Current daemon-owned pane lifetime; null means attribution is unavailable. */
+    interactionEndpoint: InteractionPaneEndpointSchemaZ.options[0].nullable(),
+    nativeIdentity: NativePaneIdentitySchemaZ.nullable(),
   })
   .strict();
 export type FleetCatalogAgentEntryV1 = z.infer<typeof FleetCatalogAgentEntryV1SchemaZ>;

@@ -1,3 +1,4 @@
+import { testInteractionContext } from "../../../test-support/interaction-evidence.ts";
 import { describe, expect, it, vi } from "vitest";
 import type { CausalCellProbeV1 } from "@tmux-ide/contracts";
 import type { SessionRuntimeConsumer } from "./registry.ts";
@@ -777,6 +778,7 @@ describe("SessionRuntimeTransportBinder", () => {
         .mockReturnValueOnce("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
         .mockReturnValueOnce("cccccccc-cccc-4ccc-8ccc-cccccccccccc"),
       semanticMutations: {
+        captureInteractionContext: testInteractionContext,
         resolveSession: (workspaceName) => `${workspaceName}-session`,
         execute: (operationId, intent) => {
           if (intent.verb !== "workspace.pane.send") throw new Error("unexpected intent");
@@ -878,6 +880,7 @@ describe("SessionRuntimeTransportBinder", () => {
       generation: GENERATION,
       createControllerToken: () => "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       semanticMutations: {
+        captureInteractionContext: testInteractionContext,
         resolveSession: (workspaceName) => `${workspaceName}-session`,
         execute: (operationId, intent) => {
           if (intent.verb !== "workspace.pane.send") throw new Error("unexpected intent");

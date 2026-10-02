@@ -5,6 +5,7 @@ import {
   summarize,
   theilSenSlope,
   validateReferenceReport,
+  validateReferenceStageEvent,
 } from "./performance-reference-report.mjs";
 
 const source = { commit: "a".repeat(40), tree: "b".repeat(40), dirty: false };
@@ -59,4 +60,38 @@ test("uses nearest-rank percentiles and robust median pairwise slope", () => {
   assert.deepEqual(summarize([4, 1, 3, 2]), { count: 4, min: 1, p50: 2, p95: 4, max: 4 });
   assert.equal(theilSenSlope([0, 10, 20, 1_000]), 171.66666666666666);
   assert.equal(theilSenSlope([10, 20, 30, 40, 100_000]), 10);
+});
+
+test("reference traces distinguish client point diagnostics from measured spans", () => {
+  const identity = {
+    traceId: "trace",
+    processId: "client",
+    clockId: "clock",
+    clockKind: "performance-now",
+  };
+  const point = { ...identity, stage: "client", operation: "lane-enqueue", atMicros: 100 };
+  assert.equal(validateReferenceStageEvent(point), false);
+  for (const stage of ["input", "paint"])
+    assert.equal(
+      validateReferenceStageEvent({ ...identity, stage, startedAtMicros: 100, endedAtMicros: 200 }),
+      true,
+    );
+  assert.throws(
+    () => validateReferenceStageEvent({ ...point, atMicros: -1 }),
+    /client trace point/,
+  );
+  assert.throws(
+    () => validateReferenceStageEvent({ ...point, stage: "unknown" }),
+    /Unknown trace stage/,
+  );
+  assert.throws(
+    () =>
+      validateReferenceStageEvent({
+        ...identity,
+        stage: "paint",
+        startedAtMicros: 200,
+        endedAtMicros: 100,
+      }),
+    /ordered safe/,
+  );
 });

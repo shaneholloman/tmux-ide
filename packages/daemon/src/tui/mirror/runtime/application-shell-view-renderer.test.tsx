@@ -1,4 +1,5 @@
 /* @jsxImportSource @opentui/solid */
+import { createHomeSidebarFocusGuard } from "./application-home-experience.ts";
 import { EventEmitter } from "node:events";
 import { createAppearanceOwner } from "./application-appearance-owner.ts";
 import type { ApplicationTerminalPaletteSnapshot } from "./application-terminal-palette-owner.ts";
@@ -130,7 +131,7 @@ describe("production command discovery flow", () => {
       await setup.renderOnce();
       setup.renderer.keyInput.emit("paste", { bytes: Buffer.from("beta") });
       await setup.renderOnce();
-      expect(setup.captureCharFrame()).toContain("/ beta▏");
+      expect(setup.captureCharFrame()).toContain("beta▏");
       expect(setup.captureCharFrame()).toContain("Open session · beta workspace");
       setNote("an unrelated notification");
       await setup.renderOnce();
@@ -172,7 +173,7 @@ describe("production command discovery flow", () => {
           width={20}
           height={7}
           theme={createSemanticThemeSnapshot({ mode: "dark" })}
-          selected={5}
+          selected={6}
           commands={applicationPaletteCommands(null)}
           query=""
           closeArmed={false}
@@ -185,7 +186,7 @@ describe("production command discovery flow", () => {
     await setup.renderOnce();
     const frame = setup.captureCharFrame();
     expectFrameBounds(frame, 20, 7);
-    expect(frame).toContain("› Close pan…");
+    expect(frame).toContain("Close pane…");
     setup.renderer.destroy();
   });
   it("renames by mouse and prevents an empty name or duplicate save", async () => {
@@ -228,6 +229,20 @@ describe("production command discovery flow", () => {
   });
 });
 
+function windowLinksFor(windows: readonly { semanticWindowId: string; currentWindow: boolean }[]) {
+  const links = windows.map((window, displayIndex) => ({
+    linkId: `window-link.${String(displayIndex + 1).padStart(32, "0")}`,
+    semanticWindowId: window.semanticWindowId,
+    displayIndex,
+  }));
+  return {
+    liveSessionId: `live-session.${"a".repeat(20)}`,
+    linkRevision: 1,
+    activeLinkId: links[windows.findIndex((window) => window.currentWindow)]!.linkId,
+    links,
+  };
+}
+
 function terminalLayout() {
   const current = {
     type: "layout" as const,
@@ -240,7 +255,7 @@ function terminalLayout() {
     paneBorderStatus: "off" as const,
     panes: [{ pane: "pane.main", left: 0, top: 0, width: 40, height: 12, active: true }],
   };
-  return { current, windows: [current] };
+  return { current, windows: [current], windowLinks: windowLinksFor([current]) };
 }
 
 function shellChromeSnapshot(frame: string): string {
@@ -282,7 +297,7 @@ function twoWindowLayout() {
     currentWindow: false,
     panes: [{ pane: "pane.logs", left: 0, top: 0, width: 40, height: 12, active: true }],
   };
-  return { current: main, windows: [main, logs] };
+  return { current: main, windows: [main, logs], windowLinks: windowLinksFor([main, logs]) };
 }
 
 function mixedAgentLayout() {
@@ -294,7 +309,7 @@ function mixedAgentLayout() {
       { pane: "pane.secondary", left: 40, top: 0, width: 40, height: 12, active: false },
     ],
   };
-  return { current, windows: [current] };
+  return { current, windows: [current], windowLinks: windowLinksFor([current]) };
 }
 
 const focusPaneId = "pane.promoted.4d2e6ef021a27f2ffc19";
@@ -318,7 +333,7 @@ function focusLayout() {
     paneBorderStatus: "top" as const,
     panes: [{ pane: focusPaneId, left: 0, top: 0, width: 132, height: 41, active: true }],
   };
-  return { current, windows: [current] };
+  return { current, windows: [current], windowLinks: windowLinksFor([current]) };
 }
 
 function semantic() {
@@ -487,8 +502,8 @@ function rendererShellClient(initial: ReturnType<typeof semantic>) {
 describe("production ApplicationShellView", () => {
   it("selects a deterministic terminal-safe Home brand for each golden viewport", () => {
     expect(applicationHomeBrandVariant(52, 21)).toBe("wordmark");
-    expect(applicationHomeBrandVariant(92, 37)).toBe("wordmark");
-    expect(applicationHomeBrandVariant(172, 57)).toBe("wordmark");
+    expect(applicationHomeBrandVariant(92, 37)).toBe("ascii");
+    expect(applicationHomeBrandVariant(172, 57)).toBe("ascii");
     expect(applicationHomeBrandVariant(24, 10)).toBe("wordmark");
   });
 
@@ -522,6 +537,8 @@ describe("production ApplicationShellView", () => {
             onOpenSession={() => undefined}
             onSetPaletteOpen={(open, source) => events.push(`${source}:palette:${open}`)}
             onCycleTheme={() => events.push("mouse:theme")}
+            onOpenTutorial={() => events.push("mouse:tutorial")}
+            tutorialLabel="Learn tmux-ide"
             onSelectPane={() => undefined}
             onResizePreview={() => undefined}
             onResizePane={() => undefined}
@@ -540,6 +557,7 @@ describe("production ApplicationShellView", () => {
       expect(frame).toContain("Open terminals F2");
       expect(frame).toContain("Commands F5");
       expect(frame).toContain("Theme: dark");
+      expect(frame).toContain("Learn tmux-ide");
       expect(frame).not.toContain("website");
       expect(frame).not.toContain("░████████");
       expect(frame).not.toContain("▀█▀ █▄█ █ █ ▀▄▀");
@@ -554,10 +572,60 @@ describe("production ApplicationShellView", () => {
       await setup.mockMouse.click(rows[terminalsY]!.indexOf("Open terminals") + 2, terminalsY);
       await setup.mockMouse.click(rows[commandsY]!.indexOf("Commands") + 2, commandsY);
       await setup.mockMouse.click(rows[themeY]!.indexOf("Theme") + 2, themeY);
-      expect(events).toEqual(["mouse:surface:terminals", "mouse:palette:true", "mouse:theme"]);
+      const tutorialY = rows.findIndex((row) => row.includes("Learn tmux-ide"));
+      expect(tutorialY).toBeGreaterThanOrEqual(0);
+      await setup.mockMouse.click(rows[tutorialY]!.indexOf("Learn tmux-ide") + 2, tutorialY);
+      expect(events).toEqual([
+        "mouse:surface:terminals",
+        "mouse:palette:true",
+        "mouse:theme",
+        "mouse:tutorial",
+      ]);
       setup.renderer.destroy();
     },
   );
+
+  it("opens the tutorial from Home before a terminal session exists", async () => {
+    const theme = createSemanticThemeSnapshot({ mode: "light" });
+    let opened = 0;
+    const setup = await renderForTest(
+      () => (
+        <ApplicationShellView
+          dimensions={() => ({ width: 80, height: 24 })}
+          surface={() => "home"}
+          semantic={() => null}
+          generationStatus={() => "idle"}
+          sessions={[]}
+          selectedSession={() => 0}
+          bootstrapNote={() => null}
+          paletteOpen={() => false}
+          terminalRendererSource={() => null}
+          layout={terminalLayout}
+          focusedPane={() => null}
+          theme={theme}
+          palette={createTerminalPaletteProjection(theme)}
+          onOpenSurface={() => undefined}
+          onOpenSession={() => undefined}
+          onSetPaletteOpen={() => undefined}
+          onOpenTutorial={() => opened++}
+          tutorialLabel="Learn tmux-ide"
+          onSelectPane={() => undefined}
+          onResizePreview={() => undefined}
+          onResizePane={() => undefined}
+        />
+      ),
+      { width: 80, height: 24 },
+    );
+    await setup.renderOnce();
+    const frame = setup.captureCharFrame();
+    expectFrameBounds(frame, 80, 24);
+    const rows = frame.split("\n");
+    const y = rows.findIndex((row) => row.includes("Learn tmux-ide"));
+    expect(y).toBeGreaterThanOrEqual(0);
+    await setup.mockMouse.click(rows[y]!.indexOf("Learn tmux-ide") + 2, y);
+    expect(opened).toBe(1);
+    setup.renderer.destroy();
+  });
 
   it("repaints every Home control background across a live theme switch", async () => {
     const dark = createSemanticThemeSnapshot({ mode: "dark" });
@@ -604,7 +672,7 @@ describe("production ApplicationShellView", () => {
       commands: Boolean(backgroundFor("Commands F5")),
       theme: Boolean(backgroundFor("Theme: light")),
     }).toEqual({ commands: true, theme: true });
-    expect(colorKey(backgroundFor("Commands F5")!)).toBe(colorKey(light.roles.surfaces.panel));
+    expect(colorKey(backgroundFor("Commands F5")!)).toBe(colorKey(light.roles.surfaces.canvas));
     expect(colorKey(backgroundFor("Theme: light")!)).toBe(colorKey(light.roles.surfaces.canvas));
     expect(colorKey(backgroundFor("Commands F5")!)).not.toBe("255,255,255,255");
     expect(colorKey(backgroundFor("Theme: light")!)).not.toBe("255,255,255,255");
@@ -660,7 +728,7 @@ describe("production ApplicationShellView", () => {
     );
     const agentLabel = agentLine?.spans.find((span) => span.text.includes("Codex"));
     const agentStatus = agentLine?.spans.find((span) => span.text.includes("WORKING"));
-    const footerMessage = spans.lines.at(-1)?.spans.find((span) => span.text.includes("Live"));
+    const footerMessage = spans.lines.at(-1)?.spans.find((span) => span.text.includes("Sessions"));
     const terminalCell = spans.lines
       .flatMap((line) => line.spans)
       .find((span) => span.text.includes("CANONICAL-CELL"));
@@ -684,12 +752,12 @@ describe("production ApplicationShellView", () => {
       terminalCell: true,
       blankSidebarCell: true,
     });
-    expect(colorKey(topNavigation!.bg)).toBe(colorKey(light.roles.surfaces.header));
+    expect(colorKey(topNavigation!.bg)).toBe(colorKey(light.roles.surfaces.panel));
     expect(colorKey(inactiveHomeTab!.bg)).toBe(colorKey(light.roles.surfaces.panel));
     expect(colorKey(sidebarTitle!.bg)).toBe(colorKey(light.roles.surfaces.panel));
     expect(colorKey(agentLabel!.bg)).toBe(colorKey(light.roles.surfaces.panel));
     expect(colorKey(agentStatus!.bg)).toBe(colorKey(light.roles.surfaces.panel));
-    expect(colorKey(footerMessage!.bg)).toBe(colorKey(light.roles.surfaces.header));
+    expect(colorKey(footerMessage!.bg)).toBe(colorKey(light.roles.surfaces.panelRaised));
     expect(colorKey(terminalCell!.bg)).toBe(colorKey(light.roles.surfaces.terminal));
     expect(colorKey(blankSidebarCell!)).toBe(colorKey(light.roles.surfaces.panel));
     expect(terminal.lifecycle).toMatchObject({ subscriptions: 1, unsubscriptions: 0 });
@@ -728,8 +796,8 @@ describe("production ApplicationShellView", () => {
 
     await setup.renderOnce();
     const frame = setup.captureCharFrame();
-    expect(frame).toContain("F1 Home");
-    expect(frame).toContain("F2 Terminals");
+    expect(frame).toMatch(/Home +F1/u);
+    expect(frame).toMatch(/Terminals +F2/u);
     expect(frame).not.toContain("Sessions");
     expect(frame).not.toContain("ordinary-one");
     expect(frame).toContain("2 sessions live");
@@ -855,7 +923,10 @@ describe("production ApplicationShellView", () => {
     "retains shell, window strip, pane chrome, and canvas at %sx%s",
     async (width, height) => {
       registerPaneSurface();
-      const theme = createSemanticThemeSnapshot({ mode: "dark" });
+      const theme = createSemanticThemeSnapshot({
+        mode: "dark",
+        accessibility: { reducedMotion: true },
+      });
       const palette = createTerminalPaletteProjection(theme);
       const canonical = semantic();
       const setup = await renderForTest(
@@ -888,14 +959,14 @@ describe("production ApplicationShellView", () => {
       await setup.renderOnce();
       const frame = setup.captureCharFrame();
       expectFrameBounds(frame, width, height);
-      expect(frame).toContain("⌂");
-      expect(frame).toContain("❯");
+      expect(frame).toContain("F1");
+      expect(frame).toContain("F2");
       expect(frame).toContain("website");
       expect(frame).toContain("Agents");
       expect(frame).toContain("Codex");
       expect(frame).toContain("main");
       expect(frame.split("\n")[2]).toContain("Codex");
-      expect(frame.split("\n")[2]).toContain("● working");
+      expect(frame.split("\n")[2]).toContain("● Working");
       expect(frame).toContain("[WORKING]");
       expect(frame.split("\n")[1]).toContain("main");
       expect(frame.split("\n")[1]).toContain("workin…");
@@ -988,144 +1059,149 @@ describe("production ApplicationShellView", () => {
     setup.renderer.destroy();
   });
 
-  it("routes exact SGR app mouse and keeps explicit select mode local in the real 160x44 shell", async () => {
-    registerPaneSurface();
-    const theme = createSemanticThemeSnapshot({ mode: "dark" });
-    const palette = createTerminalPaletteProjection(theme);
-    const forwarded: Array<{ paneId: string; input: Record<string, unknown> }> = [];
-    const selected: string[] = [];
-    const copied: string[] = [];
-    let selectionKey: ((name: string) => boolean) | null = null;
-    const liveAdapter = selectionAdapter();
-    liveAdapter.renderSource.paneCanonicalIdentity = (paneId) =>
-      paneId === focusPaneId
-        ? {
-            generation: "11111111-1111-4111-8111-111111111111",
-            incarnation: "11111111-1111-4111-8111-111111111111:0",
-            revision: 1,
-            stateHash: "selection-state",
-            cols: 132,
-            rows: 41,
-            sourceEpoch: 1,
-            historyTrim: 0,
-          }
-        : null;
-    const connection = {};
-    const client = {};
-    let ingressOwnerCalls = 0;
-    let ingressClockCalls = 0;
-    const diagnosticsOffIngress = applicationMousePointerIngressCapability(false, () => {
-      ingressOwnerCalls += 1;
-      return null;
-    });
-    expect(
-      beginApplicationMouseIngress(diagnosticsOffIngress, () => {
-        ingressClockCalls += 1;
-        return 1;
-      }),
-    ).toBeNull();
-    const applicationIngress = applicationMousePointerIngressCapability(true, (input) => ({
-      ...input,
-      gestureId: "00000000-0000-4000-8000-000000000001",
-    }));
-    const setup = await renderForTest(
-      () => (
-        <ApplicationShellView
-          dimensions={() => ({ width: 160, height: 44 })}
-          surface={() => "terminals"}
-          semantic={() => semantic()}
-          generationStatus={() => "live"}
-          sessions={["main"]}
-          selectedSession={() => 0}
-          bootstrapNote={() => null}
-          paletteOpen={() => false}
-          terminalRendererSource={() => ({ adapter: liveAdapter, rendererEpoch: 1 })}
-          terminalGestureRuntime={() => ({
-            daemonGeneration: "22222222-2222-4222-8222-222222222222",
-            clientGeneration: 1,
-            connection,
-            client,
-            adapter: liveAdapter,
-            rendererEpoch: 1,
-          })}
-          onApplicationMousePointerIngress={applicationIngress}
-          layout={focusLayout}
-          focusedPane={() => focusPaneId}
-          rendererFocused={() => true}
-          theme={theme}
-          palette={palette}
-          onOpenSurface={() => undefined}
-          onOpenSession={() => undefined}
-          onSetPaletteOpen={() => undefined}
-          onSelectPane={(paneId) => selected.push(paneId)}
-          onResizePreview={() => undefined}
-          onResizePane={() => undefined}
-          onTerminalInput={(paneId, input) => forwarded.push({ paneId, input: { ...input } })}
-          onCopyText={(text) => (copied.push(text), true)}
-          onSelectionKeyOwner={(handle) => {
-            selectionKey = handle;
-          }}
-        />
-      ),
-      { width: 160, height: 44 },
-    );
-    try {
-      await setup.renderOnce();
-      expect(setup.captureCharFrame()).toContain("SELECT_TARGET");
+  it.each([true, false])(
+    "routes exact SGR app mouse and local selection with sidebar visible=%s",
+    async (sidebarVisible) => {
+      const shift = sidebarVisible ? 0 : 28;
+      registerPaneSurface();
+      const theme = createSemanticThemeSnapshot({ mode: "dark" });
+      const palette = createTerminalPaletteProjection(theme);
+      const forwarded: Array<{ paneId: string; input: Record<string, unknown> }> = [];
+      const selected: string[] = [];
+      const copied: string[] = [];
+      let selectionKey: ((name: string) => boolean) | null = null;
+      const liveAdapter = selectionAdapter();
+      liveAdapter.renderSource.paneCanonicalIdentity = (paneId) =>
+        paneId === focusPaneId
+          ? {
+              generation: "11111111-1111-4111-8111-111111111111",
+              incarnation: "11111111-1111-4111-8111-111111111111:0",
+              revision: 1,
+              stateHash: "selection-state",
+              cols: 132,
+              rows: 41,
+              sourceEpoch: 1,
+              historyTrim: 0,
+            }
+          : null;
+      const connection = {};
+      const client = {};
+      let ingressOwnerCalls = 0;
+      let ingressClockCalls = 0;
+      const diagnosticsOffIngress = applicationMousePointerIngressCapability(false, () => {
+        ingressOwnerCalls += 1;
+        return null;
+      });
+      expect(
+        beginApplicationMouseIngress(diagnosticsOffIngress, () => {
+          ingressClockCalls += 1;
+          return 1;
+        }),
+      ).toBeNull();
+      const applicationIngress = applicationMousePointerIngressCapability(true, (input) => ({
+        ...input,
+        gestureId: "00000000-0000-4000-8000-000000000001",
+      }));
+      const setup = await renderForTest(
+        () => (
+          <ApplicationShellView
+            dimensions={() => ({ width: 160 - shift, height: 44 })}
+            surface={() => "terminals"}
+            sidebarVisible={sidebarVisible}
+            semantic={() => semantic()}
+            generationStatus={() => "live"}
+            sessions={["main"]}
+            selectedSession={() => 0}
+            bootstrapNote={() => null}
+            paletteOpen={() => false}
+            terminalRendererSource={() => ({ adapter: liveAdapter, rendererEpoch: 1 })}
+            terminalGestureRuntime={() => ({
+              daemonGeneration: "22222222-2222-4222-8222-222222222222",
+              clientGeneration: 1,
+              connection,
+              client,
+              adapter: liveAdapter,
+              rendererEpoch: 1,
+            })}
+            onApplicationMousePointerIngress={applicationIngress}
+            layout={focusLayout}
+            focusedPane={() => focusPaneId}
+            rendererFocused={() => true}
+            theme={theme}
+            palette={palette}
+            onOpenSurface={() => undefined}
+            onOpenSession={() => undefined}
+            onSetPaletteOpen={() => undefined}
+            onSelectPane={(paneId) => selected.push(paneId)}
+            onResizePreview={() => undefined}
+            onResizePane={() => undefined}
+            onTerminalInput={(paneId, input) => forwarded.push({ paneId, input: { ...input } })}
+            onCopyText={(text) => (copied.push(text), true)}
+            onSelectionKeyOwner={(handle) => {
+              selectionKey = handle;
+            }}
+          />
+        ),
+        { width: 160 - shift, height: 44 },
+      );
+      try {
+        await setup.renderOnce();
+        expect(setup.captureCharFrame()).toContain("SELECT_TARGET");
 
-      await setup.mockMouse.pressDown(29, 3, MouseButtons.LEFT);
-      await setup.mockMouse.release(159, 2, MouseButtons.LEFT);
-      expect(forwarded.map(({ paneId, input }) => ({ paneId, data: input.data }))).toEqual([
-        { paneId: focusPaneId, data: "\u001b[<0;2;1M" },
-        { paneId: focusPaneId, data: "\u001b[<0;132;1m" },
-      ]);
-      expect(ingressOwnerCalls).toBe(0);
-      expect(ingressClockCalls).toBe(0);
-      expect(forwarded.map(({ input }) => input)).toEqual([
-        expect.objectContaining({
-          kind: "application-mouse",
-          action: "down",
-          column: 1,
-          row: 0,
-          button: 0,
-          modifiers: { shift: false, alt: false, ctrl: false },
-          ingress: expect.objectContaining({
-            gestureId: "00000000-0000-4000-8000-000000000001",
+        await setup.mockMouse.pressDown(29 - shift, 3, MouseButtons.LEFT);
+        await setup.mockMouse.release(159 - shift, 2, MouseButtons.LEFT);
+        expect(forwarded.map(({ paneId, input }) => ({ paneId, data: input.data }))).toEqual([
+          { paneId: focusPaneId, data: "\u001b[<0;2;1M" },
+          { paneId: focusPaneId, data: "\u001b[<0;132;1m" },
+        ]);
+        expect(ingressOwnerCalls).toBe(0);
+        expect(ingressClockCalls).toBe(0);
+        expect(forwarded.map(({ input }) => input)).toEqual([
+          expect.objectContaining({
+            kind: "application-mouse",
             action: "down",
+            column: 1,
+            row: 0,
+            button: 0,
+            modifiers: { shift: false, alt: false, ctrl: false },
+            ingress: expect.objectContaining({
+              gestureId: "00000000-0000-4000-8000-000000000001",
+              action: "down",
+            }),
           }),
-        }),
-        expect.objectContaining({
-          kind: "application-mouse",
-          action: "up",
-          column: 131,
-          row: 0,
-          button: 0,
-          ingress: expect.objectContaining({
-            gestureId: "00000000-0000-4000-8000-000000000001",
+          expect.objectContaining({
+            kind: "application-mouse",
             action: "up",
+            column: 131,
+            row: 0,
+            button: 0,
+            ingress: expect.objectContaining({
+              gestureId: "00000000-0000-4000-8000-000000000001",
+              action: "up",
+            }),
           }),
-        }),
-      ]);
-      expect(copied).toEqual([]);
-      expect(selected).toEqual([focusPaneId]);
+        ]);
+        expect(copied).toEqual([]);
+        expect(selected).toEqual([focusPaneId]);
 
-      await setup.mockMouse.click(29, 3, MouseButtons.RIGHT);
-      await setup.renderOnce();
-      expect(setup.captureCharFrame()).toContain("Select text…");
-      expect(selectionKey?.("enter")).toBe(true);
-      await setup.renderOnce();
-      await setup.mockMouse.pressDown(29, 3, MouseButtons.LEFT);
-      await setup.mockMouse.moveTo(34, 3);
-      await setup.renderOnce();
-      await setup.mockMouse.release(34, 3, MouseButtons.LEFT);
-      await setup.renderOnce();
-      expect(forwarded).toHaveLength(2);
-      expect(copied).toEqual(["ELECT_"]);
-      expect(setup.captureCharFrame()).not.toContain("⧉ select");
-    } finally {
-      setup.renderer.destroy();
-    }
-  });
+        await setup.mockMouse.click(29 - shift, 3, MouseButtons.RIGHT);
+        await setup.renderOnce();
+        expect(setup.captureCharFrame()).toContain("Select text…");
+        expect(selectionKey?.("enter")).toBe(true);
+        await setup.renderOnce();
+        await setup.mockMouse.pressDown(29 - shift, 3, MouseButtons.LEFT);
+        await setup.mockMouse.moveTo(34 - shift, 3);
+        await setup.renderOnce();
+        await setup.mockMouse.release(34 - shift, 3, MouseButtons.LEFT);
+        await setup.renderOnce();
+        expect(forwarded).toHaveLength(2);
+        expect(copied).toEqual(["ELECT_"]);
+        expect(setup.captureCharFrame()).not.toContain("⧉ select");
+      } finally {
+        setup.renderer.destroy();
+      }
+    },
+  );
 
   it("projects vertical and horizontal pane resize guides through the real 160x44 shell", async () => {
     registerPaneSurface();
@@ -1223,8 +1299,8 @@ describe("production ApplicationShellView", () => {
         semanticPaneId: "pane.main",
         axis: "cols",
         cells: 67,
-        guide: { x: 67, y: 0, width: 1, height: 41 },
-        globalGuide: { x: 95, y: 2, width: 1, height: 41 },
+        guide: { x: 65, y: 0, width: 1, height: 41 },
+        globalGuide: { x: 93, y: 2, width: 1, height: 41 },
       },
     );
     await run(
@@ -1237,16 +1313,21 @@ describe("production ApplicationShellView", () => {
         semanticPaneId: "pane.main",
         axis: "rows",
         cells: 21,
-        guide: { x: 0, y: 22, width: 132, height: 1 },
-        globalGuide: { x: 28, y: 24, width: 132, height: 1 },
+        guide: { x: 0, y: 20, width: 132, height: 1 },
+        globalGuide: { x: 28, y: 22, width: 132, height: 1 },
       },
     );
   });
 
   it("retains two 132x41 window surfaces through warm switches and an active rename", async () => {
     registerPaneSurface();
-    const theme = createSemanticThemeSnapshot({ mode: "dark" });
-    const palette = createTerminalPaletteProjection(theme);
+    const [theme, setTheme] = createSignal(
+      createSemanticThemeSnapshot({
+        mode: "dark",
+        accessibility: { reducedMotion: true },
+      }),
+    );
+    const palette = createTerminalPaletteProjection(theme());
     const tracked = trackedAdapter();
     const windowA = {
       type: "layout" as const,
@@ -1290,7 +1371,7 @@ describe("production ApplicationShellView", () => {
           layout={layout}
           focusedPane={focused}
           rendererFocused={() => true}
-          theme={theme}
+          theme={theme()}
           palette={palette}
           onOpenSurface={() => undefined}
           onOpenSession={() => undefined}
@@ -1370,6 +1451,16 @@ describe("production ApplicationShellView", () => {
     expect(tracked.lifecycle.unsubscriptions).toBe(0);
     expect(measuredFrameStages).toEqual(["warm-a", "warm-b", "rename", "rename"]);
     setup.renderer.off("frame", onMeasuredFrame);
+    // Motion may paint chrome frames, but must not reblit or remount terminals.
+    setTheme(createSemanticThemeSnapshot({ mode: "dark" }));
+    await setup.renderOnce();
+    tracked.blits.length = 0;
+    const animatedBefore = setup.captureCharFrame();
+    await Bun.sleep(180);
+    expect(setup.captureCharFrame()).not.toBe(animatedBefore);
+    expect(tracked.blits).toEqual([]);
+    expect(tracked.lifecycle.subscriptions).toBe(2);
+    expect(tracked.lifecycle.unsubscriptions).toBe(0);
     setup.renderer.destroy();
   });
 
@@ -1857,13 +1948,13 @@ describe("production ApplicationShellView", () => {
       { width: 120, height: 40 },
     );
     await setup.renderOnce();
-    expect(setup.captureCharFrame()).toContain("› F2 Terminals");
+    expect(setup.captureCharFrame()).toContain("  Terminals ");
     await setup.mockMouse.click(
       33,
       setup
         .captureCharFrame()
         .split("\n")
-        .findIndex((line) => line.includes("› F2 Terminals")),
+        .findIndex((line) => line.includes("  Terminals ")),
       MouseButtons.LEFT,
     );
     expect(activated).toEqual(["mouse:terminals"]);
@@ -1885,7 +1976,11 @@ describe("production ApplicationShellView", () => {
           selectedSession={() => 0}
           bootstrapNote={() => null}
           paletteOpen={() => true}
-          paletteSelection={() => 8}
+          paletteSelection={() =>
+            applicationPaletteCommands(semantic()).findIndex(
+              (command) => typeof command === "object" && command.kind === "jump-agent",
+            )
+          }
           terminalRendererSource={() => null}
           layout={() => ({ current: null, windows: [] })}
           focusedPane={() => null}
@@ -1907,13 +2002,13 @@ describe("production ApplicationShellView", () => {
     );
     await setup.renderOnce();
 
-    expect(setup.captureCharFrame()).toContain("› Jump to Codex · main");
+    expect(setup.captureCharFrame()).toContain("Jump to Codex · main");
     await setup.mockMouse.click(
       33,
       setup
         .captureCharFrame()
         .split("\n")
-        .findIndex((line) => line.includes("› Jump to Codex")),
+        .findIndex((line) => line.includes("Jump to Codex")),
       MouseButtons.LEFT,
     );
     expect(opened).toEqual(["mouse:main:pane.main"]);
@@ -1957,7 +2052,7 @@ describe("production ApplicationShellView", () => {
       { width: 120, height: 40 },
     );
     await setup.renderOnce();
-    await setup.mockMouse.click(30, 10, MouseButtons.LEFT);
+    await setup.mockMouse.click(1, 10, MouseButtons.LEFT);
     expect(events).toEqual(["mouse:palette:false"]);
     expect(selected).toEqual([]);
     expect(terminalInputs).toEqual([]);
@@ -2012,12 +2107,17 @@ describe("production ApplicationShellView", () => {
     expectFrameBounds(resized, 20, 7);
     expect(resized).toContain("Commands");
     // A 20x7 viewport has room for query + one result; selection scrolls that slot.
-    expect(resized).toContain("F1 Home");
+    expect(resized).toContain("Home");
     expect(trimFrameRight(resized)).toMatchSnapshot();
     setup.renderer.destroy();
   });
 
   it("maps the production chrome keyboard contract without consuming terminal keys", () => {
+    expect(applicationShellKeyAction({ name: "f10", eventType: "press" }, false)).toBe(
+      "sidebar-toggle",
+    );
+    expect(applicationShellKeyAction({ name: "f10", shift: true }, false)).toBeNull();
+    expect(applicationShellKeyAction({ name: "f10", eventType: "release" }, false)).toBeNull();
     expect(applicationShellKeyAction({ name: "f1" }, false)).toBe("home");
     expect(applicationShellKeyAction({ name: "F2" }, false)).toBe("terminals");
     expect(applicationShellKeyAction({ name: "f5" }, false)).toBe("palette-open");
@@ -2034,7 +2134,7 @@ describe("production ApplicationShellView", () => {
     });
     expect(applicationPaletteKeyAction({ name: "up" }, true, 0)).toEqual({
       kind: "select",
-      index: 7,
+      index: applicationPaletteCommands(null).length - 1,
     });
     expect(applicationPaletteKeyAction({ name: "enter" }, true, 1)).toEqual({
       kind: "activate",
@@ -2068,7 +2168,10 @@ describe("production ApplicationShellView", () => {
 
   it("preserves canonical attention while prioritizing mixed window activity", async () => {
     registerPaneSurface();
-    const theme = createSemanticThemeSnapshot({ mode: "dark" });
+    const theme = createSemanticThemeSnapshot({
+      mode: "dark",
+      accessibility: { reducedMotion: true },
+    });
     const palette = createTerminalPaletteProjection(theme);
     const base = semantic();
     const mixed = {
@@ -2126,10 +2229,10 @@ describe("production ApplicationShellView", () => {
     expect(frame.split("\n")[1]).toContain("main");
     expect(frame.split("\n")[1]).toContain("workin…");
     expect(frame.split("\n")[2]).toContain("Codex");
-    expect(frame.split("\n")[2]).toContain("● working");
+    expect(frame.split("\n")[2]).toContain("● Working");
     expect(frame).toContain("! Scout");
     expect(frame).toContain("[IDLE]");
-    expect(frame).toContain("• Codex [WORKING]");
+    expect(frame).toContain("● Codex [WORKING]");
     expect(frame).toContain("! Scout ! [IDLE]");
     // The trusted live catalog, not an unrelated semantic display label, owns session routes.
     expect(frame).not.toContain("website");
@@ -2137,12 +2240,12 @@ describe("production ApplicationShellView", () => {
     setup.renderer.destroy();
   });
 
-  it("routes a production window-strip click to the canonical pane selector", async () => {
+  it("routes a production window-strip click to the exact canonical link selector", async () => {
     registerPaneSurface();
     const theme = createSemanticThemeSnapshot({ mode: "dark" });
     const palette = createTerminalPaletteProjection(theme);
     const canonical = semantic();
-    const selected: string[] = [];
+    const selected: unknown[] = [];
     let createdWindows = 0;
     const shell = projectApplicationShell({
       width: 120,
@@ -2174,7 +2277,10 @@ describe("production ApplicationShellView", () => {
           onCreateWindow={() => {
             createdWindows += 1;
           }}
-          onSelectPane={(paneId) => selected.push(paneId)}
+          onSelectPane={() => {
+            throw new Error("window tabs must preserve native active pane");
+          }}
+          onSelectWindowLink={(target) => selected.push(target)}
           onResizePreview={() => undefined}
           onResizePane={() => undefined}
         />
@@ -2208,7 +2314,14 @@ describe("production ApplicationShellView", () => {
       shell.content.y,
       MouseButtons.LEFT,
     );
-    expect(selected).toEqual(["pane.main", "pane.logs"]);
+    expect(selected).toEqual(
+      twoWindowLayout().windowLinks.links.map((link) => ({
+        linkId: link.linkId,
+        liveSessionId: twoWindowLayout().windowLinks.liveSessionId,
+        linkRevision: 1,
+        expectedSemanticWindowId: link.semanticWindowId,
+      })),
+    );
     expect(createdWindows).toBe(1);
     setup.renderer.destroy();
   });
@@ -2274,7 +2387,7 @@ describe("production appearance picker", () => {
           { width, height: 18 },
         );
         await setup.renderOnce();
-        expect(setup.captureCharFrame()).toContain("Appearance");
+        expect(setup.captureCharFrame()).toContain("Themes");
         const contrastLines = setup.captureCharFrame().split("\n");
         const contrastY = contrastLines.findIndex((line) => line.includes("Contrast:"));
         await setup.mockMouse.click(
@@ -2299,6 +2412,7 @@ describe("production appearance picker", () => {
         await setup.mockMouse.click(lines[y]!.indexOf("Light"), y, MouseButtons.LEFT);
         await setup.renderOnce();
         expect(owner.theme().setting).toBe("light");
+        expect(setup.captureCharFrame()).toContain(mode === "dark" ? "● Dark" : "● Light");
         expect(restored).toEqual([]);
         setup.renderer.keyInput.emit("paste", { bytes: Buffer.from("DO_NOT_SEND") });
         setup.renderer.keyInput.emit("keypress", {
@@ -2362,4 +2476,108 @@ describe("theme library viewport", () => {
         setup.renderer.destroy();
       }
     });
+});
+
+it("hides machine navigation on attached Home and ignores its former session hit targets", async () => {
+  const [surface, setSurface] = createSignal<"home" | "terminals">("home");
+  const calls: string[] = [];
+  const [sidebarVisible, setSidebarVisible] = createSignal(true);
+  const theme = createSemanticThemeSnapshot({ mode: "dark" });
+  const setup = await renderForTest(
+    () => (
+      <ApplicationShellView
+        dimensions={() => ({ width: 120, height: 30 })}
+        surface={surface}
+        sidebarVisible={sidebarVisible()}
+        semantic={() => semantic()}
+        generationStatus={() => "live"}
+        sessions={["main"]}
+        selectedSession={() => 0}
+        bootstrapNote={() => null}
+        paletteOpen={() => false}
+        terminalRendererSource={() => null}
+        layout={terminalLayout}
+        focusedPane={() => null}
+        theme={theme}
+        palette={createTerminalPaletteProjection(theme)}
+        onOpenSurface={setSurface}
+        onOpenSession={() => calls.push("session")}
+        onSetPaletteOpen={() => {}}
+        onSelectPane={() => {}}
+        onResizePreview={() => {}}
+        onResizePane={() => {}}
+        machineSidebar={{
+          groups: () => [
+            {
+              id: "local",
+              label: "Home-hidden-machine",
+              state: "ready",
+              sessions: [{ id: "main", name: "main", paneCount: 1 }],
+            },
+          ],
+          activeMachineId: () => "local",
+          activeSessionName: () => "main",
+          onOpen: () => calls.push("machine-session"),
+          onSelectMachine: () => calls.push("machine"),
+        }}
+      />
+    ),
+    { width: 120, height: 30 },
+  );
+  try {
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).toContain("tmux-ide");
+    expect(setup.captureCharFrame()).not.toContain("Home-hidden-machine");
+    await setup.mockMouse.click(4, 3, MouseButtons.LEFT);
+    expect(calls).toEqual([]);
+    setSurface("terminals");
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).toContain("Home-hidden-machine");
+    setSidebarVisible(false);
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).not.toContain("Home-hidden-machine");
+    await setup.mockMouse.click(4, 3, MouseButtons.LEFT);
+    expect(calls).toEqual([]);
+    setSidebarVisible(true);
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).toContain("Home-hidden-machine");
+    setSurface("home");
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).not.toContain("Home-hidden-machine");
+    expectFrameBounds(setup.captureCharFrame(), 120, 30);
+  } finally {
+    setup.renderer.destroy();
+  }
+});
+
+it("clears sidebar focus on Home, including focus restored by a dismissed machine dialog", async () => {
+  const [surface, setSurface] = createSignal<"home" | "terminals">("home");
+  const [focused, setFocused] = createSignal(true);
+  const [sidebarVisible, setSidebarVisible] = createSignal(true);
+  const setup = await renderForTest(
+    () => {
+      createHomeSidebarFocusGuard(surface, focused, () => setFocused(false), sidebarVisible);
+      return <text>Home focus guard</text>;
+    },
+    { width: 24, height: 2 },
+  );
+  try {
+    await setup.renderOnce();
+    expect(focused()).toBe(false);
+    setFocused(true);
+    await setup.renderOnce();
+    expect(focused()).toBe(false);
+    setSurface("terminals");
+    setFocused(true);
+    await setup.renderOnce();
+    expect(focused()).toBe(true);
+    setSidebarVisible(false);
+    await setup.renderOnce();
+    expect(focused()).toBe(false);
+    setSurface("home");
+    await setup.renderOnce();
+    expect(focused()).toBe(false);
+  } finally {
+    setup.renderer.destroy();
+  }
 });

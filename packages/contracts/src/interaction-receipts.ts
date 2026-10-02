@@ -1,4 +1,6 @@
+import { WindowLinkTargetSchemaZ } from "./window-links.ts";
 import { z } from "zod";
+import { InteractionEvidenceSchemaZ } from "./interaction-evidence.ts";
 
 import { DesktopWorkspaceNameSchemaZ } from "./desktop-workspace-name.ts";
 import {
@@ -6,14 +8,16 @@ import {
   TerminalAttachmentSemanticWindowIdSchemaZ,
 } from "./semantic-identity.ts";
 
-/** The trusted product surface that submitted an interaction. */
-export const InteractionOriginSchemaZ = z.enum(["gui", "tui", "cli", "sdk", "external"]);
+/** Declared product/adapter surface; agent identity requires separate evidence. */
+export const InteractionOriginSchemaZ = z.enum(["gui", "tui", "cli", "sdk", "mcp", "external"]);
 export type InteractionOrigin = z.infer<typeof InteractionOriginSchemaZ>;
-export const AuthoredInteractionOriginSchemaZ = z.enum(["gui", "tui", "cli", "sdk"]);
+export const AuthoredInteractionOriginSchemaZ = z.enum(["gui", "tui", "cli", "sdk", "mcp"]);
 export type AuthoredInteractionOrigin = z.infer<typeof AuthoredInteractionOriginSchemaZ>;
 
 /** Every semantic session-runtime verb; raw tmux addresses never enter this vocabulary. */
 export const InteractionOperationKindSchemaZ = z.enum([
+  "workspace.window.link.select",
+  "workspace.window.link.unlink",
   "workspace.window.split",
   "workspace.window.kill",
   "workspace.pane.kill",
@@ -46,6 +50,7 @@ const InteractionWindowReferenceSchemaZ = z.discriminatedUnion("by", [
 
 /** Stable semantic target retained even when the operation removes or renames it. */
 export const InteractionTargetSchemaZ = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("window-link"), target: WindowLinkTargetSchemaZ }).strict(),
   z.object({ kind: z.literal("session") }).strict(),
   z.object({ kind: z.literal("window"), target: InteractionWindowReferenceSchemaZ }).strict(),
   z
@@ -63,6 +68,8 @@ const MutationOutcomeSchemaZ = z.enum(["applied", "unchanged", "replayed"]);
  * different verb.
  */
 export const InteractionSafeSummarySchemaZ = z.union([
+  z.object({ operationKind: z.literal("workspace.window.link.unlink") }).strict(),
+  z.object({ operationKind: z.literal("workspace.window.link.select") }).strict(),
   z
     .object({
       operationKind: z.literal("workspace.window.split"),
@@ -129,6 +136,20 @@ export type PaneReadSafeSummary = Extract<
  * terminal bytes never enter the replay journal.
  */
 export const InteractionProofSchemaZ = z.discriminatedUnion("operationKind", [
+  z
+    .object({
+      operationKind: z.literal("workspace.window.link.unlink"),
+      outcome: MutationOutcomeSchemaZ,
+      target: WindowLinkTargetSchemaZ,
+    })
+    .strict(),
+  z
+    .object({
+      operationKind: z.literal("workspace.window.link.select"),
+      outcome: MutationOutcomeSchemaZ,
+      target: WindowLinkTargetSchemaZ,
+    })
+    .strict(),
   z
     .object({
       operationKind: z.literal("workspace.window.split"),
@@ -220,7 +241,7 @@ export type InteractionProof = z.infer<typeof InteractionProofSchemaZ>;
  * authority. `sequence` belongs to the daemon generation's shared event
  * journal, alongside resource.changed frames.
  */
-export const InteractionReceiptSchemaZ = z
+export const InteractionReceiptV1SchemaZ = z
   .object({
     type: z.literal("interaction.receipt"),
     sequence: z.number().int().positive(),
@@ -279,6 +300,25 @@ export const InteractionReceiptSchemaZ = z
         path: ["summary"],
         message: "external observations require a presence-only summary",
       });
+    }
+    if (receipt.operationKind.startsWith("workspace.window.link.")) {
+      if (receipt.target.kind !== "window-link") {
+        context.addIssue({
+          code: "custom",
+          path: ["target"],
+          message: "Window link verbs require a link target",
+        });
+      } else if (
+        receipt.proof &&
+        "target" in receipt.proof &&
+        JSON.stringify(receipt.proof.target) !== JSON.stringify(receipt.target.target)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["proof"],
+          message: "Window link proof must match its target",
+        });
+      }
     }
     const paneVerb = receipt.operationKind.startsWith("workspace.pane.");
     if (paneVerb && receipt.target.kind !== "pane") {
@@ -435,4 +475,83 @@ export const InteractionReceiptSchemaZ = z
       });
     }
   });
+/** Explicit next wire contract; public alias flips only with the v4 compatibility gate. */
+export const InteractionReceiptV2SchemaZ = InteractionReceiptV1SchemaZ.safeExtend({
+  evidence: InteractionEvidenceSchemaZ.nullable(),
+}).superRefine((receipt, context) => {
+  const paneInteraction =
+    receipt.operationKind === "workspace.pane.send" ||
+    receipt.operationKind === "workspace.pane.read";
+  if (!paneInteraction) {
+    if (receipt.evidence !== null)
+      context.addIssue({
+        code: "custom",
+        path: ["evidence"],
+        message: "Structural interactions use existing structural proof",
+      });
+    return;
+  }
+  const evidence = receipt.evidence;
+  if (evidence === null) {
+    context.addIssue({
+      code: "custom",
+      path: ["evidence"],
+      message: "Pane interaction requires scoped evidence",
+    });
+    return;
+  }
+  if (evidence.interactionId !== receipt.operationId)
+    context.addIssue({
+      code: "custom",
+      path: ["evidence", "interactionId"],
+      message: "Evidence must identify this interaction",
+    });
+  const destination = evidence.endpoints.destination;
+  if (
+    destination.kind === "pane" &&
+    (destination.workspaceName !== receipt.workspaceName ||
+      receipt.target.kind !== "pane" ||
+      destination.semanticPaneId !== receipt.target.semanticPaneId)
+  )
+    context.addIssue({
+      code: "custom",
+      path: ["evidence", "endpoints"],
+      message: "Evidence destination must match receipt target",
+    });
+  const command =
+    evidence.observation.kind === "stock-hook" || evidence.observation.kind === "native-journal"
+      ? evidence.observation.command
+      : null;
+  if (
+    command !== null &&
+    command !== "unknown" &&
+    (receipt.operationKind === "workspace.pane.read") !== (command === "capture-pane")
+  )
+    context.addIssue({
+      code: "custom",
+      path: ["evidence", "observation"],
+      message: "Observed command must match receipt operation",
+    });
+  if (
+    receipt.phase === "accepted" &&
+    (evidence.observation.kind !== "admission" || evidence.effect.kind !== "unknown")
+  )
+    context.addIssue({
+      code: "custom",
+      path: ["evidence"],
+      message: "Admission cannot claim command execution or effect",
+    });
+  if (
+    receipt.origin === "external" &&
+    evidence.observation.kind !== "stock-hook" &&
+    evidence.observation.kind !== "native-journal"
+  )
+    context.addIssue({
+      code: "custom",
+      path: ["evidence", "observation"],
+      message: "Passive observations require stock or native evidence",
+    });
+});
+export type InteractionReceiptV2 = z.infer<typeof InteractionReceiptV2SchemaZ>;
+export const InteractionReceiptSchemaZ = InteractionReceiptV2SchemaZ;
 export type InteractionReceipt = z.infer<typeof InteractionReceiptSchemaZ>;

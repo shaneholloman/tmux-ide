@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 
 import { WorkspacePaneCreationReferenceSchemaZ } from "@tmux-ide/contracts";
 import { z } from "zod";
+import { TerminalAttachmentSemanticPaneIdSchemaZ } from "@tmux-ide/contracts";
 
 import { logger } from "./log.ts";
 import {
@@ -95,6 +96,13 @@ export interface ExternalTmuxInteraction {
   readonly operationKind: "workspace.pane.send" | "workspace.pane.read";
   /** Present only for this daemon generation's product-authored operation. */
   readonly operationId: string | null;
+  readonly capturedTarget?: CapturedTmuxInteractionTarget;
+}
+
+export interface CapturedTmuxInteractionTarget {
+  readonly runtimePaneId: string;
+  readonly sessionId: string;
+  readonly semanticPaneId: string;
 }
 
 export interface ExternalTmuxInteractionObserverIo {
@@ -134,15 +142,30 @@ function socketArguments(authority: WorkspacePaneTmuxAuthority): readonly string
     : ["-L", authority.socketSelector.name];
 }
 
+/**
+ * Check unread state and register a waiter in the same non-yielding tmux queue.
+ * `if-shell -F` inserts its branch immediately (cmd-if-shell.c); cmdq_next
+ * executes that branch before servicing other clients (cmd-queue.c). Thus an
+ * append is either visible to this check or happens after wait-for registers.
+ * Signals alone are insufficient: two signals without a waiter cancel tmux's
+ * latched wakeup. A stale latch can cause one empty drain, never a lost batch.
+ */
+export function tmuxInteractionWaitCommand(bufferName: string, channel: string): readonly string[] {
+  const option = tmuxInteractionOption(bufferName);
+  if (!/^[A-Za-z0-9._-]{1,300}$/u.test(channel)) throw new TypeError("Invalid observer channel");
+  return ["if-shell", "-F", `#{==:#{${option}},}`, `wait-for '${channel}'`];
+}
+
 function defaultWaiter(
   authority: WorkspacePaneTmuxAuthority,
+  bufferName: string,
 ): ExternalTmuxInteractionObserverIo["waitForSignal"] {
   const prefix = socketArguments(authority);
   return (channel, signal) =>
     new Promise<void>((resolve, reject) => {
       execFile(
         authority.executablePath,
-        [...prefix, "wait-for", channel],
+        [...prefix, ...tmuxInteractionWaitCommand(bufferName, channel)],
         { signal, encoding: "utf8", windowsHide: true },
         (error) => {
           if (!error) resolve();
@@ -206,6 +229,7 @@ export interface TmuxInputHookRecord {
   readonly runtimePaneId: string;
   readonly operationMarker: string | null;
   readonly operationKind: "workspace.pane.send" | "workspace.pane.read";
+  readonly capturedTarget?: CapturedTmuxInteractionTarget;
 }
 
 /** Parse only the closed metadata written by our tmux hook. */
@@ -214,7 +238,7 @@ export function parseTmuxInputHookRecords(raw: string): readonly TmuxInputHookRe
   for (const encoded of raw.split(EVENT_SEPARATOR)) {
     if (!encoded) continue;
     const fields = encoded.split(FIELD_SEPARATOR);
-    if (fields.length !== 3 || !RUNTIME_PANE.test(fields[0]!)) continue;
+    if ((fields.length !== 3 && fields.length !== 5) || !RUNTIME_PANE.test(fields[0]!)) continue;
     const marker = fields[1]!;
     if (marker.length > 160 || /[\r\n]/u.test(marker)) continue;
     const operationKind = fields[2];
@@ -225,6 +249,17 @@ export function parseTmuxInputHookRecords(raw: string): readonly TmuxInputHookRe
       runtimePaneId: fields[0]!,
       operationMarker: marker || null,
       operationKind,
+      ...(fields.length === 5 &&
+      /^\$(?:0|[1-9][0-9]*)$/u.test(fields[3]!) &&
+      TerminalAttachmentSemanticPaneIdSchemaZ.safeParse(fields[4]).success
+        ? {
+            capturedTarget: {
+              runtimePaneId: fields[0]!,
+              sessionId: fields[3]!,
+              semanticPaneId: fields[4]!,
+            },
+          }
+        : {}),
     });
   }
   return records;
@@ -254,6 +289,10 @@ export class TmuxExternalInteractionObserver {
   readonly #registry: WorkspaceRegistry;
   readonly #io: ExternalTmuxInteractionObserverIo;
   readonly #onObserved: (interaction: ExternalTmuxInteraction) => boolean;
+  readonly #resolveCapturedTarget?: (
+    target: CapturedTmuxInteractionTarget,
+  ) => { workspaceName: string; semanticPaneId: string } | null;
+  readonly #onUnresolvedObservation?: (record: TmuxInputHookRecord) => void;
   readonly #bufferName: string;
   readonly #signalChannel: string;
   readonly #abort = new AbortController();
@@ -265,6 +304,7 @@ export class TmuxExternalInteractionObserver {
   readonly #healthcheckSchedule: HookHealthcheckSchedule;
   #healthcheckDelayMs: number;
   #lastHealthcheckOutcome: HookHealthcheckOutcome = "failed";
+  readonly #onAvailability: ((available: boolean) => void) | undefined;
   readonly #onGap: ((gap: ExternalTmuxInteractionGap) => void) | undefined;
   #tmuxWork: Promise<unknown> = Promise.resolve();
   #reconcile: Promise<void> | null = null;
@@ -284,7 +324,13 @@ export class TmuxExternalInteractionObserver {
      * must fall through to the caller's honest external-observation path.
      */
     onObserved: (interaction: ExternalTmuxInteraction) => boolean;
+    /** Supplying this disables late pane lookup, including for retained legacy records. */
+    resolveCapturedTarget?: (
+      target: CapturedTmuxInteractionTarget,
+    ) => { workspaceName: string; semanticPaneId: string } | null;
+    onUnresolvedObservation?: (record: TmuxInputHookRecord) => void;
     diagnostics?: ExternalTmuxObserverDiagnostics;
+    onAvailability?: (available: boolean) => void;
     onGap?: (gap: ExternalTmuxInteractionGap) => void;
     /** Health-check cadence bounds. Tests inject small values; production uses the default. */
     healthcheck?: Partial<HookHealthcheckSchedule>;
@@ -297,7 +343,10 @@ export class TmuxExternalInteractionObserver {
     this.#healthcheckDelayMs = this.#healthcheckSchedule.baseMs;
     this.#registry = options.registry ?? getDefaultWorkspaceRegistry();
     this.#onObserved = options.onObserved;
+    this.#resolveCapturedTarget = options.resolveCapturedTarget;
+    this.#onUnresolvedObservation = options.onUnresolvedObservation;
     this.#onGap = options.onGap;
+    this.#onAvailability = options.onAvailability;
     this.#authenticatedInternalReads = new AuthenticatedInternalReadVerifier({
       daemonInstanceId: options.daemonInstanceId,
       ownerToken: options.internalReadOwnerToken,
@@ -307,7 +356,8 @@ export class TmuxExternalInteractionObserver {
     this.#diagnostics = options.diagnostics ?? null;
     this.#io = {
       runTmux: options.io?.runTmux ?? createPinnedWorkspaceTmuxAsyncRunner(options.tmuxAuthority),
-      waitForSignal: options.io?.waitForSignal ?? defaultWaiter(options.tmuxAuthority),
+      waitForSignal:
+        options.io?.waitForSignal ?? defaultWaiter(options.tmuxAuthority, this.#bufferName),
       delay: options.io?.delay ?? abortableDelay,
     };
   }
@@ -357,7 +407,7 @@ export class TmuxExternalInteractionObserver {
       // observer alive: its retry loop installs the hooks as soon as the first
       // session creates the pinned socket. The HTTP control plane must not be
       // held hostage by optional, currently absent tmux global state.
-      this.#installed = false;
+      this.#setInstalled(false);
     }
     if (!this.#active || this.#abort.signal.aborted) {
       await this.#serializeTmux(async () => {
@@ -456,7 +506,10 @@ export class TmuxExternalInteractionObserver {
       // Bound markers at the producer, including across multibyte input.
       const validMarker = `#{&&:#{m/r:^[A-Za-z0-9:._-]*$,#{${markerOption}}},#{e|<=:#{n:${markerOption}},160}}`;
       const marker = `#{?${validMarker},#{${markerOption}},}`;
-      const data = `#{pane_id}${FIELD_SEPARATOR}${marker}${FIELD_SEPARATOR}${operationKind}${EVENT_SEPARATOR}`;
+      const stampOption = "@tmux_ide_pane_id";
+      const validStamp = `#{&&:#{m/r:^[A-Za-z0-9][A-Za-z0-9._-]*$,#{${stampOption}}},#{e|<=:#{n:${stampOption}},128}}`;
+      const stamp = `#{?${validStamp},#{${stampOption}},}`;
+      const data = `#{pane_id}${FIELD_SEPARATOR}${marker}${FIELD_SEPARATOR}${operationKind}${FIELD_SEPARATOR}#{session_id}${FIELD_SEPARATOR}${stamp}${EVENT_SEPARATOR}`;
       // Expand pane/marker identity at hook invocation, then schedule the
       // append+signal as a background tmux-native command list. No shell and
       // no second tmux client sit on the invoking command queue. The tiny
@@ -493,7 +546,7 @@ export class TmuxExternalInteractionObserver {
       signal,
     );
     signal?.throwIfAborted();
-    this.#installed = true;
+    this.#setInstalled(true);
   }
 
   /**
@@ -515,11 +568,11 @@ export class TmuxExternalInteractionObserver {
         // Hooks that were installed and are now gone dropped every interaction
         // since their removal; the repair restores future observation only.
         if (this.#installed) this.#reportGap("hooks-replaced");
-        this.#installed = false;
+        this.#setInstalled(false);
         try {
           await this.#install(this.#abort.signal);
         } catch {
-          this.#installed = false;
+          this.#setInstalled(false);
         }
         this.#lastHealthcheckOutcome = this.#installed ? "repaired" : "failed";
         finish(this.#installed);
@@ -535,7 +588,7 @@ export class TmuxExternalInteractionObserver {
     return settled;
   }
 
-  /** Atomically detach and drain the current bounded event batch. */
+  /** Snapshot and consume a matching prefix of the bounded event batch. */
   drain(): Promise<boolean> {
     return this.#serializeTmux(() => this.#drain());
   }
@@ -543,17 +596,53 @@ export class TmuxExternalInteractionObserver {
   async #drain(): Promise<boolean> {
     const finish = this.#beginDiagnostic("drain");
     const option = tmuxInteractionOption(this.#bufferName);
-    // A single reusable detached slot bounds retained storage even if deletion
-    // fails. Native synchronous commands execute consecutively in one queue.
+    // A reusable snapshot bounds storage. User after-set-option hooks may
+    // yield, so snapshot and clear are NOT an atomic command pair. Consume
+    // only the matching prefix in a later single native mutation.
     const drainName = `${option}-drain`;
+    // if-shell -F does not yield or invoke user hooks. Its branch removes
+    // exactly the snapshot prefix; an append after the snapshot survives.
+    // An overflowing producer can replace that prefix: do not project stale
+    // data or clear the new batch, report the gap and retry on the next turn.
+    const snapshotLength = `#{n:${drainName}}`;
+    const remainingLength = `#{e|-:#{n:${option}},${snapshotLength}}`;
+    const prefixMatches = `#{==:#{=/${snapshotLength}/:${option}},#{${drainName}}}`;
+    const emptySnapshot = `#{==:#{${drainName}},}`;
+    const suffix = `#{?${emptySnapshot},#{${option}},#{?#{==:${remainingLength},0},,#{=/-${remainingLength}/:${option}}}}`;
+    let acknowledged: string;
     try {
-      await this.#io.runTmux(
-        ["set-option", "-gF", drainName, `#{${option}}`, ";", "set-option", "-g", option, ""],
+      acknowledged = await this.#io.runTmux(
+        [
+          "set-option",
+          "-gF",
+          drainName,
+          `#{${option}}`,
+          ";",
+          "if-shell",
+          "-F",
+          `#{||:${emptySnapshot},${prefixMatches}}`,
+          `set-option -gF '${option}' '${suffix}' ; display-message -p tmux-ide-drain-consumed`,
+          "display-message -p tmux-ide-drain-retry",
+        ],
         this.#abort.signal,
       );
     } catch {
+      // Mutation may have happened. Never retry/project this snapshot without
+      // acknowledgement: that would invent success after uncertain delivery.
       this.#reportGap("detach-failed");
       finish(false);
+      // Unread work may remain. The unread-aware waiter would immediately
+      // retry otherwise, so persistent transport failures must also back off.
+      await this.#io.delay(RETRY_MS, this.#abort.signal);
+      return false;
+    }
+    const acknowledgement = acknowledged.trimEnd().split("\n").at(-1);
+    if (acknowledgement !== "tmux-ide-drain-consumed") {
+      await this.#deleteOption(drainName);
+      this.#reportGap(acknowledgement === "tmux-ide-drain-retry" ? "overflow" : "detach-failed");
+      finish(false);
+      // One bounded attempt per drain; prevent churn under continuous overflow.
+      await this.#io.delay(RETRY_MS, this.#abort.signal);
       return false;
     }
     let raw: string | undefined;
@@ -597,13 +686,13 @@ export class TmuxExternalInteractionObserver {
     while (this.#active && !this.#abort.signal.aborted) {
       try {
         if (!this.#installed) await this.install();
-        // A signal sent before this waiter starts is latched by tmux, so hook
-        // installation and process scheduling cannot lose the first event.
+        // The native waiter checks unread retention before blocking. Treat
+        // wait-for signals as hints, not a counted or reliably latched queue.
         await this.#io.waitForSignal(this.#signalChannel, this.#abort.signal);
         if (!this.#active || this.#abort.signal.aborted) break;
         await this.drain();
       } catch {
-        this.#installed = false;
+        this.#setInstalled(false);
         this.#resetHealthcheckBackoff();
         await this.#io.delay(RETRY_MS, this.#abort.signal);
       }
@@ -630,6 +719,21 @@ export class TmuxExternalInteractionObserver {
       ? record.operationMarker.slice(ownPrefix.length)
       : null;
     const operationId = z.uuid().safeParse(authoredOperationId);
+    if (this.#resolveCapturedTarget) {
+      const target = record.capturedTarget
+        ? this.#resolveCapturedTarget(record.capturedTarget)
+        : null;
+      if (!target) {
+        this.#onUnresolvedObservation?.(record);
+        return false;
+      }
+      return this.#onObserved({
+        ...target,
+        operationKind: record.operationKind,
+        operationId: operationId.success ? operationId.data : null,
+        capturedTarget: record.capturedTarget,
+      });
+    }
     let identity: string;
     try {
       identity = await this.#io.runTmux(
@@ -657,6 +761,7 @@ export class TmuxExternalInteractionObserver {
       semanticPaneId,
       operationKind: record.operationKind,
       operationId: operationId.success ? operationId.data : null,
+      ...(record.capturedTarget ? { capturedTarget: record.capturedTarget } : {}),
     });
   }
 
@@ -676,7 +781,7 @@ export class TmuxExternalInteractionObserver {
         }
       }
     }
-    this.#installed = false;
+    this.#setInstalled(false);
   }
 
   async #ownedHooksPresent(signal?: AbortSignal): Promise<boolean> {
@@ -695,6 +800,19 @@ export class TmuxExternalInteractionObserver {
       ownedHookInstalled(output, "after-send-keys", this.#bufferName) &&
       ownedHookInstalled(output, "after-capture-pane", this.#bufferName)
     );
+  }
+
+  get available(): boolean {
+    return this.#installed;
+  }
+  #setInstalled(available: boolean): void {
+    if (this.#installed === available) return;
+    this.#installed = available;
+    try {
+      this.#onAvailability?.(available);
+    } catch {
+      /* observer status is not authority */
+    }
   }
 
   #reportGap(reason: ExternalTmuxInteractionGap["reason"]): void {

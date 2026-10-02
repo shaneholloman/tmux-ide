@@ -1,6 +1,12 @@
+import { readManualPaneTeam } from "../terminal/attachments/manual-pane-team.ts";
+import type { PaneTeamMembership } from "@tmux-ide/contracts";
+import { decodeTmuxArgument } from "../terminal/protocol/session-descriptor-discovery.ts";
+import type { NativePaneIdentity } from "@tmux-ide/contracts";
+import { nativePaneIdentity } from "../lib/native-pane-identity.ts";
+import type { InteractionPaneEndpoint } from "@tmux-ide/contracts";
+import { liveSessionIdForNativeIdentity } from "../terminal/protocol/live-session-identity.ts";
 import { runtimeTmuxArgs } from "../lib/runtime-namespace.ts";
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { listSessionPanes } from "../widgets/lib/pane-comms.ts";
 import type { PaneInfo } from "@tmux-ide/contracts";
 import { getDefaultWorkspaceRegistry } from "../lib/workspace-registry.ts";
@@ -31,7 +37,7 @@ export interface ProjectDetail {
 type TmuxRunner = (args: string[]) => string;
 
 let _tmuxRunner: TmuxRunner = (args) =>
-  execFileSync("tmux", runtimeTmuxArgs(args), {
+  execFileSync("tmux", ["-u", ...runtimeTmuxArgs(args)], {
     encoding: "utf-8",
     maxBuffer: 1024 * 1024,
     stdio: ["ignore", "pipe", "ignore"],
@@ -80,14 +86,6 @@ export interface LiveSessionSummary {
   readonly paneCount: number;
 }
 
-function liveSessionId(serverPid: string, sessionId: string, sessionCreated: string) {
-  const digest = createHash("sha256")
-    .update(`${serverPid}\0${sessionId}\0${sessionCreated}`)
-    .digest("hex")
-    .slice(0, 20);
-  return `live-session.${digest}` as const;
-}
-
 /**
  * Enumerate observed tmux truth without consulting the workspace registry.
  *
@@ -120,7 +118,7 @@ export function discoverLiveSessionSummaries(
     if (!/^\d+$/u.test(serverPid) || !/^\$\d+$/u.test(sessionId) || !/^\d+$/u.test(sessionCreated))
       continue;
     if (!sessionName || !isVisibleFleetSession(sessionName)) continue;
-    const identity = liveSessionId(serverPid, sessionId, sessionCreated);
+    const identity = liveSessionIdForNativeIdentity(serverPid, sessionId, sessionCreated);
     const previous = sessions.get(identity);
     sessions.set(identity, {
       liveSessionId: identity,
@@ -228,6 +226,13 @@ export function readAdoptedSessionNames(runTmux: TmuxRunner = _tmuxRunner): stri
 
 /** One live pane, with the raw agent-authority options gathered for the fleet. */
 export interface FleetPaneFacts {
+  readonly team?: PaneTeamMembership;
+  readonly title?: string;
+  readonly name?: string | null;
+  readonly nameSource?: string | null;
+  readonly nativeIdentity?: NativePaneIdentity | null;
+  readonly nativePaneBirthId?: string | null;
+  readonly interactionEndpoint?: Extract<InteractionPaneEndpoint, { kind: "pane" }> | null;
   readonly runtimePaneId: string;
   /** Durable semantic pane stamp owned by tmux-ide, when one has been assigned. */
   readonly semanticPaneId: string | null;
@@ -239,6 +244,7 @@ export interface FleetPaneFacts {
   readonly agentStateRaw: string | null;
   readonly agentStatusTextRaw: string | null;
   readonly agentDisplayNameRaw: string | null;
+  readonly teamMemberName?: string;
   /** Durable `@agent_hint` agent identity, or null when the pane has none. */
   readonly agentHintRaw: string | null;
 }
@@ -272,6 +278,11 @@ const FLEET_PANE_FORMAT = [
   "#{@agent_status_text}",
   "#{@agent_display_name}",
   "#{@agent_hint}",
+  "#{pane_birth_id}",
+  "#{qa:pane_title}",
+  "#{qa:@ide_name}",
+  "#{qa:@tmux_ide_name_source}",
+  "#{@tmux_ide_team}",
   FLEET_LINE_SENTINEL,
 ].join(FLEET_FIELD_SEPARATOR);
 
@@ -292,7 +303,13 @@ function emptyToNull(value: string): string | null {
 export function readAdoptedFleet(
   registry: { list(): { sessionName: string }[] } = getDefaultWorkspaceRegistry(),
   runTmux: TmuxRunner = _tmuxRunner,
+  resolveInteractionEndpoint?: (
+    sessionName: string,
+    pane: FleetPaneFacts,
+  ) => Extract<InteractionPaneEndpoint, { kind: "pane" }> | null,
+  nativeServerEpoch?: () => string | null,
 ): FleetSessionFacts[] | null {
+  const nativeEpoch = nativeServerEpoch?.() ?? null;
   const adopted = readAdoptedSessionNames(runTmux);
   if (adopted === null) return null;
   const adoptedSet = new Set(adopted);
@@ -311,8 +328,8 @@ export function readAdoptedFleet(
     if (!line) continue;
     const fields = line.split(FLEET_FIELD_SEPARATOR);
     // session, pane, semantic pane, incarnation pid, active, command, path, state,
-    // statusText, displayName, hint, sentinel
-    if (fields.length !== 12 || fields[11] !== FLEET_LINE_SENTINEL) continue;
+    // statusText, displayName, hint, birth ID, quoted title/name/source, sentinel
+    if (![16, 17].includes(fields.length) || fields.at(-1) !== FLEET_LINE_SENTINEL) continue;
     const sessionName = fields[0]!;
     if (!adoptedSet.has(sessionName)) continue;
     const runtimePaneId = fields[1]!;
@@ -325,6 +342,10 @@ export function readAdoptedFleet(
       panesBySession.set(sessionName, panes);
     }
     panes.push({
+      team: fields.length === 17 ? readManualPaneTeam(fields[15], incarnation) : undefined,
+      nameSource: emptyToNull(decodeTmuxArgument(fields[14]!)),
+      title: decodeTmuxArgument(fields[12]!),
+      name: emptyToNull(decodeTmuxArgument(fields[13]!)),
       runtimePaneId,
       semanticPaneId: emptyToNull(fields[2]!),
       incarnation,
@@ -335,6 +356,7 @@ export function readAdoptedFleet(
       agentStatusTextRaw: emptyToNull(fields[8]!),
       agentDisplayNameRaw: emptyToNull(fields[9]!),
       agentHintRaw: emptyToNull(fields[10]!),
+      nativePaneBirthId: fields[11]!,
     });
   }
 
@@ -345,7 +367,14 @@ export function readAdoptedFleet(
       name,
       appCreated: appCreatedSessions.has(name),
       cwd: active?.currentPath ?? "",
-      panes,
+      panes: panes.map((pane) => ({
+        ...pane,
+        interactionEndpoint: resolveInteractionEndpoint?.(name, pane) ?? null,
+        nativeIdentity: nativePaneIdentity(
+          nativeEpoch === nativeServerEpoch?.() ? nativeEpoch : null,
+          pane.nativePaneBirthId,
+        ),
+      })),
     };
   });
 }

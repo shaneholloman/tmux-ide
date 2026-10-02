@@ -21,11 +21,16 @@ const BASE_COMMANDS: readonly ApplicationPaletteCommand[] = [
   "home",
   "terminals",
   "new-window",
+  "new-agent",
   "split-right",
   "split-down",
   "close-pane",
-  "appearance",
   "zoom-pane",
+  "appearance",
+  "help",
+  "shortcuts",
+  "whats-new",
+  "switch-session",
 ];
 
 /** Agent commands are derived from the same semantic rows as the sidebar. */

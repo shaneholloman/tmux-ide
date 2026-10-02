@@ -103,3 +103,46 @@ describe("pane display names", () => {
     ).toEqual({ name: memorablePaneName("pane.legacy"), source: "generated" });
   });
 });
+
+it("adopts teammate titles ahead of automatic harness labels without changing identity", () => {
+  const input = {
+    semanticPaneId: "pane.member",
+    currentCommand: "claude",
+    configuredName: "claude",
+    title: "Architect",
+  };
+  expect(resolvePaneDisplayName(input)).toEqual({ name: "Architect", source: "title" });
+  expect(
+    resolvePaneDisplayName({
+      ...input,
+      configuredName: "My architect",
+      configuredNameSource: "manual",
+      agentDisplayName: "Other",
+    }),
+  ).toEqual({ name: "My architect", source: "manual" });
+  expect(resolvePaneDisplayName({ ...input, title: "Reviewer\u001b[2J" }).name).not.toContain(
+    "Reviewer",
+  );
+  expect(resolvePaneDisplayName({ ...input, title: "Claude Code" }).source).toBe("process");
+});
+
+it("keeps manual names above verified team names and team names above changing activity titles", () => {
+  const pane = {
+    semanticPaneId: "pane.team",
+    configuredName: "claude",
+    currentCommand: "claude",
+    title: "Investigating logs",
+    agentDisplayName: "Claude Code",
+    teamMemberName: "researcher",
+  };
+  expect(resolvePaneDisplayName(pane)).toEqual({ name: "researcher", source: "agent" });
+  expect(resolvePaneDisplayName({ ...pane, title: "Done" }).name).toBe("researcher");
+  expect(
+    resolvePaneDisplayName({
+      ...pane,
+      configuredName: "My reviewer",
+      configuredNameSource: "manual",
+    }),
+  ).toEqual({ name: "My reviewer", source: "manual" });
+  expect(resolvePaneDisplayName({ ...pane, teamMemberName: null }).name).toBe("Investigating logs");
+});

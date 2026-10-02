@@ -3,6 +3,7 @@ import type { CanonicalTerminalReplicaUpdate } from "@tmux-ide/contracts";
 import type { MirrorSubscribeRequest, MirrorSubscription } from "../mirror/mirror-service.ts";
 import { TerminalReplicaInterpreter } from "./terminal-replica-interpreter.ts";
 import { SessionRuntimeTerminalReplicaOwner } from "./terminal-replica-owner.ts";
+import { createSessionRuntimeObservability } from "./runtime-observability.ts";
 import type { SessionRuntimeTraceContext } from "./runtime-observability.ts";
 
 const generation = "00000000-0000-4000-8000-000000000001";
@@ -509,6 +510,143 @@ describe("SessionRuntimeTerminalReplicaOwner", () => {
     await owner.dispose();
   });
 
+  it.each(["lease-crossed", "native-recapture-required"] as const)(
+    "fails closed after one retry for repeated %s with unchanged valid geometry",
+    async (reason) => {
+      let reseeds = 0;
+      let zoomed = false;
+      const faults: unknown[] = [];
+      const updates: CanonicalTerminalReplicaUpdate[] = [];
+      const observability = createSessionRuntimeObservability();
+      const mirror = {
+        subscribe: async (candidate: MirrorSubscribeRequest): Promise<MirrorSubscription> => {
+          const capture = () => {
+            candidate.onEvent({ type: "reset", cols: 8, rows: 3 });
+            candidate.onEvent({
+              type: "seed",
+              data: new TextEncoder().encode("PRIVATE-CONTENT"),
+              ...(reason === "native-recapture-required" ? { requiresNativeRecapture: true } : {}),
+            });
+            candidate.onEvent({ type: "cursor", x: 0, y: 0 });
+            if (reason === "lease-crossed") {
+              zoomed = !zoomed;
+              candidate.onLayout?.({ ...layout(8, 4, "top"), zoomed });
+            }
+          };
+          queueMicrotask(() => {
+            candidate.onLayout?.(layout(8, 4, "top"));
+            capture();
+          });
+          return {
+            ...subscription(candidate),
+            reseed: () => {
+              reseeds++;
+              capture();
+            },
+          };
+        },
+      };
+      const owner = new SessionRuntimeTerminalReplicaOwner(
+        generation,
+        "workspace",
+        "pane-a",
+        mirror as never,
+        {
+          incarnation: `${generation}:0`,
+          initialRevision: 0,
+          observability,
+          onFault: (error) => faults.push(error),
+        },
+      );
+      try {
+        await expect(owner.subscribe((update) => updates.push(update))).rejects.toThrow(
+          /terminal reseed/u,
+        );
+        expect(reseeds).toBe(1);
+        expect(faults).toHaveLength(1);
+        expect(updates).toEqual([]);
+        const spans = observability.snapshot().spans.filter((span) => span.terminalReseed);
+        expect(spans.map((span) => span.operation)).toEqual([
+          "terminal-replica-reseed-retry",
+          "terminal-replica-reseed-exhausted",
+        ]);
+        for (const span of spans) {
+          expect(span.terminalReseed).toMatchObject({
+            reason,
+            stage: reason === "lease-crossed" ? "before-commit" : "capture-qualification",
+            captureCols: 8,
+            captureRows: 3,
+            layoutCols: 8,
+            layoutRows: 3,
+            currentLayoutCols: 8,
+            currentLayoutRows: 3,
+          });
+          const diagnostic = span.terminalReseed!;
+          expect(diagnostic.currentSubscriptionEpoch).toBe(diagnostic.captureSubscriptionEpoch);
+          if (reason === "lease-crossed")
+            expect(diagnostic.currentLeaseEpoch).toBeGreaterThan(diagnostic.captureLeaseEpoch!);
+          else expect(diagnostic.currentLeaseEpoch).toBe(diagnostic.captureLeaseEpoch);
+        }
+        expect(JSON.stringify(spans)).not.toContain("PRIVATE-CONTENT");
+      } finally {
+        await owner.dispose();
+      }
+    },
+  );
+
+  it("survives twenty superseded capture leases and publishes only the final geometry", async () => {
+    const updates: CanonicalTerminalReplicaUpdate[] = [];
+    const faults: unknown[] = [];
+    let reseeds = 0;
+    let currentRows = 4;
+    const mirror = {
+      subscribe: async (candidate: MirrorSubscribeRequest): Promise<MirrorSubscription> => {
+        const capture = () => {
+          candidate.onEvent({ type: "reset", cols: 8, rows: currentRows - 1 });
+          candidate.onEvent({ type: "seed", data: new TextEncoder().encode("final") });
+          candidate.onEvent({ type: "cursor", x: 5, y: 0 });
+          // Supersede after the capture was queued, before its commit can run.
+          if (reseeds < 20) {
+            currentRows++;
+            candidate.onLayout?.(layout(8, currentRows, "top"));
+          }
+        };
+        queueMicrotask(() => {
+          candidate.onLayout?.(layout(8, currentRows, "top"));
+          capture();
+        });
+        return {
+          ...subscription(candidate),
+          reseed: () => {
+            reseeds++;
+            capture();
+          },
+        };
+      },
+    };
+    const owner = new SessionRuntimeTerminalReplicaOwner(
+      generation,
+      "workspace",
+      "pane-a",
+      mirror as never,
+      {
+        incarnation: `${generation}:0`,
+        initialRevision: 0,
+        onFault: (error) => faults.push(error),
+      },
+    );
+    try {
+      await owner.subscribe((update) => updates.push(update));
+      expect(reseeds).toBe(20);
+      expect(faults).toEqual([]);
+      expect(updates).toHaveLength(1);
+      expect(updates[0]).toMatchObject({ type: "terminal.seed", cols: 8, rows: 23 });
+      expect(updates.some((update) => update.type === "terminal.tombstone")).toBe(false);
+    } finally {
+      await owner.dispose();
+    }
+  });
+
   it("ignores unrelated windows before and after its target lease without clearing or retrying", async () => {
     let reseeds = 0;
     const updates: CanonicalTerminalReplicaUpdate[] = [];
@@ -784,6 +922,7 @@ describe("SessionRuntimeTerminalReplicaOwner", () => {
   ] as const)("retries once then fails closed for %s", async (_label, candidateLayout, native) => {
     let reseeds = 0;
     const faults: unknown[] = [];
+    const observability = createSessionRuntimeObservability();
     const mirror = {
       subscribe: async (candidate: MirrorSubscribeRequest): Promise<MirrorSubscription> => {
         const emitInvalid = () => {
@@ -811,11 +950,34 @@ describe("SessionRuntimeTerminalReplicaOwner", () => {
         incarnation: `${generation}:0`,
         initialRevision: 0,
         onFault: (error) => faults.push(error),
+        observability,
       },
     );
     await expect(owner.subscribe(() => undefined)).rejects.toThrow(/terminal reseed/u);
     expect(reseeds).toBe(1);
     expect(faults).toHaveLength(1);
+    expect(observability.snapshot().spans.map((span) => span.operation)).toEqual(
+      expect.arrayContaining([
+        "terminal-replica-reseed-retry",
+        "terminal-replica-reseed-exhausted",
+      ]),
+    );
+    const expectedReason = _label.includes("cursor")
+      ? "invalid-cursor"
+      : _label === "column mismatch"
+        ? "width-mismatch"
+        : _label === "off-row mismatch"
+          ? "height-mismatch"
+          : "missing-lease";
+    expect(
+      observability
+        .snapshot()
+        .spans.filter((span) => span.terminalReseed)
+        .map((span) => span.terminalReseed),
+    ).toEqual([
+      expect.objectContaining({ reason: expectedReason, stage: "capture-qualification" }),
+      expect.objectContaining({ reason: expectedReason, stage: "capture-qualification" }),
+    ]);
     expect(owner.qualificationSnapshot()).toMatchObject({ revision: null, stateHash: null });
     await owner.dispose();
   });

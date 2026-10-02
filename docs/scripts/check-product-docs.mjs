@@ -12,13 +12,13 @@ const packageVersion = JSON.parse(readRoot("package.json")).version;
 const cliSource = readRoot("bin/cli.ts");
 const commandsDoc = readRoot("docs/content/docs/commands.mdx");
 const templatesDoc = readRoot("docs/content/docs/templates.mdx");
-const releaseDoc = readRoot("docs/content/docs/release-2-9-0-beta-1.mdx");
+const releaseDoc = readRoot("docs/content/docs/release-2-9-2.mdx");
 const configurationDoc = readRoot("docs/content/docs/configuration.mdx");
 
 for (const [path, content] of [
   ["commands.mdx", commandsDoc],
   ["templates.mdx", templatesDoc],
-  ["release-2-9-0-beta-1.mdx", releaseDoc],
+  ["release-2-9-2.mdx", releaseDoc],
 ]) {
   if (!content.includes(packageVersion)) {
     fail(`${path} does not name the current package version ${packageVersion}`);

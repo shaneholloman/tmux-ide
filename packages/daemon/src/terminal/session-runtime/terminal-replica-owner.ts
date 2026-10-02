@@ -1,3 +1,4 @@
+import { layoutContentRows } from "../mirror/layout-content-rows.ts";
 import type { NativeGridCapture } from "../mirror/native-grid-capture.ts";
 import type {
   CanonicalTerminalReplicaUpdate,
@@ -21,6 +22,7 @@ import {
 } from "./runtime-scheduler.ts";
 import type {
   SessionRuntimeObservability,
+  SessionRuntimeReseedDiagnostic,
   SessionRuntimeTraceContext,
 } from "./runtime-observability.ts";
 import { DISABLED_SESSION_RUNTIME_OBSERVABILITY } from "./runtime-observability.ts";
@@ -355,6 +357,7 @@ export class SessionRuntimeTerminalReplicaOwner {
     reason: "pane-closed" | "session-restarted" | "runtime-disposed" = "runtime-disposed",
   ): Promise<void> {
     if (this.#disposed) return;
+    this.#noteLifecycle(`dispose-${reason}`);
     this.#disposed = true;
     this.#historyTimer?.cancel();
     this.#historyTimer = null;
@@ -466,11 +469,20 @@ export class SessionRuntimeTerminalReplicaOwner {
               observedModes: event.observedModes,
               bootstrap: "painted-capture",
               validateBeforeCommit: () => this.#leaseIsCurrent(lease, reseed.subscriptionEpoch),
-              onInvalidated: () => this.#retryReseedOrFault("terminal reseed layout lease crossed"),
+              onInvalidated: () =>
+                this.#retryReseedOrFault(
+                  "terminal reseed layout lease crossed",
+                  reseed,
+                  "before-commit",
+                  "lease-crossed",
+                ),
             })
           : reseed
             ? (this.#retryReseedOrFault(
                 `terminal reseed geometry is incompatible: capture ${reseed.nativeCols}x${reseed.nativeRows}, layout ${reseed.layoutLease?.pane.width}x${reseed.layoutLease?.pane.height}, border ${reseed.layoutLease?.paneBorderStatus}`,
+                reseed,
+                "capture-qualification",
+                this.#reseedRejection(reseed, event.x, event.y)!,
               ),
               Promise.resolve())
             : this.#interpreter.enqueue({
@@ -482,10 +494,12 @@ export class SessionRuntimeTerminalReplicaOwner {
               }),
       );
     } else if (event.type === "fault") {
+      this.#noteLifecycle("upstream-fault");
       const error = new Error("Native terminal recovery failed");
       this.#interpreter.abort(error);
       this.#onFault?.(error);
     } else if (event.type === "closed") {
+      this.#noteLifecycle("upstream-closed");
       const closed = this.#interpreter.enqueue({ type: "close", reason: "pane-closed" });
       this.#supervise(closed);
       void closed.then(
@@ -573,16 +587,25 @@ export class SessionRuntimeTerminalReplicaOwner {
   }
 
   #qualifyReseed(reseed: ReseedCandidate, cursorX: number, cursorY: number): LayoutLease | null {
+    return this.#reseedRejection(reseed, cursorX, cursorY) === null ? reseed.layoutLease : null;
+  }
+
+  #reseedRejection(
+    reseed: ReseedCandidate,
+    cursorX: number,
+    cursorY: number,
+  ): SessionRuntimeReseedDiagnostic["reason"] | null {
     if (
       reseed.native &&
       (reseed.native.cols !== reseed.nativeCols || reseed.native.rows !== reseed.nativeRows)
     )
-      return null;
-    if (reseed.requiresNativeRecapture) return null;
+      return "native-size-mismatch";
+    if (reseed.requiresNativeRecapture) return "native-recapture-required";
     const lease = reseed.layoutLease;
-    if (!lease || !this.#leaseIsCurrent(lease, reseed.subscriptionEpoch)) return null;
-    if (lease.pane.width !== reseed.nativeCols) return null;
-    if (!nativeRowsMatchLease(lease, reseed.nativeRows)) return null;
+    if (!lease) return "missing-lease";
+    if (!this.#leaseIsCurrent(lease, reseed.subscriptionEpoch)) return "lease-crossed";
+    if (lease.pane.width !== reseed.nativeCols) return "width-mismatch";
+    if (!nativeRowsMatchLease(lease, reseed.nativeRows)) return "height-mismatch";
     if (
       !Number.isSafeInteger(cursorX) ||
       !Number.isSafeInteger(cursorY) ||
@@ -590,8 +613,8 @@ export class SessionRuntimeTerminalReplicaOwner {
       cursorY < 0 ||
       cursorY >= reseed.nativeRows
     )
-      return null;
-    return lease;
+      return "invalid-cursor";
+    return null;
   }
 
   #leaseIsCurrent(lease: LayoutLease, subscriptionEpoch: number): boolean {
@@ -604,14 +627,43 @@ export class SessionRuntimeTerminalReplicaOwner {
     );
   }
 
-  #retryReseedOrFault(message: string): void {
+  #retryReseedOrFault(
+    message: string,
+    reseed: ReseedCandidate,
+    stage: SessionRuntimeReseedDiagnostic["stage"],
+    reason: SessionRuntimeReseedDiagnostic["reason"],
+  ): void {
     if (this.#disposed || this.#waitingForGeometryCapture) return;
+    const diagnostic: SessionRuntimeReseedDiagnostic | undefined = this.#observability.enabled
+      ? {
+          reason,
+          stage,
+          captureCols: diagnosticInteger(reseed.nativeCols),
+          captureRows: diagnosticInteger(reseed.nativeRows),
+          nativeCols: diagnosticInteger(reseed.native?.cols),
+          nativeRows: diagnosticInteger(reseed.native?.rows),
+          layoutCols: diagnosticInteger(reseed.layoutLease?.pane.width),
+          layoutRows: diagnosticInteger(
+            reseed.layoutLease ? nativeRowsForLease(reseed.layoutLease) : undefined,
+          ),
+          currentLayoutCols: diagnosticInteger(this.#layoutLease?.pane.width),
+          currentLayoutRows: diagnosticInteger(
+            this.#layoutLease ? nativeRowsForLease(this.#layoutLease) : undefined,
+          ),
+          captureLeaseEpoch: diagnosticInteger(reseed.layoutLease?.epoch),
+          currentLeaseEpoch: diagnosticInteger(this.#layoutLease?.epoch),
+          captureSubscriptionEpoch: diagnosticInteger(reseed.subscriptionEpoch),
+          currentSubscriptionEpoch: diagnosticInteger(this.#subscriptionEpoch),
+        }
+      : undefined;
     if (this.#reseedRetryCount >= 1) {
+      this.#noteLifecycle("reseed-exhausted", diagnostic);
       const error = new Error(message);
       this.#interpreter.abort(error);
       this.#onFault?.(error);
       return;
     }
+    this.#noteLifecycle("reseed-retry", diagnostic);
     this.#reseedRetryCount += 1;
     this.#waitingForGeometryCapture = true;
     void this.#start.then(() => {
@@ -621,9 +673,41 @@ export class SessionRuntimeTerminalReplicaOwner {
 
   #supervise(operation: Promise<void>): void {
     void operation.catch((error) => {
+      this.#noteLifecycle("interpreter-fault");
       this.#interpreter.abort(error);
       this.#onFault?.(error);
     });
+  }
+
+  #noteLifecycle(
+    reason:
+      | "dispose-pane-closed"
+      | "dispose-session-restarted"
+      | "dispose-runtime-disposed"
+      | "upstream-fault"
+      | "upstream-closed"
+      | "reseed-exhausted"
+      | "reseed-retry"
+      | "interpreter-fault",
+    diagnostic?: SessionRuntimeReseedDiagnostic,
+  ): void {
+    if (!this.#observability.enabled) return;
+    try {
+      const at = this.#observability.nowMicros();
+      // Closed vocabulary only: never include terminal bytes or exception messages.
+      this.#observability.recordSpan(
+        "reduce",
+        `terminal-replica-${reason}`,
+        at,
+        at,
+        null,
+        undefined,
+        undefined,
+        diagnostic,
+      );
+    } catch {
+      // Optional qualification diagnostics must not affect lifecycle handling.
+    }
   }
 
   #consumeOutputTrace(): SessionRuntimeTraceContext | null {
@@ -661,16 +745,12 @@ function nativeRowsMatchLease(lease: LayoutLease, nativeRows: number): boolean {
 }
 
 function nativeRowsForLease(lease: Omit<LayoutLease, "epoch">): number {
-  if (lease.paneBorderStatus === "off") return lease.pane.height;
-
-  // pane-border-status consumes a terminal row only on the pane touching the
-  // configured outer window edge. Interior separators are drawn inside the
-  // layout and tmux reports their capture at the full visible pane height.
-  const touchesStatusEdge =
-    lease.paneBorderStatus === "top"
-      ? lease.pane.top === 0
-      : lease.pane.top + lease.pane.height === lease.windowRows;
-  return lease.pane.height - (touchesStatusEdge ? 1 : 0);
+  return layoutContentRows(
+    lease.pane.top,
+    lease.pane.height,
+    lease.windowRows,
+    lease.paneBorderStatus,
+  );
 }
 
 function layoutLeaseEqual(
@@ -695,4 +775,8 @@ function layoutLeaseEqual(
     left.pane.width === right.pane.width &&
     left.pane.height === right.pane.height
   );
+}
+
+function diagnosticInteger(value: number | undefined): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }

@@ -1,4 +1,5 @@
 /* @jsxImportSource @opentui/solid */
+import { MouseButtons } from "@opentui/core/testing";
 import { expect, it } from "bun:test";
 import { renderForTest } from "../testing/renderer-harness.test.ts";
 import { createSemanticThemeSnapshot } from "../theme.ts";
@@ -92,7 +93,8 @@ it("keeps wide and narrow previews inside their surface and offers true full pre
       writeFileSync(`/tmp/beta18-palette-${width}.txt`, frame);
       expect(frame).toContain("Mini · api");
       expect(frame).toContain("Expand");
-      expect(frame).toContain("1 matches");
+      // Result position remains in the detail footer; the duplicate count badge is gone.
+      expect(frame).toContain("1/1 · Mini · Session");
       owner.route({
         name: "e",
         ctrl: true,
@@ -152,6 +154,9 @@ it("opens offline reference sheets and restores palette input after dismissal", 
     expect(key("q")).toBe(true);
     key("tab");
     await setup.renderOnce();
+    expect(setup.captureCharFrame()).toContain("2.9.0-beta.44");
+    key("pagedown");
+    await setup.renderOnce();
     expect(setup.captureCharFrame()).toContain("2.9.0-beta.18");
     key("escape");
     await setup.renderOnce();
@@ -165,3 +170,199 @@ it("opens offline reference sheets and restores palette input after dismissal", 
     owner.dispose();
   }
 });
+
+for (const mode of ["dark", "light"] as const)
+  for (const width of [80, 28]) {
+    it(`${mode} ${width}: aligns shortcuts, drops optional hints on narrow rows, and opens reference rows`, async () => {
+      const routes = createKeyboardRouteOwner();
+      const theme = createSemanticThemeSnapshot({ mode });
+      const setup = await renderForTest(
+        () => (
+          <KeyboardRouteProvider owner={routes}>
+            <MinimalPalette
+              width={width}
+              height={24}
+              selected={0}
+              commands={["home", "terminals", "shortcuts", "whats-new"]}
+              theme={theme}
+              closeArmed={false}
+              onActivate={() => {}}
+              onClose={() => {}}
+            />
+          </KeyboardRouteProvider>
+        ),
+        { width, height: 24 },
+      );
+      try {
+        await setup.renderOnce();
+        const lines = setup.captureCharFrame().split("\n");
+        const home = lines.find((line) => line.includes("Home"))!;
+        const terminals = lines.find((line) => line.includes("Terminals"))!;
+        expect(home.indexOf("F1")).toBe(terminals.indexOf("F2"));
+        expect(home).toMatch(/Home +F1/u);
+        const reference = lines.findIndex((line) => line.includes("Keyboard shortcuts"));
+        expect(reference).toBeGreaterThan(-1);
+        if (width === 80)
+          expect(lines[reference]!.indexOf("Ctrl+K") + 6).toBe(home.indexOf("F1") + 2);
+        else expect(lines[reference]).not.toContain("Ctrl+K");
+        const span = setup
+          .captureSpans()
+          .lines[lines.indexOf(home)]!.spans.find((span) => span.text.includes("F1"))!;
+        expect(span.fg.toInts()).toEqual(theme.roles.selection.selectionText.toInts());
+        await setup.mockMouse.click(
+          lines[reference]!.indexOf("Keyboard shortcuts"),
+          reference,
+          MouseButtons.LEFT,
+        );
+        await setup.renderOnce();
+        expect(setup.captureCharFrame()).toContain("Application");
+        routes.route({
+          name: "escape",
+          ctrl: false,
+          meta: false,
+          shift: false,
+          eventType: "press",
+          preventDefault() {},
+          stopPropagation() {},
+        });
+        await setup.renderOnce();
+        expect(setup.captureCharFrame()).not.toContain("Application");
+        expect(setup.captureCharFrame()).toContain("Command palette");
+      } finally {
+        setup.renderer.destroy();
+        routes.dispose();
+      }
+    });
+  }
+
+import { ApplicationReferenceSheet } from "./application-reference-sheet.tsx";
+
+for (const mode of ["light", "dark"] as const) {
+  it(`${mode}: searches shortcut labels and keys without executing commands and preserves parent dismissal`, async () => {
+    const owner = createKeyboardRouteOwner();
+    let closed = 0;
+    const setup = await renderForTest(
+      () => (
+        <KeyboardRouteProvider owner={owner}>
+          <ApplicationReferenceSheet
+            page="shortcuts"
+            width={80}
+            height={24}
+            theme={createSemanticThemeSnapshot({ mode })}
+            onClose={() => closed++}
+          />
+        </KeyboardRouteProvider>
+      ),
+      { width: 80, height: 24 },
+    );
+    const key = (name: string, ctrl = false) =>
+      owner.route({
+        name,
+        ctrl,
+        meta: false,
+        shift: false,
+        eventType: "press",
+        preventDefault() {},
+        stopPropagation() {},
+      });
+    try {
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).not.toMatch(/[╭╮╰╯›]/u);
+      owner.routePaste(new TextEncoder().encode("Ctrl+G"));
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).toContain("Sidebar / Sessions when hidden");
+      expect(setup.captureCharFrame()).not.toContain("Agent attention");
+      key("enter");
+      expect(closed).toBe(0);
+      key("u", true);
+      owner.routePaste(new TextEncoder().encode("unmatchable"));
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).toContain("No matching shortcuts");
+      key("tab");
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).toContain("2.9.0-beta.44");
+      key("tab");
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).toContain("Using tmux-ide");
+      key("tab");
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).toContain("unmatchable");
+      key("escape");
+      expect(closed).toBe(1);
+    } finally {
+      setup.renderer.destroy();
+      owner.dispose();
+    }
+  });
+}
+
+for (const width of [40, 100]) {
+  it(`explains the workspace in a scrollable help dialog at ${width} columns`, async () => {
+    const owner = createKeyboardRouteOwner();
+    let closed = 0;
+    const setup = await renderForTest(
+      () => (
+        <KeyboardRouteProvider owner={owner}>
+          <ApplicationReferenceSheet
+            page="help"
+            width={width}
+            height={24}
+            theme={createSemanticThemeSnapshot({ mode: "dark" })}
+            onClose={() => closed++}
+          />
+        </KeyboardRouteProvider>
+      ),
+      { width, height: 24 },
+    );
+    const key = (name: string) =>
+      owner.route({
+        name,
+        ctrl: false,
+        meta: false,
+        shift: false,
+        eventType: "press",
+        preventDefault() {},
+        stopPropagation() {},
+      });
+    try {
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).toContain("Using tmux-ide");
+      expect(setup.captureCharFrame()).toContain("Find your work");
+      expect(setup.renderer.root.findDescendantById("ui-overlay-frame-host")).toBeDefined();
+      expect(owner.routePaste(new TextEncoder().encode("do not send to terminal"))).toBe(true);
+      expect(key("f2")).toBe(true);
+      expect(closed).toBe(0);
+      for (let i = 0; i < 10; i++) key("pagedown");
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).toContain("headless");
+      key("tab");
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).toContain("Keyboard shortcuts");
+      owner.routePaste(new TextEncoder().encode("working"));
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).toContain("Show working agents");
+      key("tab");
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).toContain("2.9.0-beta.44");
+      key("tab");
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).toContain("Using tmux-ide");
+      owner.route({
+        name: "tab",
+        ctrl: false,
+        meta: false,
+        shift: true,
+        eventType: "press",
+        preventDefault() {},
+        stopPropagation() {},
+      });
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).toContain("2.9.0-beta.44");
+      key("escape");
+      expect(closed).toBe(1);
+    } finally {
+      setup.renderer.destroy();
+      owner.dispose();
+    }
+  });
+}

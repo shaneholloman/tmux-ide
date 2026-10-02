@@ -36,6 +36,8 @@ export function mixedFleetCatalog(
         paneCount: 3,
         agents: [
           {
+            interactionEndpoint: null,
+            nativeIdentity: null,
             agentId: "agent.aaaaaaaaaaaaaaaa",
             name: "Claude",
             harness: "claude-code",
@@ -44,6 +46,8 @@ export function mixedFleetCatalog(
             statusSource: "authority",
           },
           {
+            interactionEndpoint: null,
+            nativeIdentity: null,
             agentId: "agent.aaaaaaaaaaaaaaab",
             name: "Codex",
             harness: "codex",
@@ -61,6 +65,8 @@ export function mixedFleetCatalog(
         paneCount: 2,
         agents: [
           {
+            interactionEndpoint: null,
+            nativeIdentity: null,
             agentId: "agent.bbbbbbbbbbbbbbbb",
             name: "Reviewer",
             harness: "custom",

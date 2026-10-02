@@ -2,6 +2,9 @@ import type { InteractionReceipt } from "@tmux-ide/contracts";
 /* @jsxImportSource @opentui/solid */
 import { MouseButtons } from "@opentui/core/testing";
 import { describe, expect, it } from "bun:test";
+import { createSignal } from "solid-js";
+import { readFileSync } from "node:fs";
+import { APPLICATION_HOME_WORDMARK } from "../ui/home-wordmark.ts";
 
 import { createSemanticThemeSnapshot } from "../theme.ts";
 import { clipTerminal } from "../terminal-text.ts";
@@ -36,6 +39,56 @@ function homeProps(
 }
 
 describe("compact production Home presentation", () => {
+  it("reuses the exact marketing-site ASCII wordmark", () => {
+    const svg = readFileSync(
+      new URL("../../../../../../docs/public/ascii-wordmark.svg", import.meta.url),
+      "utf8",
+    );
+    const rows = [...svg.matchAll(/<text x="0" y="\d+">([^<]*)<\/text>/gu)].map(
+      (match) => match[1],
+    );
+    expect(APPLICATION_HOME_WORDMARK).toEqual(rows);
+  });
+  it("reserves the ASCII logo for an observed empty fleet, not loading or search results", async () => {
+    for (const [phase, query, expected] of [
+      ["live", "", true],
+      ["live", "missing", false],
+      ["loading", "", false],
+      ["partial", "", false],
+      ["unavailable", "", false],
+    ] as const) {
+      const setup = await renderForTest(
+        () => (
+          <ApplicationHomeSurface
+            {...homeProps({
+              width: 120,
+              height: 40,
+              agentQuery: query,
+              agentRoster: {
+                phase,
+                rows: [],
+                observedSessions: 0,
+                totalSessions: 0,
+                loadingSessions: 0,
+                unavailableSessions: 0,
+                truncatedSessions: 0,
+                refreshingSessionKeys: [],
+                unavailableSessionKeys: [],
+                note: null,
+              },
+            })}
+          />
+        ),
+        { width: 120, height: 40 },
+      );
+      try {
+        await setup.renderOnce();
+        expect(setup.captureCharFrame().includes(APPLICATION_HOME_WORDMARK[2])).toBe(expected);
+      } finally {
+        setup.renderer.destroy();
+      }
+    }
+  });
   it.each([
     [80, 24],
     [120, 40],
@@ -96,7 +149,7 @@ describe("compact production Home presentation", () => {
     it.each([
       [80, 24],
       [120, 40],
-    ])("keeps a left-aligned information hierarchy at %ix%i in " + mode, async (width, height) => {
+    ])("centers a bounded information column at %ix%i in " + mode, async (width, height) => {
       const props = homeProps({ width, height, theme: createSemanticThemeSnapshot({ mode }) });
       const setup = await renderForTest(() => <ApplicationHomeSurface {...props} />, {
         width,
@@ -106,10 +159,11 @@ describe("compact production Home presentation", () => {
       const frame = setup.captureCharFrame();
       expectFrameBounds(frame, width, height);
       const lines = frame.split("\n").map((line) => line.trimEnd());
-      expect(lines[1]).toBe("  tmux-ide");
-      expect(lines[3]).toBe("  research · live");
-      expect(lines[4]).toBe("  2 sessions in view");
-      expect(lines[5]).toBe("  Current session · 1 working · 1 needs attention");
+      const left = " ".repeat(Math.max(2, Math.floor((width - 88) / 2)));
+      expect(lines[1]).toBe(`${left}tmux-ide`);
+      expect(lines[3]).toBe(`${left}research · live`);
+      expect(lines[4]).toBe(`${left}2 sessions in view`);
+      expect(lines[5]).toBe(`${left}Current session · 1 working · 1 needs attention`);
       expect(frame).toContain("Open terminals F2");
       expect(frame).toContain("Commands F5");
       expect(frame).toContain(`Theme: ${mode}`);
@@ -213,9 +267,37 @@ describe("compact production Home presentation", () => {
   });
 });
 
+const endpoint = (semanticPaneId: string) => ({
+  kind: "pane" as const,
+  environmentId: "00000000-0000-4000-8000-000000000001",
+  serverScope: {
+    serverId: `tmux-server.${"a".repeat(32)}`,
+    generation: "00000000-0000-4000-8000-000000000001",
+  },
+  workspaceName: "research",
+  paneLifetimeId: "00000000-0000-4000-8000-000000000002",
+  semanticPaneId,
+});
+
 describe("Home observed pane activity", () => {
   const receipt: InteractionReceipt = {
     type: "interaction.receipt",
+
+    evidence: {
+      schemaVersion: 1,
+      interactionId: "10000000-0000-4000-8000-000000000001",
+      revision: 0,
+      actor: { kind: "unknown", reason: "stock-hook" },
+      endpoints: {
+        source: null,
+        destination: endpoint("pane.tests"),
+      },
+      observation: { kind: "stock-hook", command: "capture-pane" },
+      effect: { kind: "unknown" },
+      occurredAt: null,
+      timeBasis: "unknown",
+      receivedAt: "2026-09-08T10:00:00.000Z",
+    },
     sequence: 1,
     operationId: "10000000-0000-4000-8000-000000000001",
     origin: "external",
@@ -229,8 +311,42 @@ describe("Home observed pane activity", () => {
     at: "2026-09-08T10:00:00.000Z",
     resourceRevision: null,
   };
+  const activityProps = (overrides: Partial<ApplicationHomeSurfaceProps> = {}) =>
+    homeProps({
+      activityDaemonId: "daemon-local",
+      agentSelection: { selectedKey: "tests", scrollOffset: 0 },
+      agentRoster: {
+        phase: "live",
+        observedSessions: 1,
+        totalSessions: 1,
+        loadingSessions: 0,
+        unavailableSessions: 0,
+        truncatedSessions: 0,
+        refreshingSessionKeys: [],
+        unavailableSessionKeys: [],
+        note: null,
+        rows: [
+          {
+            key: "tests",
+            sessionKey: "research",
+            sessionName: "research",
+            liveSessionId: "$1",
+            daemonInstanceId: "daemon-local",
+            agentId: "tests",
+            paneId: "pane.tests",
+            interactionEndpoint: endpoint("pane.tests"),
+            name: "Tests",
+            harness: "codex",
+            activity: "running",
+            attention: false,
+            projectName: "research",
+          },
+        ],
+      },
+      ...overrides,
+    });
   it("shows safe observed relationships without inventing an agent identity or rendering payloads", async () => {
-    const props = homeProps({
+    const props = activityProps({
       recentPaneActivity: [Object.assign({}, receipt, { content: "SECRET_PANE_CONTENT" })],
     });
     const setup = await renderForTest(() => <ApplicationHomeSurface {...props} />, {
@@ -240,9 +356,9 @@ describe("Home observed pane activity", () => {
     try {
       await setup.renderOnce();
       const frame = setup.captureCharFrame();
-      expect(frame).toContain("Recent pane activity");
+      expect(frame).toContain("Tests · latest activity");
       expect(frame).toContain("09-08 10:00Z");
-      expect(frame).toContain("External reader reads pane.tests");
+      expect(frame).toContain("Read command · reader unknown");
       expect(frame).toContain("Activity reported through tmux-ide");
       expect(frame).not.toContain("SECRET_PANE_CONTENT");
       expect(frame).toContain("Open terminals");
@@ -251,8 +367,112 @@ describe("Home observed pane activity", () => {
       setup.renderer.destroy();
     }
   });
+  it.each([
+    ["accepted", "Read requested"],
+    ["observed", "Read command · reader unknown"],
+    ["rejected", "Read failed"],
+    ["timed-out", "Read timed out"],
+  ] as const)("keeps %s activity explicit with secondary timestamps", async (phase, label) => {
+    const setup = await renderForTest(
+      () => (
+        <ApplicationHomeSurface
+          {...activityProps({
+            height: 32,
+            recentPaneActivity: [{ ...receipt, phase } as InteractionReceipt],
+          })}
+        />
+      ),
+      { width: 80, height: 32 },
+    );
+    try {
+      await setup.renderOnce();
+      const lines = setup.captureCharFrame().split("\n");
+      const row = lines.findIndex((line) => line.includes(label));
+      expect(row).toBeGreaterThan(-1);
+      expect(lines[row]).toContain(label);
+      expect(lines[row + 1]).toContain("09-08 10:00Z");
+      expect(lines[row]).not.toContain("09-08");
+    } finally {
+      setup.renderer.destroy();
+    }
+  });
+  it("keeps inspected receipt stable through feed expiry and closes it on daemon change", async () => {
+    const props = activityProps();
+    const [receipts, setReceipts] = createSignal<readonly InteractionReceipt[]>([receipt]);
+    const [daemon, setDaemon] = createSignal(props.activityDaemonId);
+    const setup = await renderForTest(
+      () => (
+        <ApplicationHomeSurface
+          {...props}
+          activityDaemonId={daemon()}
+          recentPaneActivity={receipts()}
+        />
+      ),
+      { width: 80, height: 24 },
+    );
+    await setup.renderOnce();
+    const rows = setup.captureCharFrame().split("\n");
+    const y = rows.findIndex((line) => line.includes("Details"));
+    await setup.mockMouse.click(rows[y]!.indexOf("Details"), y, MouseButtons.LEFT);
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).toContain("Command observed");
+    setReceipts([]);
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).toContain("Command observed");
+    setDaemon("different-daemon");
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).not.toContain("Command observed");
+  });
+  it("only reveals activity for the selected exact endpoint independent of the active daemon", async () => {
+    const base = activityProps({ height: 32 });
+    const [selectedKey, setSelectedKey] = createSignal<string | null>("tests");
+    const [daemonId, setDaemonId] = createSignal<string | null>("daemon-local");
+    const setup = await renderForTest(
+      () => (
+        <ApplicationHomeSurface
+          {...base}
+          activityDaemonId={daemonId()}
+          agentSelection={{ selectedKey: selectedKey(), scrollOffset: 0 }}
+          recentPaneActivity={[
+            receipt,
+            {
+              ...receipt,
+              workspaceName: "another-workspace",
+              evidence: {
+                ...receipt.evidence!,
+                endpoints: {
+                  ...receipt.evidence!.endpoints,
+                  destination: { ...endpoint("pane.tests"), workspaceName: "another-workspace" },
+                },
+              },
+              at: "2026-09-09T12:00:00Z",
+            },
+          ]}
+        />
+      ),
+      { width: 80, height: 32 },
+    );
+    try {
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).toContain("Tests · latest activity");
+      expect(setup.captureCharFrame()).not.toContain("09-09 12:00Z");
+      setSelectedKey(null);
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).not.toContain("latest activity");
+      setSelectedKey("tests");
+      setDaemonId("daemon-remote");
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).toContain("latest activity");
+      setDaemonId(null);
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).toContain("latest activity");
+    } finally {
+      setup.renderer.destroy();
+    }
+  });
+
   it("preserves Home controls in a short terminal by omitting the optional feed", async () => {
-    const props = homeProps({
+    const props = activityProps({
       width: 40,
       height: 14,
       recentPaneActivity: [receipt, receipt, receipt],
@@ -264,11 +484,52 @@ describe("Home observed pane activity", () => {
     try {
       await setup.renderOnce();
       const frame = setup.captureCharFrame();
-      expect(frame).not.toContain("Recent pane activity");
+      expect(frame).not.toContain("Tests · latest activity");
       expect(frame).toContain("Open terminals");
       expectFrameBounds(frame, 40, 14);
     } finally {
       setup.renderer.destroy();
     }
   });
+});
+
+it("routes fleet quick actions once and dismisses the optional tip", async () => {
+  const calls: string[] = [];
+  const setup = await renderForTest(
+    () => (
+      <ApplicationHomeSurface
+        {...homeProps({
+          width: 110,
+          height: 36,
+          note: null,
+          onBrowseSessions: () => calls.push("sessions"),
+          onAddMachine: () => calls.push("machine"),
+          onOpenTutorial: () => calls.push("help"),
+          tutorialLabel: "Using tmux-ide",
+        })}
+      />
+    ),
+    { width: 110, height: 36 },
+  );
+  try {
+    await setup.renderOnce();
+    const click = async (label: string) => {
+      const lines = setup.captureCharFrame().split("\n");
+      const y = lines.findIndex((line) => line.includes(label));
+      expect(y).toBeGreaterThanOrEqual(0);
+      await setup.mockMouse.click(lines[y]!.indexOf(label) + 1, y, MouseButtons.LEFT);
+      await setup.renderOnce();
+    };
+    expect(setup.captureCharFrame()).toContain("Quick actions");
+    await click("Browse sessions");
+    await click("Add machine");
+    await click("Using tmux-ide");
+    expect(calls).toEqual(["sessions", "machine", "help"]);
+    expect(setup.captureCharFrame()).toContain("opens the selected agent");
+    await click("×");
+    expect(setup.captureCharFrame()).not.toContain("opens the selected agent");
+    expectFrameBounds(setup.captureCharFrame(), 110, 36);
+  } finally {
+    setup.renderer.destroy();
+  }
 });

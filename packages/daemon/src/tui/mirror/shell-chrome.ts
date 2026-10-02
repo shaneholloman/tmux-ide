@@ -101,6 +101,7 @@ export function shellSidebarWidth(
   preferredWidth: number,
   variant = shellChromeVariant(terminalWidth, 24),
 ): number {
+  if (preferredWidth === 0) return 0;
   const safe = Math.max(0, Math.floor(terminalWidth));
   const preferred = Math.max(16, Math.min(48, Math.floor(preferredWidth)));
   if (variant === "compact")
@@ -150,14 +151,13 @@ export function shellChromeLayout(
 export function shellPanelCell(
   view: Pick<ShellChromeView, "glyph" | "title" | "shortcut">,
   variant: ShellChromeVariant,
-  selected = false,
+  _selected = false,
   attention = false,
 ): string {
-  const glyph = `${attention ? "!" : selected ? "●" : " "}${view.glyph}`;
-  if (variant === "compact") return ` ${glyph} `;
+  const indicator = attention ? "!" : " ";
   const shortcut = view.shortcut ? `${view.shortcut.label} ` : "";
-  if (variant === "standard") return ` ${glyph} ${view.title} `;
-  return ` ${shortcut}${glyph} ${view.title} `;
+  if (variant === "compact") return ` ${view.shortcut?.label ?? view.glyph}${indicator} `;
+  return ` ${shortcut}${view.title} ${indicator} `;
 }
 
 /** Distinguishes the primary workspace switcher from the contextual tool dock. */
@@ -384,9 +384,13 @@ export interface ContextStatusPresentation {
   readonly hints: readonly ContextStatusHint[];
 }
 
-function meaningfulStatusMessage(message: string | null | undefined): string | null {
+export function meaningfulStatusMessage(message: string | null | undefined): string | null {
   const value = message?.trim();
-  if (!value || /^(?:ready|live|connected)$/iu.test(value)) return null;
+  if (
+    !value ||
+    /^(?:ready|live|connected|live tmux sessions? discovered|\d+ sessions? live)$/iu.test(value)
+  )
+    return null;
   return value;
 }
 
@@ -444,7 +448,14 @@ export function contextStatusPresentation(input: {
         : input.connectionState === "recovering"
           ? "Recovering"
           : "Disconnected";
-  const activityLabel = transient ?? notification ?? connectionLabel;
+  const persistentProblem =
+    notification && contextStatusTone(notification, "connected").tone === "blocked";
+  const activityLabel =
+    input.connectionState !== "connected"
+      ? (notification ?? connectionLabel)
+      : persistentProblem
+        ? notification
+        : (transient ?? notification ?? connectionLabel);
   const activityTone = contextStatusTone(activityLabel, input.connectionState);
   const location: ContextStatusLocationSegment[] =
     input.variant === "wide"

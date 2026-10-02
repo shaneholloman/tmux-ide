@@ -1,13 +1,19 @@
 ---
 title: Getting started
-description: Install tmux-ide 2.9 beta and open your first tmux session
+description: Install tmux-ide 2.9 and open your first tmux session
 ---
 
 ## Requirements
 
-- tmux 3.0 or newer; 3.2+ recommended
-- Node.js 20 or newer
-- macOS arm64/x64 or Linux arm64/x64
+Existing tmux servers must run tmux 3.7 or newer. The installer includes 3.7c;
+it never kills or replaces an older running server automatically.
+
+- macOS 26+ on ARM64, macOS 15+ on x64, or glibc Linux (Ubuntu 24.04 or newer baseline) arm64/x64
+- curl, tar, gzip, and a SHA-256 utility (normally included with your OS)
+
+The installer supplies a private Node.js runtime and bundled tmux. No sudo,
+Homebrew, or system Node installation is needed. Alpine/musl and native Windows
+are not supported; use a supported Linux distribution inside WSL.
 
 Installed releases use a compiled OpenTUI runtime and do not require Bun.
 Development checkouts use Bun to build the runtime and can opt into live source
@@ -16,11 +22,30 @@ with `TMUX_IDE_TUI_SOURCE=1`.
 ## Install
 
 ```bash
-npm install -g tmux-ide@beta
+curl -fsSL https://tmux.thijsverreck.com/install.sh | sh
 tmux-ide app
 ```
 
-If the exact-version runtime is not already installed, the first explicit app
+The installer prints a PATH instruction if your shell needs one. It installs
+under `~/.local`, verifies Node and TUI downloads, and preserves existing tmux
+sessions. To inspect it before running, download `install.sh` and read it first.
+
+To choose a version or a different user-owned location:
+
+```bash
+curl -fsSL https://tmux.thijsverreck.com/install.sh -o install.sh
+sh install.sh --version 2.9.0 --prefix "$HOME/.local"
+```
+
+With Node.js 20+ already installed, `npm install -g tmux-ide` is also supported.
+To update, rerun the installer or use `tmux-ide update`. Reopen the TUI afterwards.
+The installer refreshes an already-running daemon; it does not replace a tmux server.
+
+To uninstall this installer-owned copy, remove `~/.local/bin/tmux-ide` and
+`~/.local/share/tmux-ide`. Your settings and runtime state in `~/.tmux-ide` remain.
+Older installation directories are retained so running processes can finish.
+
+For package-manager installations, if the exact-version runtime is not already installed, the first explicit app
 launch downloads it, verifies its release metadata and SHA-256 digest, and
 caches it under `~/.tmux-ide/bin`. The daemon starts only after a runnable TUI
 has been selected.
@@ -38,12 +63,13 @@ Home lists the tmux sessions you already own. Select one with the mouse or
 keyboard, or name it directly:
 
 ```bash
-tmux new-session -s work
 tmux-ide app work
 ```
 
-If there are no sessions, press `N` on Home to create one. Closing tmux-ide does
-not kill the tmux session.
+If there are no sessions, press `N` on Home to create one. You do not need a
+system `tmux` command: tmux-ide uses its private bundled copy for new servers.
+If you already use tmux, its existing sessions are discovered too. Closing
+tmux-ide does not kill the tmux session.
 
 ## Controls
 

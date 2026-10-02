@@ -3,6 +3,7 @@
  * ControlChannelCore fed raw protocol lines — see __tests__/simulated-channel).
  */
 import { describe, expect, it, vi } from "vitest";
+import type { CanonicalTerminalReplicaUpdate } from "@tmux-ide/contracts";
 import { hostname } from "node:os";
 import { memorablePaneName } from "../protocol/pane-display-name.ts";
 import {
@@ -12,13 +13,22 @@ import {
   FIXTURE,
   type FixtureState,
 } from "./__tests__/simulated-channel.ts";
-import type { MirrorLayoutEvent, MirrorPaneEvent } from "./events.ts";
+import type {
+  MirrorLayoutAuthoritySnapshot,
+  MirrorLayoutEvent,
+  MirrorPaneEvent,
+} from "./events.ts";
 import { PaneFeed } from "./pane-feed.ts";
+import { SessionRuntimeTerminalReplicaOwner } from "../session-runtime/terminal-replica-owner.ts";
+import { createSessionRuntimeObservability } from "../session-runtime/runtime-observability.ts";
+import type { MirrorSubscribeRequest } from "./mirror-service.ts";
 import { SessionChannel } from "./session-channel.ts";
 import type { MirrorFlowRecoveryObservation } from "./session-channel.ts";
+import type { SessionChannelOptions } from "./session-channel.ts";
 import type { MirrorOutputTiming } from "./control-channel.ts";
 import type { AtomicPaneSnapshotCollector } from "./control-channel.ts";
 import {
+  INTERNAL_READ_OPERATION_OPTION,
   consumeInternalReadOperation,
   registerInternalReadOperation,
 } from "../../lib/tmux-interaction-options.ts";
@@ -44,6 +54,9 @@ interface Rig {
 
 async function startedRig(
   options: {
+    ownedViewer?: SessionChannelOptions["ownedViewer"];
+    nativeBirth?: string;
+    executeWindowLinkGuard?: (args: string[]) => Promise<{ status: number | null; stdout: string }>;
     onNativeClientActivity?: () => void;
     onOutputObserved?: (
       semanticPaneId: string,
@@ -53,12 +66,15 @@ async function startedRig(
     onFlowRecoveryObserved?: (observation: MirrorFlowRecoveryObservation) => void;
     continueReply?: "auto-success" | "manual";
     borderReply?: "manual";
+    descriptorReply?: { manual: boolean };
     historyLines?: number;
     atomicHook?: boolean;
     replaceAtomicHookBeforeInvoke?: boolean;
   } = {},
 ): Promise<Rig> {
   const state = fixtureState();
+  if (options.nativeBirth)
+    state.descriptorRows = state.descriptorRows.map((row) => row + options.nativeBirth);
   const pendingSyncs: Array<() => void> = [];
   const recoveryClock = { nowMs: 0 };
   const pendingRecoveries: Rig["pendingRecoveries"] = [];
@@ -67,10 +83,14 @@ async function startedRig(
   const atomicHookValues = new Map<string, string>();
   let sim: SimulatedChannel | null = null;
   const channel = new SessionChannel({
+    ownedViewer: options.ownedViewer,
     session: FIXTURE.session,
+    executeWindowLinkGuard: options.executeWindowLinkGuard,
     createIo: (handlers) => {
       const autoReply = fixtureAutoReply(state);
       sim = new SimulatedChannel(handlers, (command) => {
+        if (options.descriptorReply?.manual && command.includes("qa:@tmux_ide_pane_id"))
+          return null;
         if (options.borderReply === "manual" && command.endsWith('"#{pane-border-status}"'))
           return null;
         if (options.atomicHook && command.startsWith("set-option -po -t %1 @tmux_ide_atomic_")) {
@@ -391,7 +411,7 @@ describe("identity join", () => {
         const baseReply = fixtureAutoReply(state);
         sim = new SimulatedChannel(handlers, (command) =>
           command.startsWith('display-message -p "#{qa:session_name}')
-            ? [Buffer.from(`"${session}"\t$1`, "utf8").toString("latin1")]
+            ? [Buffer.from(`"${session}"\t$1\t1234\t1700000000`, "utf8").toString("latin1")]
             : baseReply(command),
         );
         return sim;
@@ -489,6 +509,65 @@ describe("identity join", () => {
     expect(JSON.stringify(channel.describe())).not.toMatch(/[%@$][0-9]/u);
     await channel.dispose();
   });
+
+  it.each(["resize", "membership-aba", "zoom-aba", "malformed"])(
+    "distinguishes %s notifications from identity stability during inventory reads",
+    async (change) => {
+      const descriptorReply = { manual: false };
+      const { channel, sim, state } = await startedRig({ descriptorReply, borderReply: "manual" });
+      state.descriptorRows[2] = state.descriptorRows[2]!.replace(
+        "%3\t\t",
+        "%3\tpane.mirror.gen1\t",
+      ).replace("\t\tzz-sim", "\twindow.test.two\tzz-sim");
+      const descriptorQueries = () =>
+        sim.written.filter((cmd) => cmd.includes("qa:@tmux_ide_pane_id")).length;
+      const before = descriptorQueries();
+      descriptorReply.manual = true;
+      const inventory = channel.describeTrustedInventory("$1");
+      let settled = false;
+      const outcome = inventory
+        .then(
+          (value) => ({ value }),
+          (error) => ({ error }),
+        )
+        .finally(() => {
+          settled = true;
+        });
+      try {
+        for (let index = 0; index < 4; index++) {
+          await vi.waitFor(() =>
+            expect(settled || descriptorQueries() === before + index + 1).toBe(true),
+          );
+          if (settled) break;
+          const original = FIXTURE.layoutW2;
+          const changed = change === "membership-aba" ? "cccc,180x40,0,0,4" : "cccc,180x40,0,0,3";
+          if (change === "malformed") {
+            sim.feedLines("%layout-change malformed");
+          } else {
+            sim.feedLines(
+              `%layout-change @2 ${changed} ${changed} ${change === "zoom-aba" ? "Z" : "*"}`,
+            );
+            sim.feedLines(`%layout-change @2 ${original} ${original} *`);
+          }
+          // Reply in native command order: inventory, then the border queries.
+          sim.reply(state.descriptorRows);
+          if (change !== "malformed") {
+            sim.reply(["off"]);
+            sim.reply(["off"]);
+          }
+        }
+        if (change === "resize") {
+          expect(await outcome).toMatchObject({ value: { runtimeSessionId: "$1" } });
+        } else {
+          expect(await outcome).toMatchObject({
+            error: expect.objectContaining({ message: expect.stringMatching(/did not settle/u) }),
+          });
+        }
+      } finally {
+        await channel.dispose();
+      }
+    },
+  );
 
   it("fails trusted inventory closed when the coherent fence has no single active pane", async () => {
     const { channel, state } = await startedRig();
@@ -684,7 +763,7 @@ describe("flow control", () => {
     parked.freeze();
     rig.channel.subscribePane("pane.beta", beta.onEvent);
     rig.sim.reply(["beta"]);
-    rig.sim.reply(["0 0 100 50"]);
+    rig.sim.reply(["0 0 99 50"]);
     alpha.events.length = frozen.events.length = beta.events.length = 0;
     rig.sim.feedLines("%pause %1");
     advanceRecoveryClock(rig, 500);
@@ -718,7 +797,7 @@ describe("flow control", () => {
     for (const [index, text] of ["alpha", "beta", "second alpha"].entries()) {
       advanceRecoveryClock(rig, 4000);
       rig.sim.reply([text]);
-      rig.sim.reply(["0 0 100 50"]);
+      rig.sim.reply([`0 0 ${index === 1 ? 99 : 100} 50`]);
       expect(captures()).toHaveLength(Math.min(index + 2, 3));
     }
     expect(rig.recoveryClock.nowMs).toBe(12000);
@@ -772,7 +851,7 @@ describe("flow control", () => {
       advanceRecoveryClock(rig, 4000);
       rig.sim.reply([]);
       rig.sim.reply([`pane-${index}`]);
-      rig.sim.reply(["0 0 100 50"]);
+      rig.sim.reply([`0 0 ${index === 1 ? 99 : 100} 50`]);
       expect(bytesOf(panes[index]!.events)).toEqual([`pane-${index}`]);
     }
     expect(rig.recoveryClock.nowMs).toBe(12000);
@@ -2390,6 +2469,566 @@ describe("flow control", () => {
 });
 
 describe("layout push", () => {
+  it.each([true, false])(
+    "recaptures after pending layout admission before publishing a new-size seed to its owner (native=%s)",
+    async (nativeBootstrap) => {
+      const rig = await startedRig({ borderReply: "manual" });
+      const events: MirrorPaneEvent[] = [];
+      const observability = createSessionRuntimeObservability();
+      const faults: unknown[] = [];
+      const mirror = {
+        subscribe: async (candidate: MirrorSubscribeRequest) => {
+          const handle = rig.channel.subscribePane(
+            "pane.alpha",
+            (event) => {
+              events.push(event);
+              candidate.onEvent(event);
+            },
+            candidate.onLayout,
+            nativeBootstrap,
+          );
+          return { ...handle, session: candidate.session, close: async () => handle.close() };
+        },
+      };
+      const owner = new SessionRuntimeTerminalReplicaOwner(
+        "00000000-0000-4000-8000-000000000001",
+        FIXTURE.session,
+        "pane.alpha",
+        mirror as never,
+        {
+          incarnation: "pending-layout:0",
+          initialRevision: 0,
+          observability,
+          onFault: (error) => faults.push(error),
+        },
+      );
+      const updates: CanonicalTerminalReplicaUpdate[] = [];
+      const ready = owner.subscribe((update) => updates.push(update));
+      void ready.catch(() => {});
+      try {
+        await Promise.resolve();
+        rig.sim.feedLines(
+          `%layout-change @1 ${FIXTURE.layoutW1} aaaa,200x50,0,0{150x50,0,0,1,49x50,151,0,2} 0`,
+        );
+        const nativeWithText = (text: string) => {
+          const lines = nativeBootstrapLines();
+          lines[0] = JSON.stringify({
+            ...JSON.parse(lines[0]!),
+            cols: 150,
+            cursor: [text.length, 0],
+          });
+          lines[1] = JSON.stringify({
+            row: 0,
+            flags: 0,
+            used: text.length,
+            cells: [...text].map((c) => [0, 1, Buffer.from(c).toString("hex"), 0, 8, 8, 8, 0, 0]),
+          });
+          return lines;
+        };
+        const native = nativeWithText("BEFORE");
+        rig.sim.reply(nativeBootstrap ? native : ["BEFORE"]);
+        rig.sim.reply(["0 0 150 50"]);
+        expect(events).toEqual([]);
+        expect(observability.snapshot().spans.filter((span) => span.terminalReseed)).toEqual([]);
+        rig.sim.output("%1", "DURING");
+        rig.sim.reply(["off"]);
+        rig.sim.reply(nativeBootstrap ? nativeWithText("BEFOREDURING") : ["BEFOREDURING"]);
+        rig.sim.reply(["11 0 150 50"]);
+        await ready;
+        expect(events.map((event) => event.type)).toEqual(["reset", "seed", "cursor"]);
+        expect(updates[0]).toMatchObject({ type: "terminal.seed", cols: 150, rows: 50 });
+        const first = updates[0]!;
+        expect(
+          first.type === "terminal.seed" &&
+            first.snapshot.grid[0]!.cells.map((cell) => cell.grapheme)
+              .join("")
+              .trimEnd(),
+        ).toBe("BEFOREDURING");
+        rig.sim.output("%1", "AFTER");
+        expect(bytesOf(events)).toEqual([nativeBootstrap ? "" : "BEFOREDURING", "AFTER"]);
+        expect(faults).toEqual([]);
+      } finally {
+        await owner.dispose();
+        await rig.channel.dispose();
+      }
+    },
+  );
+
+  it("waits for authoritative geometry progress when capture is ahead of every layout notification", async () => {
+    const descriptorReply = { manual: false };
+    const rig = await startedRig({ descriptorReply });
+    const events: MirrorPaneEvent[] = [];
+    const observability = createSessionRuntimeObservability();
+    const faults: unknown[] = [];
+    const mirror = {
+      subscribe: async (candidate: MirrorSubscribeRequest) => {
+        const handle = rig.channel.subscribePane(
+          "pane.alpha",
+          (event) => {
+            events.push(event);
+            candidate.onEvent(event);
+          },
+          candidate.onLayout,
+          true,
+        );
+        return { ...handle, session: candidate.session, close: async () => handle.close() };
+      },
+    };
+    const owner = new SessionRuntimeTerminalReplicaOwner(
+      "00000000-0000-4000-8000-000000000001",
+      FIXTURE.session,
+      "pane.alpha",
+      mirror as never,
+      {
+        incarnation: "ahead-layout:0",
+        initialRevision: 0,
+        observability,
+        onFault: (error) => faults.push(error),
+      },
+    );
+    const ready = owner.subscribe(() => {});
+    void ready.catch(() => {});
+    try {
+      await Promise.resolve();
+      const native = nativeBootstrapLines();
+      native[0] = JSON.stringify({ ...JSON.parse(native[0]!), cols: 150 });
+      const captures = () =>
+        rig.sim.written.filter((command) => command.includes("capture-pane")).length;
+      const before = captures();
+      rig.sim.reply(native);
+      rig.sim.reply(["0 0 150 50"]);
+      await Promise.resolve();
+      expect(events).toEqual([]);
+      expect(captures()).toBe(before);
+      expect(rig.pendingSyncs).toHaveLength(1);
+      // No layout notification: an authoritative list-windows response alone
+      // provides the missing geometry, under the original capture deadline.
+      rig.state.windowRows = FIXTURE.windowRows(
+        "aaaa,200x50,0,0{150x50,0,0,1,49x50,151,0,2}",
+        FIXTURE.layoutW2,
+      );
+      descriptorReply.manual = true;
+      rig.pendingSyncs.shift()!();
+      await vi.waitFor(() => expect(captures()).toBe(before + 1));
+      rig.sim.reply(native);
+      rig.sim.reply(["0 0 150 50"]);
+      rig.sim.reply(rig.state.descriptorRows);
+      await ready;
+      expect(events.map((event) => event.type)).toEqual(["reset", "seed", "cursor"]);
+      expect(faults).toEqual([]);
+      expect(observability.snapshot().spans.filter((span) => span.terminalReseed)).toEqual([]);
+    } finally {
+      await owner.dispose();
+      await rig.channel.dispose();
+    }
+  });
+
+  it("recaptures after fresh unchanged truth when a resize returns to the published size", async () => {
+    const descriptorReply = { manual: false };
+    const rig = await startedRig({ descriptorReply });
+    const events = collect();
+    try {
+      rig.channel.subscribePane("pane.alpha", events.onEvent);
+      rig.sim.reply(["stale enlarged capture"]);
+      rig.sim.reply(["0 0 150 50"]);
+      const captures = () =>
+        rig.sim.written.filter((command) => command.includes("capture-pane")).length;
+      expect(captures()).toBe(1);
+      expect(events.events).toEqual([]);
+      descriptorReply.manual = true;
+      rig.pendingSyncs.shift()!();
+      await vi.waitFor(() => expect(captures()).toBe(2));
+      rig.sim.reply(["stable original size"]);
+      rig.sim.reply(["0 0 100 50"]);
+      expect(bytesOf(events.events)).toEqual(["stable original size"]);
+      expect(rig.pendingRecoveries.filter((task) => !task.cancelled)).toEqual([]);
+    } finally {
+      await rig.channel.dispose();
+    }
+  });
+
+  it("does not release on an older in-flight sync and schedules a subsequent fresh barrier", async () => {
+    const descriptorReply = { manual: false };
+    const rig = await startedRig({ descriptorReply });
+    const events = collect();
+    try {
+      let release!: (lines: string[]) => void;
+      vi.spyOn(rig.sim, "request").mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+      );
+      rig.sim.feedLines("%window-renamed @1 main");
+      rig.pendingSyncs.shift()!();
+      rig.channel.subscribePane("pane.alpha", events.onEvent);
+      rig.sim.reply(["ahead"]);
+      rig.sim.reply(["0 0 150 50"]);
+      const captures = () =>
+        rig.sim.written.filter((command) => command.includes("capture-pane")).length;
+      expect(rig.pendingSyncs).toHaveLength(1);
+      const before = rig.sim.written.length;
+      release(rig.state.truthRows);
+      await vi.waitFor(() => expect(rig.sim.written.length).toBeGreaterThan(before));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(captures()).toBe(1);
+      expect(events.events).toEqual([]);
+      descriptorReply.manual = true;
+      rig.pendingSyncs.shift()!();
+      await vi.waitFor(() => expect(captures()).toBe(2));
+      rig.sim.reply(["after fresh barrier"]);
+      rig.sim.reply(["0 0 100 50"]);
+      expect(bytesOf(events.events)).toEqual(["after fresh barrier"]);
+    } finally {
+      await rig.channel.dispose();
+    }
+  });
+
+  it("coalesces repeated mismatches behind a fresh sync without extending the deadline", async () => {
+    const descriptorReply = { manual: false };
+    const rig = await startedRig({ descriptorReply });
+    const events = collect();
+    try {
+      const handle = rig.channel.subscribePane("pane.alpha", events.onEvent);
+      rig.sim.reply(["ahead"]);
+      rig.sim.reply(["0 0 150 50"]);
+      descriptorReply.manual = true;
+      const captures = () =>
+        rig.sim.written.filter((command) => command.includes("capture-pane")).length;
+      for (let cycle = 0; cycle < 3; cycle++) {
+        for (let request = 0; request < 100; request++) handle.reseed();
+        expect(rig.pendingSyncs).toHaveLength(1);
+        expect(captures()).toBe(cycle + 1);
+        advanceRecoveryClock(rig, 1000);
+        rig.pendingSyncs.shift()!();
+        await vi.waitFor(() => expect(captures()).toBe(cycle + 2));
+        rig.sim.reply(["still ahead"]);
+        rig.sim.reply(["0 0 150 50"]);
+        rig.sim.reply(rig.state.descriptorRows);
+        expect(events.events).toEqual([]);
+        expect(
+          rig.pendingRecoveries.filter((task) => !task.cancelled).map((task) => task.dueAtMs),
+        ).toEqual([5000]);
+      }
+      advanceRecoveryClock(rig, 2000);
+      const before = captures();
+      rig.pendingSyncs.shift()!();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(captures()).toBe(before);
+      expect(bytesOf(events.events)).toEqual([]);
+    } finally {
+      await rig.channel.dispose();
+    }
+  });
+
+  it("does not qualify failed truth sync or extend the original recovery deadline", async () => {
+    const rig = await startedRig();
+    const events = collect();
+    try {
+      rig.channel.subscribePane("pane.alpha", events.onEvent);
+      rig.sim.reply(["ahead"]);
+      rig.sim.reply(["0 0 150 50"]);
+      vi.spyOn(rig.sim, "request").mockRejectedValueOnce(new Error("truth unavailable"));
+      rig.pendingSyncs.shift()!();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(rig.sim.written.filter((command) => command.includes("capture-pane"))).toHaveLength(1);
+      expect(events.events).toEqual([]);
+      expect(
+        rig.pendingRecoveries.filter((task) => !task.cancelled).map((task) => task.dueAtMs),
+      ).toEqual([5000]);
+      advanceRecoveryClock(rig, 5000);
+      expect(bytesOf(events.events)).toEqual([]);
+    } finally {
+      await rig.channel.dispose();
+    }
+  });
+
+  it("uses saved geometry for a hidden zoom pane and waits for saved-layout progress", async () => {
+    const rig = await startedRig();
+    const events = collect();
+    try {
+      const visible = "aaaa,200x50,0,0,2";
+      rig.sim.feedLines(`%layout-change @1 ${FIXTURE.layoutW1} ${visible} *Z`);
+      rig.channel.subscribePane("pane.alpha", events.onEvent);
+      rig.sim.reply(["ahead"]);
+      rig.sim.reply(["0 0 150 50"]);
+      expect(events.events).toEqual([]);
+      rig.sim.feedLines(
+        `%layout-change @1 aaaa,200x50,0,0{150x50,0,0,1,49x50,151,0,2} ${visible} *Z`,
+      );
+      rig.sim.reply(["saved current"]);
+      rig.sim.reply(["0 0 150 50"]);
+      expect(bytesOf(events.events)).toEqual(["saved current"]);
+    } finally {
+      await rig.channel.dispose();
+    }
+  });
+
+  it.each(["top", "bottom"] as const)(
+    "waits for content-row progress at a %s pane border",
+    async (border) => {
+      const rig = await startedRig({ borderReply: "manual" });
+      const events = collect();
+      try {
+        rig.sim.feedLines(`%layout-change @1 ${FIXTURE.layoutW1} ${FIXTURE.layoutW1} 0`);
+        rig.sim.reply([border]);
+        rig.channel.subscribePane("pane.alpha", events.onEvent);
+        rig.sim.reply(["ahead"]);
+        rig.sim.reply(["0 0 100 50"]); // Current pane has only49 content rows.
+        expect(events.events).toEqual([]);
+        rig.sim.feedLines(
+          `%layout-change @1 ${FIXTURE.layoutW1} aaaa,200x51,0,0{100x51,0,0,1,99x51,101,0,2} 0`,
+        );
+        rig.sim.reply([border]);
+        rig.sim.reply(["current"]);
+        rig.sim.reply(["0 0 100 50"]);
+        expect(bytesOf(events.events)).toEqual(["current"]);
+      } finally {
+        await rig.channel.dispose();
+      }
+    },
+  );
+
+  it("keeps native/probe corruption on the owner's fail-closed path instead of a layout wait", async () => {
+    const rig = await startedRig();
+    const faults: unknown[] = [];
+    const observability = createSessionRuntimeObservability();
+    const mirror = {
+      subscribe: async (candidate: MirrorSubscribeRequest) => {
+        const handle = rig.channel.subscribePane(
+          "pane.alpha",
+          candidate.onEvent,
+          candidate.onLayout,
+          true,
+        );
+        return { ...handle, session: candidate.session, close: async () => handle.close() };
+      },
+    };
+    const owner = new SessionRuntimeTerminalReplicaOwner(
+      "00000000-0000-4000-8000-000000000001",
+      FIXTURE.session,
+      "pane.alpha",
+      mirror as never,
+      {
+        incarnation: "corrupt:0",
+        initialRevision: 0,
+        observability,
+        onFault: (error) => faults.push(error),
+      },
+    );
+    const ready = owner.subscribe(() => {});
+    void ready.catch(() => {});
+    try {
+      await Promise.resolve();
+      for (let i = 0; i < 2; i++) {
+        rig.sim.reply(nativeBootstrapLines()); // Native100x50, probe150x50.
+        rig.sim.reply(["0 0 150 50"]);
+        await Promise.resolve();
+      }
+      await expect(ready).rejects.toThrow(/terminal reseed/);
+      expect(rig.pendingSyncs).toEqual([]);
+      expect(faults).toHaveLength(1);
+      expect(
+        observability
+          .snapshot()
+          .spans.filter((span) => span.terminalReseed)
+          .map((span) => span.terminalReseed!.reason),
+      ).toEqual(["native-size-mismatch", "native-size-mismatch"]);
+    } finally {
+      await owner.dispose();
+      await rig.channel.dispose();
+    }
+  });
+
+  it("coalesces superseded layout replies and reentrant reseed requests under the original deadline", async () => {
+    const rig = await startedRig({ borderReply: "manual" });
+    const events = collect();
+    let handle: ReturnType<SessionChannel["subscribePane"]> | undefined;
+    try {
+      handle = rig.channel.subscribePane(
+        "pane.alpha",
+        events.onEvent,
+        () => handle?.reseed(),
+        true,
+      );
+      const captures = () =>
+        rig.sim.written.filter((command) => command.includes("capture-pane")).length;
+      const before = captures();
+      rig.sim.feedLines(
+        `%layout-change @1 ${FIXTURE.layoutW1} aaaa,200x50,0,0{150x50,0,0,1,49x50,151,0,2} 0`,
+      );
+      rig.sim.reply(nativeBootstrapLines());
+      rig.sim.reply(["0 0 100 50"]);
+      for (let i = 0; i < 100; i++) handle.reseed();
+      expect(captures()).toBe(before);
+      advanceRecoveryClock(rig, 4000);
+      rig.sim.feedLines(`%layout-change @1 ${FIXTURE.layoutW1} ${FIXTURE.layoutW1} 0`);
+      rig.sim.reply(["off"]); // Superseded reply must not release the wait.
+      expect(captures()).toBe(before);
+      rig.sim.reply(["off"]);
+      expect(captures()).toBe(before + 1);
+      expect(
+        rig.pendingRecoveries.filter((task) => !task.cancelled).map((task) => task.dueAtMs),
+      ).toEqual([5000]);
+      rig.sim.reply(nativeBootstrapLines());
+      rig.sim.reply(["0 0 100 50"]);
+      expect(events.events.map((event) => event.type)).toEqual(["reset", "seed", "cursor"]);
+      expect(rig.pendingRecoveries.filter((task) => !task.cancelled)).toEqual([]);
+    } finally {
+      await rig.channel.dispose();
+    }
+  });
+
+  it("does not extend the deadline across another layout crossing during the replacement capture", async () => {
+    const rig = await startedRig({ borderReply: "manual", continueReply: "manual" });
+    const events = collect();
+    try {
+      rig.channel.subscribePane("pane.alpha", events.onEvent, undefined, true);
+      rig.sim.feedLines(`%layout-change @1 ${FIXTURE.layoutW1} ${FIXTURE.layoutW1} 0`);
+      rig.sim.reply(nativeBootstrapLines());
+      rig.sim.reply(["0 0 100 50"]);
+      advanceRecoveryClock(rig, 4000);
+      rig.sim.reply(["off"]); // Starts a replacement with only one second remaining.
+      rig.sim.feedLines(`%layout-change @1 ${FIXTURE.layoutW1} ${FIXTURE.layoutW1} 0`);
+      rig.sim.reply(nativeBootstrapLines());
+      rig.sim.reply(["0 0 100 50"]);
+      expect(events.events).toEqual([]);
+      expect(
+        rig.pendingRecoveries.filter((task) => !task.cancelled).map((task) => task.dueAtMs),
+      ).toEqual([5000]);
+      advanceRecoveryClock(rig, 1000);
+      const before = rig.sim.written.filter((command) => command.includes("capture-pane")).length;
+      rig.sim.reply(["off"]);
+      expect(rig.sim.written.filter((command) => command.includes("capture-pane"))).toHaveLength(
+        before,
+      );
+      expect(events.events.some((event) => event.type === "seed")).toBe(false);
+    } finally {
+      await rig.channel.dispose();
+    }
+  });
+
+  it("honors reentrant closure during layout admission before resuming the held capture", async () => {
+    const rig = await startedRig({ borderReply: "manual" });
+    const events = collect();
+    let handle: ReturnType<SessionChannel["subscribePane"]> | undefined;
+    try {
+      handle = rig.channel.subscribePane("pane.alpha", events.onEvent, () => handle?.close(), true);
+      rig.sim.feedLines(`%layout-change @1 ${FIXTURE.layoutW1} ${FIXTURE.layoutW1} 0`);
+      rig.sim.reply(nativeBootstrapLines());
+      rig.sim.reply(["0 0 100 50"]);
+      const before = rig.sim.written.filter((command) => command.includes("capture-pane")).length;
+      rig.sim.reply(["off"]);
+      expect(rig.sim.written.filter((command) => command.includes("capture-pane"))).toHaveLength(
+        before,
+      );
+      expect(events.events.some((event) => event.type === "seed")).toBe(false);
+      expect(rig.pendingRecoveries.filter((task) => !task.cancelled)).toEqual([]);
+    } finally {
+      await rig.channel.dispose();
+    }
+  });
+
+  it("retires the layout-blocked replacement when quarantined output overflow requires recovery", async () => {
+    const rig = await startedRig({ borderReply: "manual", continueReply: "manual" });
+    const events = collect();
+    try {
+      rig.channel.subscribePane("pane.alpha", events.onEvent, undefined, true);
+      rig.sim.feedLines(`%layout-change @1 ${FIXTURE.layoutW1} ${FIXTURE.layoutW1} 0`);
+      rig.sim.reply(nativeBootstrapLines());
+      rig.sim.reply(["0 0 100 50"]);
+      for (let i = 0; i < 1025; i++) rig.sim.output("%1", "x");
+      expect(events.events).toEqual([]);
+      rig.sim.commandListInline = (command, count, resultIndex, onReply) => {
+        rig.sim.core.pushCommandList(count, resultIndex, onReply);
+        rig.sim.written.push(command);
+      };
+      rig.sim.reply(["off"]);
+      expect(events.events).toContainEqual({
+        type: "flow",
+        state: "paused",
+        reason: "backpressure",
+      });
+      rig.sim.reply([]); // Retired replacement marker, capture and cursor slots.
+      rig.sim.reply(nativeBootstrapLines());
+      rig.sim.reply(["0 0 100 50"]);
+      expect(bytesOf(events.events)).toEqual([]);
+      expect(events.events.some((event) => event.type === "reset" || event.type === "cursor")).toBe(
+        false,
+      );
+    } finally {
+      await rig.channel.dispose();
+    }
+  });
+
+  it("expires a layout-blocked capture at its original deadline without publishing or late restart", async () => {
+    const rig = await startedRig({ borderReply: "manual", continueReply: "manual" });
+    const events = collect();
+    try {
+      const handle = rig.channel.subscribePane("pane.alpha", events.onEvent, undefined, true);
+      rig.sim.feedLines(`%layout-change @1 ${FIXTURE.layoutW1} ${FIXTURE.layoutW1} 0`);
+      rig.sim.reply(nativeBootstrapLines());
+      rig.sim.reply(["0 0 100 50"]);
+      advanceRecoveryClock(rig, 4999);
+      for (let i = 0; i < 100; i++) handle.reseed();
+      expect(events.events).toEqual([]);
+      expect(
+        rig.pendingRecoveries.filter((task) => !task.cancelled).map((task) => task.dueAtMs),
+      ).toEqual([5000]);
+      advanceRecoveryClock(rig, 1);
+      expect(events.events.some((event) => event.type === "seed")).toBe(false);
+      const captures = rig.sim.written.filter((command) => command.includes("capture-pane")).length;
+      rig.sim.reply(["off"]);
+      expect(rig.sim.written.filter((command) => command.includes("capture-pane"))).toHaveLength(
+        captures,
+      );
+      expect(events.events.some((event) => event.type === "seed")).toBe(false);
+    } finally {
+      await rig.channel.dispose();
+    }
+  });
+
+  it.each(["close", "freeze", "dispose", "replace-subscription"] as const)(
+    "retires a pending layout capture on %s before a late border reply",
+    async (operation) => {
+      const rig = await startedRig({ borderReply: "manual" });
+      const events = collect();
+      try {
+        const handle = rig.channel.subscribePane("pane.alpha", events.onEvent, undefined, true);
+        rig.sim.feedLines(`%layout-change @1 ${FIXTURE.layoutW1} ${FIXTURE.layoutW1} 0`);
+        rig.sim.reply(nativeBootstrapLines());
+        rig.sim.reply(["0 0 100 50"]);
+        const fresh = collect();
+        if (operation === "replace-subscription") {
+          // Preserve the real FIFO when a new recipe queues behind the held
+          // border reply; the default simulator auto-acks marker installation.
+          rig.sim.commandListInline = (command, count, resultIndex, onReply) => {
+            rig.sim.core.pushCommandList(count, resultIndex, onReply);
+            rig.sim.written.push(command);
+          };
+          rig.channel.subscribePane("pane.alpha", fresh.onEvent, undefined, true);
+        }
+        if (operation === "dispose") await rig.channel.dispose();
+        else if (operation === "freeze") handle.freeze();
+        else handle.close();
+        const before = rig.sim.written.filter((command) => command.includes("capture-pane")).length;
+        rig.sim.reply(["off"]);
+        expect(rig.sim.written.filter((command) => command.includes("capture-pane"))).toHaveLength(
+          before,
+        );
+        expect(events.events.some((event) => event.type === "seed")).toBe(false);
+        if (operation === "replace-subscription") {
+          rig.sim.reply([]); // New capture marker installation.
+          rig.sim.reply(nativeBootstrapLines());
+          rig.sim.reply(["0 0 100 50"]);
+          expect(fresh.events.map((event) => event.type)).toEqual(["reset", "seed", "cursor"]);
+        }
+      } finally {
+        await rig.channel.dispose();
+      }
+    },
+  );
+
   it("retains every coherent window while another window is awaiting border metadata", async () => {
     const rig = await startedRig({ borderReply: "manual" });
     rig.state.descriptorRows[2] = rig.state.descriptorRows[2]!.replace(
@@ -2808,9 +3447,23 @@ describe("layout push", () => {
     paneLayouts.length = 0;
     globalLayouts.length = 0;
 
-    rig.sim.feedLines("%session-window-changed $0 @2");
+    rig.state.windowRows = rig.state.windowRows.map((row, index) => {
+      const parts = row.split("\t");
+      parts[3] = index === 1 ? "1" : "0";
+      return parts.join("\t");
+    });
+    rig.state.truthRows = rig.state.truthRows.map((row) => {
+      const parts = row.split("\t");
+      parts[3] = parts[2] === "@2" ? "1" : "0";
+      return parts.join("\t");
+    });
+    rig.sim.feedLines("%session-window-changed $1 @2");
+    rig.pendingSyncs.shift()!();
+    await vi.waitFor(() => expect(globalLayouts.length).toBeGreaterThan(0));
 
-    expect(paneLayouts.map((event) => event.semanticWindowId)).toEqual(["window.test.one"]);
+    expect(new Set(paneLayouts.map((event) => event.semanticWindowId))).toEqual(
+      new Set(["window.test.one"]),
+    );
     const byWindow = new Map(
       globalLayouts.map((event) => [event.semanticWindowId, event.currentWindow]),
     );
@@ -2929,6 +3582,91 @@ describe("window viewport scope", () => {
 });
 
 describe("input path", () => {
+  it("uses direct viewer captures without stock read markers or metadata-error replay", async () => {
+    const adapter = {
+      bindIo: vi.fn(),
+      dispose: vi.fn(),
+      tryDispatch: vi.fn<NonNullable<SessionChannelOptions["ownedViewer"]>["tryDispatch"]>(
+        (_io, request, reply) => {
+          reply({
+            ok: true,
+            lines: request.commands[0]!.includes("-R")
+              ? ["invalid native backing"]
+              : ["viewer snapshot"],
+          });
+          return true;
+        },
+      ),
+    };
+    const rig = await startedRig({ ownedViewer: adapter, nativeBirth: "11" });
+    const before = rig.sim.written.length;
+    const handle = rig.channel.subscribePane("pane.alpha", () => {});
+    rig.sim.reply(["0 0 100 50"]);
+    expect(adapter.tryDispatch.mock.calls[0]![1].commands).toEqual([
+      ["capture-pane", "-p", "-e", "-J", "-S", "-", "-t", "%1"],
+    ]);
+    await handle.captureNativeBacking();
+    expect(adapter.tryDispatch.mock.calls[1]![1].commands).toEqual([
+      ["capture-pane", "-p", "-R", "-S", "-", "-t", "%1"],
+    ]);
+    expect(
+      rig.sim.written
+        .slice(before)
+        .some(
+          (command) =>
+            command.includes("capture-pane") || command.includes(INTERNAL_READ_OPERATION_OPTION),
+        ),
+    ).toBe(false);
+    await rig.channel.dispose();
+  });
+  it.each([true, false])(
+    "preserves coalescing and single dispatch when native accepts=%s",
+    async (accepted) => {
+      const events: string[] = [];
+      const adapter = {
+        bindIo: vi.fn(),
+        dispose: vi.fn(() => {
+          events.push("disposed");
+        }),
+        tryDispatch: vi.fn<NonNullable<SessionChannelOptions["ownedViewer"]>["tryDispatch"]>(
+          (_io, request, reply) => {
+            if (request.commands[0]?.[0] !== "send-keys") return false;
+            events.push(request.commands[0]!.join(" "));
+            if (accepted) reply({ ok: false, lines: [] });
+            return accepted;
+          },
+        ),
+      };
+      const rig = await startedRig({ ownedViewer: adapter, nativeBirth: "11" });
+      expect(adapter.bindIo).toHaveBeenCalledExactlyOnceWith(rig.sim);
+      const handle = rig.channel.subscribePane("pane.alpha", () => {});
+      rig.sim.reply(["s"]);
+      rig.sim.reply(["0 0 100 50"]);
+      const before = rig.sim.written.length;
+      handle.sendText("hi");
+      handle.sendText("!");
+      handle.sendKey("Enter");
+      expect(events).toEqual(["send-keys -t %1 -H 68 69 21", "send-keys -t %1 Enter"]);
+      expect(rig.sim.written.slice(before)).toEqual(accepted ? [] : events);
+      expect(adapter.tryDispatch.mock.calls[0]![1]).toMatchObject({
+        paneId: "%1",
+        paneBirthId: "11",
+      });
+      handle.sendText("x");
+      await rig.channel.dispose();
+      expect(events.slice(-2)).toEqual(["send-keys -t %1 -H 78", "disposed"]);
+    },
+  );
+
+  it("keeps input on stock transport when physical birth is missing", async () => {
+    const adapter = { bindIo: vi.fn(), tryDispatch: vi.fn(), dispose: vi.fn() };
+    const rig = await startedRig({ ownedViewer: adapter });
+    rig.channel.sendKey("pane.alpha", "Enter");
+    expect(adapter.tryDispatch).not.toHaveBeenCalled();
+    expect(rig.sim.written.at(-1)).toBe("send-keys -t %1 Enter");
+    await rig.channel.dispose();
+  });
+
   it("coalesces literals per pane and sends named keys after pending literals", async () => {
     const rig = await startedRig();
     const handle = rig.channel.subscribePane("pane.alpha", () => {});
@@ -3123,6 +3861,156 @@ describe("native capture semantic ownership", () => {
 });
 
 describe("native bootstrap capability fallback", () => {
+  it.each(
+    (["unsupported", "transient"] as const).flatMap((capability) =>
+      (["reseed", "close", "freeze", "dispose"] as const).map((operation) => ({
+        capability,
+        operation,
+      })),
+    ),
+  )(
+    "releases a $capability replacement capture on $operation without losing FIFO replies",
+    async ({ capability, operation }) => {
+      const rig = await startedRig({ continueReply: "manual" });
+      // Keep every list acknowledgement in wire order, including marker cleanup.
+      rig.sim.commandListInline = (command, count, resultIndex, onReply) => {
+        rig.sim.core.pushCommandList(count, resultIndex, onReply);
+        rig.sim.written.push(command);
+      };
+      const captureCommands = () =>
+        rig.sim.written.filter((command) => command.includes("capture-pane"));
+      const alpha = collect();
+      const beta = collect();
+      const replyCapture = (lines: string[], ok = true, cols = 100) => {
+        rig.sim.reply([]);
+        rig.sim.reply(lines, ok);
+        rig.sim.reply([`0 0 ${cols} 50`]);
+      };
+      const replyCleanup = () => {
+        rig.sim.reply([]);
+        rig.sim.reply([]);
+      };
+      try {
+        const handle = rig.channel.subscribePane("pane.alpha", alpha.onEvent, undefined, true);
+        rig.channel.subscribePane("pane.beta", beta.onEvent);
+        advanceRecoveryClock(rig, 4000);
+        replyCapture(
+          [
+            capability === "unsupported"
+              ? "command capture-pane: unknown flag -R"
+              : "temporary failure",
+          ],
+          false,
+        );
+        replyCleanup();
+        expect(captureCommands()).toHaveLength(2);
+        expect(captureCommands()[1]).toContain("-t %1");
+        expect(
+          rig.pendingRecoveries.filter((task) => !task.cancelled).map((task) => task.dueAtMs),
+        ).toEqual([5000]);
+        if (operation === "dispose") await rig.channel.dispose();
+        else handle[operation]();
+        expect(captureCommands()).toHaveLength(operation === "dispose" ? 2 : 3);
+        if (operation !== "dispose") expect(captureCommands()[2]).toContain("-t %2");
+        // The retired replacement still owns its FIFO slots, but cannot publish.
+        replyCapture(capability === "unsupported" ? ["stale alpha"] : nativeBootstrapLines());
+        replyCleanup();
+        expect(bytesOf(alpha.events)).toEqual([]);
+        expect(bytesOf(beta.events)).toEqual([]);
+        if (operation !== "dispose") {
+          // The sibling receives a fresh full budget from admission, not from enqueue.
+          expect(
+            rig.pendingRecoveries.filter((task) => !task.cancelled).map((task) => task.dueAtMs),
+          ).toEqual([9000]);
+          replyCapture(["quiet sibling"], true, 99);
+          expect(bytesOf(beta.events)).toEqual(["quiet sibling"]);
+        }
+        if (operation === "reseed") {
+          expect(captureCommands()).toHaveLength(4);
+          replyCapture(capability === "unsupported" ? ["fresh alpha"] : nativeBootstrapLines());
+          expect(alpha.events.filter((event) => event.type === "seed")).toHaveLength(1);
+          if (capability === "unsupported") expect(bytesOf(alpha.events)).toEqual(["fresh alpha"]);
+          else
+            expect(alpha.events.find((event) => event.type === "seed")).toHaveProperty(
+              "native.version",
+              2,
+            );
+        } else if (operation === "freeze") {
+          rig.sim.reply([]); // requested pause, ordered after the sibling recipe
+        }
+        expect(rig.sim.core.pendingCount).toBe(0);
+        advanceRecoveryClock(rig, 20000);
+        expect([...alpha.events, ...beta.events].filter((event) => event.type === "fault")).toEqual(
+          [],
+        );
+        expect(rig.pendingRecoveries.filter((task) => !task.cancelled)).toEqual([]);
+      } finally {
+        await rig.channel.dispose();
+      }
+    },
+  );
+
+  it.each(["unsupported", "transient"] as const)(
+    "keeps the newest same-pane capture when repeatedly cancelling a %s replacement",
+    async (capability) => {
+      const rig = await startedRig();
+      rig.sim.commandListInline = (command, count, resultIndex, onReply) => {
+        rig.sim.core.pushCommandList(count, resultIndex, onReply);
+        rig.sim.written.push(command);
+      };
+      const alpha = collect();
+      const replyCapture = (lines: string[], ok = true) => {
+        rig.sim.reply([]);
+        rig.sim.reply(lines, ok);
+        rig.sim.reply(["0 0 100 50"]);
+      };
+      const replyCleanup = () => {
+        rig.sim.reply([]);
+        rig.sim.reply([]);
+      };
+      try {
+        const handle = rig.channel.subscribePane("pane.alpha", alpha.onEvent, undefined, true);
+        replyCapture(
+          [
+            capability === "unsupported"
+              ? "command capture-pane: unknown flag -R"
+              : "temporary failure",
+          ],
+          false,
+        );
+        replyCleanup();
+        handle.reseed();
+        handle.reseed();
+        expect(rig.sim.written.filter((command) => command.includes("capture-pane"))).toHaveLength(
+          4,
+        );
+        // Simulate callbacks already queued when their timers were cancelled.
+        for (const timer of rig.pendingRecoveries.filter((task) => task.cancelled))
+          timer.callback();
+        for (let retired = 0; retired < 2; retired++) {
+          replyCapture(capability === "unsupported" ? ["retired"] : nativeBootstrapLines());
+          replyCleanup();
+          expect(alpha.events).toEqual([]);
+        }
+        replyCapture(capability === "unsupported" ? ["newest"] : nativeBootstrapLines());
+        expect(alpha.events.filter((event) => event.type === "seed")).toHaveLength(1);
+        if (capability === "unsupported") expect(bytesOf(alpha.events)).toEqual(["newest"]);
+        else
+          expect(alpha.events.find((event) => event.type === "seed")).toHaveProperty(
+            "native.version",
+            2,
+          );
+        expect(rig.sim.written.filter((command) => command.startsWith("if-shell -t"))).toHaveLength(
+          3,
+        );
+        expect(rig.sim.core.pendingCount).toBe(0);
+        expect(rig.pendingRecoveries.filter((task) => !task.cancelled)).toEqual([]);
+      } finally {
+        await rig.channel.dispose();
+      }
+    },
+  );
+
   it("reserves both cleanup replies before the next native capture and cursor", async () => {
     const rig = await startedRig();
     try {
@@ -3459,3 +4347,415 @@ function nativeBootstrapLines(): string[] {
     ),
   ];
 }
+
+describe("native window link projection", () => {
+  it("shares backing layouts and panes across duplicate links and observes same-backing activation", async () => {
+    const rig = await startedRig();
+    try {
+      rig.state.descriptorRows[2] = rig.state.descriptorRows[2]!.replace(
+        "%3\t\t",
+        "%3\tpane.mirror.gen1\t",
+      ).replace("\t\tzz-sim\t1\t2", "\twindow.test.two\tzz-sim\t1\t2");
+      const first = rig.state.windowRows[0]!.split("\t");
+      first[3] = "0";
+      rig.state.windowRows.push(first.join("\t"));
+      rig.state.descriptorRows = rig.state.descriptorRows.map((row) =>
+        row.replace(/\t2\t$/, "\t3\t"),
+      );
+      rig.state.descriptorRows.push(
+        ...rig.state.descriptorRows.slice(0, 2).map((row) => {
+          const p = row.split("\t");
+          p[15] = "0";
+          p[6] = "2";
+          return p.join("\t");
+        }),
+      );
+      const snapshots: MirrorLayoutAuthoritySnapshot[] = [];
+      const handle = await rig.channel.subscribeAuthoritativeLayout(
+        () => {},
+        undefined,
+        (snapshot) => snapshots.push(snapshot),
+      );
+      const initial = snapshots.at(-1)!;
+      expect(initial.layouts).toHaveLength(2);
+      expect(initial.windowLinks.links).toHaveLength(3);
+      expect(rig.channel.describe().panes).toHaveLength(3);
+      const stamps = rig.sim.written.filter((command) =>
+        command.startsWith("set-option -w"),
+      ).length;
+      const linked = initial.windowLinks.links.filter(
+        (link) => link.semanticWindowId === "window.test.one",
+      );
+      expect(linked).toHaveLength(2);
+      await expect(
+        rig.channel.executeWindowLinkAction({ action: "select", paneId: "pane.alpha" }),
+      ).rejects.toMatchObject({ reason: "window_link_ambiguous" });
+      rig.state.windowRows = rig.state.windowRows.map((row, index) => {
+        const p = row.split("\t");
+        p[3] = index === 2 ? "1" : "0";
+        return p.join("\t");
+      });
+      rig.sim.feedLines("%session-window-changed $1 @1");
+      rig.pendingSyncs.shift()!();
+      await vi.waitFor(() =>
+        expect(snapshots.at(-1)!.windowLinks.activeLinkId).toBe(linked[1]!.linkId),
+      );
+      expect(snapshots.at(-1)!.windowLinks.linkRevision).toBe(initial.windowLinks.linkRevision);
+      expect(snapshots.at(-1)!.layouts).toHaveLength(2);
+      expect(rig.sim.written.filter((command) => command.startsWith("set-option -w"))).toHaveLength(
+        stamps,
+      );
+      handle.close();
+    } finally {
+      await rig.channel.dispose();
+    }
+  });
+});
+
+it("bounds stalled post-mutation reconciliation and never revives revoked link handles", async () => {
+  const execute = vi.fn(async () => ({ status: 0, stdout: "link-guard.ok" }));
+  const rig = await startedRig({ executeWindowLinkGuard: execute });
+  try {
+    rig.state.descriptorRows[2] = rig.state.descriptorRows[2]!.replace(
+      "%3\t\t",
+      "%3\tpane.mirror.gen1\t",
+    ).replace("\t\tzz-sim\t1\t2", "\twindow.test.two\tzz-sim\t1\t2");
+    const snapshots: MirrorLayoutAuthoritySnapshot[] = [];
+    await rig.channel.subscribeAuthoritativeLayout(
+      () => {},
+      undefined,
+      (snapshot) => snapshots.push(snapshot),
+    );
+    const initial = snapshots.at(-1)!.windowLinks;
+    const link = initial.links[0]!;
+    const target = {
+      liveSessionId: initial.liveSessionId,
+      linkRevision: initial.linkRevision,
+      linkId: link.linkId,
+      expectedSemanticWindowId: link.semanticWindowId,
+    };
+    let release!: (lines: string[]) => void;
+    vi.spyOn(rig.sim, "request").mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    vi.useFakeTimers();
+    const result = rig.channel.executeWindowLinkAction({ action: "select", target });
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(await result).toEqual({ outcome: "applied", windowLinks: null });
+    expect(execute).toHaveBeenCalledTimes(1);
+    await expect(
+      rig.channel.executeWindowLinkAction({ action: "select", target }),
+    ).rejects.toMatchObject({ reason: "window_link_stale" });
+    release(rig.state.truthRows);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(snapshots.at(-1)!.windowLinks.links[0]!.linkId).not.toBe(link.linkId);
+    await expect(
+      rig.channel.executeWindowLinkAction({ action: "select", target }),
+    ).rejects.toMatchObject({ reason: "window_link_stale" });
+    expect(execute).toHaveBeenCalledTimes(1);
+  } finally {
+    vi.useRealTimers();
+    await rig.channel.dispose();
+  }
+});
+
+describe("native capture-resume recovery", () => {
+  const epoch = "00000000-0000-4000-8000-000000000001";
+  function snapshot() {
+    return {
+      ok: true,
+      lines: [
+        JSON.stringify({
+          snapshotVersion: 1,
+          serverEpoch: epoch,
+          paneId: "%1",
+          paneBirthId: "11",
+          resumed: true,
+          cursor: "1 0 2 1 0 1 0 0 0 0 0 0 0 1 0 2000 0 0 0 0 0 0 1",
+        }),
+        JSON.stringify({
+          version: 2,
+          cols: 2,
+          rows: 1,
+          history: 0,
+          hscrolled: 0,
+          limit: 2000,
+          cursor: [1, 0],
+          currentAttributes: [0, 8, 8, 8],
+        }),
+        JSON.stringify({ row: 0, flags: 0, used: 1, cells: [[0, 1, "41", 0, 8, 8, 8, 0, 0]] }),
+        "%continue %1",
+      ],
+    };
+  }
+  async function setup(plain = false, manualPause = false, dual = false) {
+    const callbacks: Array<(reply: { ok: boolean; lines: string[] }) => void> = [];
+    const adapter = {
+      bindIo: vi.fn(),
+      dispose: vi.fn(),
+      atomicSnapshotEpoch: vi.fn((_io, representation = "native") =>
+        representation === "dual" && !dual ? null : (epoch as string | null),
+      ),
+      tryDispatch: vi.fn<NonNullable<SessionChannelOptions["ownedViewer"]>["tryDispatch"]>(
+        (_io, request, reply) => {
+          if (!request.commands[0]?.includes("-Q")) return false;
+          callbacks.push(reply);
+          return true;
+        },
+      ),
+    };
+    const rig = await startedRig({
+      ownedViewer: adapter,
+      nativeBirth: "11",
+      continueReply: manualPause ? "manual" : "auto-success",
+    });
+    const events = collect();
+    const handle = rig.channel.subscribePane("pane.alpha", events.onEvent, undefined, !plain);
+    rig.sim.reply(plain ? ["plain"] : nativeBootstrapLines());
+    rig.sim.reply(["0 0 100 50"]);
+    events.events.length = 0;
+    return { rig, adapter, callbacks, events, handle };
+  }
+  it.each([false, true])(
+    "delivers negotiated dual snapshots to plain/mixed subscribers: %s",
+    async (mixed) => {
+      const s = await setup(true, false, true);
+      const nativeEvents = collect();
+      try {
+        if (mixed) {
+          s.rig.channel.subscribePane("pane.alpha", nativeEvents.onEvent, undefined, true);
+          s.rig.sim.reply(nativeBootstrapLines());
+          s.rig.sim.reply(["0 0 100 50"]);
+          nativeEvents.events.length = 0;
+        }
+        s.rig.sim.feedLines("%pause %1");
+        expect(s.adapter.tryDispatch.mock.calls.at(-1)?.[1].commands[0]).toContain("-D");
+        const rows = snapshot().lines.slice(0, -1);
+        rows[0] = JSON.stringify({
+          ...JSON.parse(rows[0]!),
+          snapshotVersion: 2,
+          representation: "dual",
+        });
+        s.callbacks[0]!({
+          ok: true,
+          lines: [
+            ...rows,
+            JSON.stringify({ ansiHex: "410a" }),
+            JSON.stringify({ ansiEnd: true, bytes: 2, chunks: 1 }),
+            "%continue %1",
+          ],
+        });
+        const plainSeed = s.events.events.find((e) => e.type === "seed");
+        expect(plainSeed).not.toHaveProperty("native");
+        expect(bytesOf(s.events.events)).toEqual(["A"]);
+        if (mixed) {
+          expect(nativeEvents.events.find((e) => e.type === "seed")).toHaveProperty(
+            "native.version",
+            2,
+          );
+          expect(bytesOf(nativeEvents.events)).toEqual([""]);
+        }
+      } finally {
+        await s.rig.channel.dispose();
+      }
+    },
+  );
+  it("publishes one atomic grid synchronously and admits following output without continue debt", async () => {
+    const s = await setup();
+    try {
+      s.rig.sim.feedLines("%pause %1");
+      expect(s.callbacks).toHaveLength(1);
+      expect(s.rig.sim.written.at(-1)).toBe("refresh-client -A '%1:pause'");
+      s.callbacks[0]!(snapshot());
+      s.rig.sim.feedLines("%output %1 after");
+      expect(s.events.events.filter((e) => e.type === "seed")).toHaveLength(1);
+      expect(bytesOf(s.events.events)).toEqual(["", "after"]);
+      expect(s.events.events).toContainEqual({
+        type: "flow",
+        state: "resumed",
+        reason: "backpressure",
+      });
+      expect(continueNotificationQueueSize(s.rig.channel)).toBe(0);
+      expect(s.rig.pendingRecoveries.filter((t) => !t.cancelled)).toEqual([]);
+    } finally {
+      await s.rig.channel.dispose();
+    }
+  });
+  it.each([false, true])(
+    "repauses after unknown committed output without stock replay (dual=%s)",
+    async (dual) => {
+      const s = await setup(dual, false, dual);
+      const valid = () => {
+        const reply = snapshot();
+        if (dual) {
+          reply.lines[0] = JSON.stringify({
+            ...JSON.parse(reply.lines[0]!),
+            snapshotVersion: 2,
+            representation: "dual",
+          });
+          reply.lines.splice(
+            -1,
+            0,
+            JSON.stringify({ ansiHex: "410a" }),
+            JSON.stringify({ ansiEnd: true, bytes: 2, chunks: 1 }),
+          );
+        }
+        return reply;
+      };
+      try {
+        s.rig.sim.feedLines("%pause %1");
+        s.callbacks[0]!({ ok: true, lines: ["malformed", "%continue %1"] });
+        s.rig.sim.feedLines("%output %1 discarded");
+        expect(s.events.events.some((e) => e.type === "seed")).toBe(false);
+        runRecoveryTimer(s.rig);
+        expect(s.rig.sim.written.filter((c) => c === "refresh-client -A '%1:pause'")).toHaveLength(
+          2,
+        );
+        s.callbacks[0]!(valid()); // late callback cannot publish another attempt
+        expect(s.events.events.some((e) => e.type === "seed")).toBe(false);
+        s.callbacks[1]!(valid());
+        expect(s.events.events.filter((e) => e.type === "seed")).toHaveLength(1);
+      } finally {
+        await s.rig.channel.dispose();
+      }
+    },
+  );
+  it.each(["epoch", "dispose", "membership"])("does not publish stale %s replies", async (kind) => {
+    const s = await setup();
+    try {
+      s.rig.sim.feedLines("%pause %1");
+      if (kind === "epoch")
+        s.adapter.atomicSnapshotEpoch.mockReturnValue("00000000-0000-4000-8000-000000000002");
+      if (kind === "dispose") await s.rig.channel.dispose();
+      if (kind === "membership") s.handle.close();
+      s.callbacks[0]!(snapshot());
+      expect(s.events.events.some((e) => e.type === "seed")).toBe(false);
+    } finally {
+      await s.rig.channel.dispose();
+    }
+  });
+  it("keeps plain subscribers on their existing ANSI path", async () => {
+    const s = await setup(true);
+    try {
+      s.rig.sim.feedLines("%pause %1");
+      expect(s.callbacks).toHaveLength(0);
+    } finally {
+      await s.rig.channel.dispose();
+    }
+  });
+  it("keeps mixed native/plain participants on the existing shared collector", async () => {
+    const s = await setup();
+    try {
+      s.rig.channel.subscribePane("pane.alpha", () => {});
+      s.rig.sim.reply(["plain"]);
+      s.rig.sim.reply(["0 0 100 50"]);
+      s.rig.sim.feedLines("%pause %1");
+      expect(s.callbacks).toHaveLength(0);
+    } finally {
+      await s.rig.channel.dispose();
+    }
+  });
+  it("does not send another pause or capture after owner epoch changes", async () => {
+    const s = await setup();
+    try {
+      s.rig.sim.feedLines("%pause %1");
+      s.adapter.atomicSnapshotEpoch.mockReturnValue("00000000-0000-4000-8000-000000000002");
+      s.callbacks[0]!(snapshot());
+      runRecoveryTimer(s.rig);
+      expect(s.callbacks).toHaveLength(1);
+      expect(s.rig.sim.written.filter((c) => c === "refresh-client -A '%1:pause'")).toHaveLength(1);
+      expect(s.events.events).toContainEqual({ type: "fault", reason: "native-recovery-failed" });
+    } finally {
+      await s.rig.channel.dispose();
+    }
+  });
+  it("ignores a timed-out child's late reply before retrying behind another pause", async () => {
+    const s = await setup();
+    try {
+      s.rig.sim.feedLines("%pause %1");
+      advanceRecoveryClock(s.rig, 500);
+      s.callbacks[0]!(snapshot());
+      expect(s.events.events.some((e) => e.type === "seed")).toBe(false);
+      advanceRecoveryClock(s.rig, 40);
+      s.callbacks[1]!(snapshot());
+      expect(s.events.events.filter((e) => e.type === "seed")).toHaveLength(1);
+    } finally {
+      await s.rig.channel.dispose();
+    }
+  });
+  it("fences repeated pause notifications before and after pause acknowledgement", async () => {
+    const s = await setup(false, true);
+    try {
+      s.rig.sim.feedLines("%pause %1", "%pause %1", "%pause %1");
+      expect(s.callbacks).toHaveLength(0);
+      s.rig.sim.reply([]);
+      expect(s.callbacks).toHaveLength(1);
+      // A later actual backpressure pause invalidates the capture instead of
+      // letting its inline continue discharge the new recovery's ownership.
+      s.rig.sim.feedLines("%pause %1", "%pause %1");
+      s.callbacks[0]!(snapshot());
+      expect(s.events.events.some((e) => e.type === "seed")).toBe(false);
+      s.rig.sim.reply([]);
+      expect(s.callbacks).toHaveLength(2);
+      s.callbacks[1]!(snapshot());
+      expect(s.events.events.filter((e) => e.type === "seed")).toHaveLength(1);
+    } finally {
+      await s.rig.channel.dispose();
+    }
+  });
+  it("retires a synchronous delivery when its subscriber freezes and thaws", async () => {
+    const s = await setup();
+    const append = s.events.events.push.bind(s.events.events);
+    let changed = false;
+    const spy = vi.spyOn(s.events.events, "push").mockImplementation((...events) => {
+      const result = append(...events);
+      if (!changed && events.some((event) => event.type === "reset")) {
+        changed = true;
+        s.handle.freeze();
+        s.handle.thaw();
+      }
+      return result;
+    });
+    try {
+      s.rig.sim.feedLines("%pause %1");
+      s.callbacks[0]!(snapshot());
+      expect(s.events.events.some((e) => e.type === "seed")).toBe(false);
+      expect(s.callbacks).toHaveLength(2);
+      spy.mockRestore();
+      s.callbacks[1]!(snapshot());
+      expect(s.events.events.filter((e) => e.type === "seed")).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+      await s.rig.channel.dispose();
+    }
+  });
+  it("degrades throwing optional capability lookup to ordinary recovery before dispatch", async () => {
+    const s = await setup();
+    try {
+      s.adapter.atomicSnapshotEpoch.mockImplementation(() => {
+        throw new Error("retired capability");
+      });
+      expect(() => s.rig.sim.feedLines("%pause %1")).not.toThrow();
+      expect(s.callbacks).toHaveLength(0);
+      expect(s.rig.sim.written).toContain("refresh-client -A '%1:continue'");
+    } finally {
+      await s.rig.channel.dispose();
+    }
+  });
+  it("bounds missing replies with existing attempt and absolute deadlines", async () => {
+    const s = await setup();
+    try {
+      s.rig.sim.feedLines("%pause %1");
+      advanceRecoveryClock(s.rig, 5000);
+      expect(s.callbacks).toHaveLength(4);
+      expect(s.events.events).toContainEqual({ type: "fault", reason: "native-recovery-failed" });
+      for (const reply of s.callbacks) reply(snapshot());
+      expect(s.events.events.some((e) => e.type === "seed")).toBe(false);
+    } finally {
+      await s.rig.channel.dispose();
+    }
+  });
+});

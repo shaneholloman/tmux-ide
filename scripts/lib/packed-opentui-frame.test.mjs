@@ -1,7 +1,36 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { frameShowsTerminalFocus } from "./packed-opentui-frame.mjs";
+import { frameShowsTerminalFocus, frameShowsSelectedHomeAgent } from "./packed-opentui-frame.mjs";
+
+const narrowHome = `• Codex [WORKING]
+  journey-beta
+  1 observed agent · 0 need attention · 1 working
+  AGENT                 MACHINE / SERVER / SE… STATUS
+  › Codex               Local / Default / jou… WORKING
+  Local / Default / journey-beta · Enter open`;
+
+test("accepts a truncated Home location with its exact selected-row footer", () => {
+  assert.equal(frameShowsSelectedHomeAgent(narrowHome, "Codex", "journey-beta"), true);
+  assert.equal(
+    frameShowsSelectedHomeAgent(
+      narrowHome.replace("jou…", "journey-beta"),
+      "Codex",
+      "journey-beta",
+    ),
+    true,
+  );
+});
+
+test("requires the Home roster row, working status and exact selected location", () => {
+  for (const frame of [
+    narrowHome.replace("› Codex", "› Other"),
+    narrowHome.replace("jou… WORKING", "jou… IDLE"),
+    narrowHome.replace("journey-beta · Enter open", "journey-other · Enter open"),
+    narrowHome.replace("  › Codex               Local / Default / jou… WORKING\n", ""),
+  ])
+    assert.equal(frameShowsSelectedHomeAgent(frame, "Codex", "journey-beta"), false);
+});
 
 test("accepts the wide terminal-focus footer", () => {
   assert.equal(frameShowsTerminalFocus("Terminals · focus terminal · ready"), true);
@@ -37,4 +66,126 @@ test("rejects non-terminal focus", () => {
 
 test("rejects a live session footer without terminal focus evidence", () => {
   assert.equal(frameShowsTerminalFocus("journey-beta  Live tmux session discovered"), false);
+});
+
+const calmHome = `Your agents
+  1 observed agent · 0 need attention · 1 working
+  Agent             Workspace / machine       Status
+  Codex             journey-beta              working
+  codex             Local / Default
+  Local / Default / journey-beta · Enter open`;
+
+test("accepts the calm two-line Home row without a selection chevron", () => {
+  assert.equal(frameShowsSelectedHomeAgent(calmHome, "Codex", "journey-beta"), true);
+  for (const frame of [
+    calmHome.replace("Codex", "Other"),
+    calmHome.replace("              working", "              idle"),
+    calmHome.replace("codex             Local / Default", "codex             Remote / Default"),
+    calmHome.replace("journey-beta · Enter open", "another · Enter open"),
+  ])
+    assert.equal(frameShowsSelectedHomeAgent(frame, "Codex", "journey-beta"), false);
+});
+
+const unifiedHome = `tmux-ide
+  1 observed agent · 0 need attention · 1 working
+  All machines · All agents · f machine
+  Codex                                                     working
+  journey-beta · Local · Default · codex
+  Local / Default / journey-beta · Enter open`;
+
+test("accepts unified Home while retaining exact agent, status and location checks", () => {
+  assert.equal(frameShowsSelectedHomeAgent(unifiedHome, "Codex", "journey-beta"), true);
+  for (const frame of [
+    unifiedHome.replace("Codex", "Other"),
+    unifiedHome.replace(
+      "Codex                                                     working",
+      "Codex                                                     idle",
+    ),
+    unifiedHome.replace("· Local ·", "· Remote ·"),
+    unifiedHome.replace("journey-beta · Local", "other · Local"),
+    unifiedHome.replace("journey-beta · Enter open", "other · Enter open"),
+  ])
+    assert.equal(frameShowsSelectedHomeAgent(frame, "Codex", "journey-beta"), false);
+});
+
+test("requires idle for the inactive installed agent fixture", () => {
+  const idleHome = unifiedHome.replaceAll("working", "idle");
+  assert.equal(frameShowsSelectedHomeAgent(idleHome, "Codex", "journey-beta", "idle"), true);
+  assert.equal(frameShowsSelectedHomeAgent(unifiedHome, "Codex", "journey-beta", "idle"), false);
+  assert.equal(frameShowsSelectedHomeAgent(idleHome, "Other", "journey-beta", "idle"), false);
+  assert.equal(frameShowsSelectedHomeAgent(idleHome, "Codex", "other", "idle"), false);
+});
+
+test("accepts contextual terminal chrome without discovery chatter", () => {
+  const frame =
+    "tmux-ide Home ●❯ Terminals Local · main\n ● Shell ⋯\n F6 Sessions F7 Attention F10 Sidebar F5 Commands";
+  assert.equal(frameShowsTerminalFocus(frame), true);
+  for (const invalid of [
+    frame.replace("●❯", "○"),
+    frame.replace("F6 Sessions", "↑↓ Select"),
+    frame.replace("Local · main", "Reconnecting"),
+  ])
+    assert.equal(frameShowsTerminalFocus(invalid), false);
+});
+
+test("accepts shortcut tabs only with terminal window chrome and terminal footer", () => {
+  const frame =
+    "tmux-ide F1 Home F2 Terminals Local · main\n ● zsh … + New window\n F6 Sessions F7 Attention F5 Commands";
+  assert.equal(frameShowsTerminalFocus(frame), true);
+  for (const invalid of [
+    frame.replace("F2 Terminals", "F1 Home"),
+    frame.replace("+ New window", ""),
+    frame.replace("F6 Sessions", "↑↓ Select"),
+    frame.replace("Local · main", "Reconnecting"),
+  ])
+    assert.equal(frameShowsTerminalFocus(invalid), false);
+});
+
+test("recognizes shared agent rows without redundant status words", () => {
+  const frame =
+    "1 observed agent · 0 need attention · 0 working\n  Codex\n  Local · Default · journey-beta\n Local / Default / journey-beta · Enter open";
+  assert.equal(frameShowsSelectedHomeAgent(frame, "Codex", "journey-beta", "idle"), true);
+  for (const invalid of [
+    frame.replace("  Codex", "  Other"),
+    frame.replace("Local · Default", "Remote · Default"),
+    frame.replace("Default · journey-beta", "Default · another"),
+    frame.replace("journey-beta · Enter", "another · Enter"),
+    frame.replace("  Codex", "⠋ Codex"),
+  ])
+    assert.equal(frameShowsSelectedHomeAgent(invalid, "Codex", "journey-beta", "idle"), false);
+  assert.equal(
+    frameShowsSelectedHomeAgent(
+      frame.replace("  Codex", "⠋ Codex"),
+      "Codex",
+      "journey-beta",
+      "working",
+    ),
+    true,
+  );
+});
+
+test("accepts the compact shortcut header on Linux while retaining focus checks", () => {
+  const frame =
+    " F1   F2    Local · journey-beta\n Agents ? Help ● bash … + New window\n ● electric-otter ⋯\n F6 Sessions F7 Attention F10 Sidebar F5 Commands";
+  assert.equal(frameShowsTerminalFocus(frame), true);
+  for (const invalid of [
+    frame.replace("F2", ""),
+    frame.replace("+ New window", ""),
+    frame.replace("F6 Sessions", "↑↓ Select"),
+    frame.replace("Local · journey-beta", "Unavailable"),
+  ])
+    assert.equal(frameShowsTerminalFocus(invalid), false);
+});
+
+test("accepts icon-only new-window buttons at the hosted Linux width", () => {
+  const frame =
+    " F1   F2    Local · journey-beta\n Machines ? Help ● bash …     +\n ● Pack pane 1 ⋯\n F6 Sessions F7 Attention F5 Commands";
+  assert.equal(frameShowsTerminalFocus(frame), true);
+  for (const invalid of [
+    frame.replace("F2", ""),
+    frame.replace("+", ""),
+    frame.replace("F6 Sessions", "↑↓ Select"),
+    frame.replace("Local · journey-beta", "Reconnecting"),
+  ])
+    assert.equal(frameShowsTerminalFocus(invalid), false);
 });

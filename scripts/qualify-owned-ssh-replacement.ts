@@ -1,5 +1,8 @@
 /** Opt-in native stage4. Four managed owners, two real SSH authorities, no Docker. */
 import assert from "node:assert/strict";
+import { monitorEventLoopDelay } from "node:perf_hooks";
+import { cleanupOwnedSshRegistry } from "./lib/owned-ssh-registry-cleanup.ts";
+import { qualifyCanonicalSshAttribution } from "./lib/owned-ssh-attribution.ts";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { createRequire } from "node:module";
@@ -20,7 +23,10 @@ import {
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readDevelopmentIdentity } from "../packages/daemon/src/lib/development-state.ts";
+import {
+  readDevelopmentIdentity,
+  readPrivateDevelopmentFile,
+} from "../packages/daemon/src/lib/development-state.ts";
 import { readDevelopmentBuild } from "../packages/daemon/src/lib/development-build.ts";
 import { resolveDevelopmentInstance } from "../packages/daemon/src/lib/development-instance.ts";
 import {
@@ -51,6 +57,7 @@ import {
 type Tuple = { role: string; worktree: string; name: string; store: string; id?: string };
 type Plan = {
   version: number;
+  attribution?: boolean;
   instances: Tuple[];
   instance?: Tuple;
   remote?: DevelopmentAppRemote;
@@ -145,8 +152,15 @@ if (args[0] === "--client") {
       flag: "wx",
       mode: 0o600,
     });
+  const eventLoop = monitorEventLoopDelay({ resolution: 20 });
+  eventLoop.enable();
   const event = (stage: string, extra: Record<string, unknown> = {}) => {
-    events.push({ stage, elapsedMs: Date.now() - started, ...extra });
+    events.push({
+      stage,
+      elapsedMs: Date.now() - started,
+      eventLoopMaxMs: eventLoop.max / 1e6,
+      ...extra,
+    });
     process.stdout.write(JSON.stringify({ stage, elapsedMs: Date.now() - started }) + "\n");
   };
   const cancellation = new AbortController();
@@ -191,24 +205,42 @@ if (args[0] === "--client") {
   );
   const cli = async (role: string, action: string, extra: string[] = []) => {
     const instance = instances[role];
-    return JSON.parse(
-      await run(
-        descriptor.node,
-        [
-          join(sourceRoot, "scripts/development-instance.mjs"),
-          action,
-          "--worktree",
-          instance.worktree,
-          "--name",
-          instance.name,
-          "--store",
-          instance.store,
-          "--json",
-          ...extra,
-        ],
-        action === "rebuild" ? 240000 : 45000,
-      ),
-    );
+    try {
+      return JSON.parse(
+        await run(
+          descriptor.node,
+          [
+            join(sourceRoot, "scripts/development-instance.mjs"),
+            action,
+            "--worktree",
+            instance.worktree,
+            "--name",
+            instance.name,
+            "--store",
+            instance.store,
+            "--json",
+            ...extra,
+          ],
+          action === "rebuild" ? 240000 : 45000,
+        ),
+      );
+    } catch (error) {
+      const stdout = (error as { stdout?: unknown }).stdout;
+      if (typeof stdout === "string" && stdout.length <= 65536) {
+        try {
+          const failure = JSON.parse(stdout);
+          save(role + "-" + action + "-failure.json", {
+            code: failure.code,
+            reason: failure.reason,
+            operation: failure.operation,
+            diagnostic: failure.diagnostic,
+          });
+        } catch {
+          /* Never copy arbitrary child output or credentials. */
+        }
+      }
+      throw error;
+    }
   };
   const receipts: Record<string, unknown> & { cleanup: Record<string, boolean> } = {
     version: 1,
@@ -320,6 +352,24 @@ if (args[0] === "--client") {
       instances[role].worktree,
       "/bin/sh",
     ]);
+    if (descriptor.attribution) {
+      await tmux(role, [
+        "set-option",
+        "-p",
+        "-t",
+        descriptor.session + ":0.0",
+        "@tmux_ide_pane_id",
+        "pane.shared",
+      ]);
+      await tmux(role, [
+        "set-option",
+        "-p",
+        "-t",
+        descriptor.session + ":0.0",
+        "@agent_state",
+        `idle:${Date.now()}`,
+      ]);
+    }
     const info = await canonical(role);
     const response = await fetch(`http://127.0.0.1:${info.port}/api/v2/action/workspace.promote`, {
       method: "POST",
@@ -409,38 +459,21 @@ if (args[0] === "--client") {
       assert(!client.exited);
       return client.frame().includes(badge);
     });
-    await wait(() =>
-      client
-        .frame()
-        .split("\n")
-        .some(
-          (line: string) =>
-            line.slice(0, 29).includes(descriptor.session) && line.slice(0, 29).includes("1p"),
-        ),
-    );
-    const row =
-      client
-        .frame()
-        .split("\n")
-        .findIndex(
-          (line: string) =>
-            line.slice(0, 29).includes(descriptor.session) && line.slice(0, 29).includes("1p"),
-        ) + 1;
-    child.write(`\x1b[<0;12;${row}M\x1b[<0;12;${row}m`);
-    await delay(250);
-    child.write("\x1bOQ");
     await wait(() => {
       const frame = client.frame();
       return (
-        !frame.includes("Command palette") &&
+        frame.includes("Your agents, across your machines") && frame.includes(descriptor.session)
+      );
+    });
+    // Home now selects agents directly; there is no session sidebar here.
+    child.write("\r");
+    await wait(() => {
+      const frame = client.frame();
+      return (
+        !frame.includes("Your agents, across your machines") &&
         !frame.includes("Open terminals F2") &&
         !frame.includes("PASSIVE PREVIEW") &&
-        frame
-          .split("\n")
-          .some(
-            (line: string) =>
-              line.slice(0, 29).includes("›") && line.slice(0, 29).includes(descriptor.session),
-          )
+        frame.includes(descriptor.session)
       );
     });
     await tracker.capture();
@@ -563,7 +596,9 @@ if (args[0] === "--client") {
           if (handshakeTimings.length < 128) handshakeTimings.push(timing);
           else omittedHandshakeTimings++;
           try {
-            const value = JSON.parse(await developmentSshHandshake(instances[role], lease));
+            const pendingHandshake = developmentSshHandshake(instances[role], lease);
+            timing.initialCallMs = Date.now() - began;
+            const value = JSON.parse(await pendingHandshake);
             timing.outcome = "completed";
             return value;
           } catch {
@@ -589,6 +624,47 @@ if (args[0] === "--client") {
           lease = value;
         },
       };
+    }
+    if (descriptor.attribution) {
+      stage = "canonical-attribution";
+      event(stage);
+      const facts: Record<string, unknown> = {};
+      receipts.attribution = facts;
+      await qualifyCanonicalSshAttribution({
+        local: await canonical("target-b"),
+        remote: await canonical("target-a"),
+        alias: "target",
+        connect: (options) =>
+          openSshDaemonTransport(options, {
+            spawn: (argv) =>
+              tracker.retain(
+                spawn("/usr/bin/ssh", ["-F", ssh.a!.config, ...argv], {
+                  env,
+                  stdio: ["ignore", "pipe", "pipe"],
+                }),
+              ),
+            allocatePort: unusedLoopbackPort,
+            probe: probeSshDaemonIdentity,
+          }),
+        privateParent: sshParent,
+        executable: JSON.parse(readFileSync(join(instances["target-a"]!.root, "tmux.json"), "utf8"))
+          .executable,
+        session: descriptor.session,
+        signal: cancellation.signal,
+        identify: (pid) => kernel.identify(pid),
+        stampRemoteDefault: async (state) => {
+          await tmux("target-a", [
+            "set-option",
+            "-p",
+            "-t",
+            descriptor.session + ":0.0",
+            "@agent_state",
+            state,
+          ]);
+        },
+        facts,
+      });
+      event("canonical-attribution-qualified");
     }
     for (const side of ["a", "b"]) {
       stage = "open-" + side;
@@ -697,9 +773,9 @@ if (args[0] === "--client") {
             ? "witness"
             : path === "/ws/events"
               ? "semantic-events"
-              : path === "/api/v1/terminal/pane-streams/issue"
+              : path === "/api/v2/terminal/pane-streams/issue"
                 ? "pane-stream-issue"
-                : path === "/v1/terminal/pane-streams/redeem"
+                : path === "/v2/terminal/pane-streams/redeem"
                   ? "pane-stream-redeem"
                   : path.startsWith("/api/v2/action/")
                     ? "owner-action"
@@ -918,6 +994,25 @@ if (args[0] === "--client") {
       detail: errorCategory(error),
       category: cancellation.signal.aborted ? "cancelled" : "native-ssh-recovery-refused",
     };
+    const retainedLogs: Record<string, unknown>[] = [];
+    for (const [role, instance] of Object.entries(instances)) {
+      try {
+        const log = readPrivateDevelopmentFile(join(instance.root, "logs/owner.log"));
+        if (log) {
+          const destination = join(dirname(descriptorPath), role + "-private-owner.log");
+          writeFileSync(destination, log.bytes, { flag: "wx", mode: 0o600 });
+          retainedLogs.push({
+            role,
+            file: destination,
+            bytes: log.bytes.length,
+            sha256: hash(log.bytes),
+          });
+        }
+      } catch {
+        retainedLogs.push({ role, unavailable: true });
+      }
+    }
+    receipts.privateFailureLogs = retainedLogs;
     for (const [side, c] of Object.entries(clients))
       save(side + "-failure-frame.json", { frame: c.frame(), exited: c.exited });
   } finally {
@@ -978,6 +1073,14 @@ if (args[0] === "--client") {
       try {
         if (await readDevelopmentIdentity(instances[role])) {
           await cli(role, "down");
+          const createdServerId = (receipts.attribution as { createdServerId?: string } | undefined)
+            ?.createdServerId;
+          if (role === "target-a" && createdServerId) {
+            receipts.secondaryRegistryCleanup = await cleanupOwnedSshRegistry(
+              instances[role]!,
+              createdServerId,
+            );
+          }
           await cli(role, "reset", ["--yes"]);
         }
         const remaining = existsSync(instances[role].root) ? readdirSync(instances[role].root) : [];
@@ -1024,6 +1127,8 @@ if (args[0] === "--client") {
     );
     receipts.ok =
       receipts.recoveryQualified === true && Object.values(receipts.cleanup).every(Boolean);
+    eventLoop.disable();
+    receipts.eventLoop = { maxMs: eventLoop.max / 1e6, p99Ms: eventLoop.percentile(99) / 1e6 };
     receipts.elapsedMs = Date.now() - started;
     save("qualification.json", receipts);
     for (const c of Object.values(clients)) c.vt.dispose();

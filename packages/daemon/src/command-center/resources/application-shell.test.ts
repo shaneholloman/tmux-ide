@@ -213,7 +213,7 @@ describe("application-shell resource projector", () => {
     expect(() => projectApplicationShellV1(first)).not.toThrow();
     expect(first.workspace.sidebar.agents).toEqual([
       expect.objectContaining({ name: "Fable", harness: "claude-code", paneId: "pane.pm" }),
-      expect.objectContaining({ name: "Codex", harness: "codex" }),
+      expect.objectContaining({ name: "Implementer", harness: "codex" }),
     ]);
     const fallbackId = first.workspace.sidebar.agents[1]!.paneId!;
     expect(first.focus.appFocusedPaneId).toBe(fallbackId);
@@ -225,13 +225,17 @@ describe("application-shell resource projector", () => {
           title: "Fable",
           kind: "agent",
           active: false,
+          interactionEndpoint: null,
+          nativeIdentity: null,
           attachability: { status: "unavailable", reason: "missing-semantic-stamp" },
         },
         {
           id: fallbackId,
-          title: "Codex",
+          title: "Implementer",
           kind: "agent",
           active: true,
+          interactionEndpoint: null,
+          nativeIdentity: null,
           attachability: { status: "unavailable", reason: "missing-semantic-stamp" },
         },
       ],
@@ -817,7 +821,7 @@ describe("GET /api/project/:name/application-shell", () => {
     );
     restorers.push(
       _setExecutor((_command, args) =>
-        args[0] === "list-panes"
+        args[0] === "-u" && args[1] === "list-panes"
           ? "%7\t0\tImplementer\tcodex\t120\t40\t1\tteammate\tCodex\tagent"
           : "",
       ),
@@ -830,7 +834,7 @@ describe("GET /api/project/:name/application-shell", () => {
     expect(legacy.headers.get("x-tmux-ide-compatibility")).toBe("application-shell-v1");
     const legacyBody = ApplicationShellResourceV1SchemaZ.parse(await legacy.json());
     expect(legacyBody.resource.workspace.sidebar.agents[0]).toEqual(
-      expect.objectContaining({ name: "Codex", paneId: "pane.implementer" }),
+      expect.objectContaining({ name: "Implementer", paneId: "pane.implementer" }),
     );
 
     for (const path of [
@@ -924,8 +928,10 @@ describe("GET /api/project/:name/application-shell", () => {
     expect(body.resource.terminalInventory.resources).toHaveLength(2);
     expect(body.resource.terminalInventory.resources[1]).toEqual(
       expect.objectContaining({
-        title: "Codex",
+        title: "Implementer",
         kind: "agent",
+        interactionEndpoint: null,
+        nativeIdentity: null,
         attachability: { status: "unavailable", reason: "missing-semantic-stamp" },
       }),
     );
@@ -1100,4 +1106,22 @@ describe("pane titles", () => {
     // An empty hostname must never make every title vanish.
     expect(isHostNameTitle("anything", "")).toBe(false);
   });
+});
+
+it("projects native team membership and preserves a manual member-name override", () => {
+  const session = liveSession();
+  const team = { id: "team.1234567890123456", name: "Claude team", source: "claude-code" as const };
+  const result = projectApplicationShellResource({
+    ...session,
+    panes: [
+      {
+        ...session.panes[0]!,
+        name: "My reviewer",
+        nameSource: "manual",
+        teamMemberName: "reader",
+        team,
+      },
+    ],
+  });
+  expect(result.workspace.sidebar.agents[0]).toMatchObject({ name: "My reviewer", team });
 });

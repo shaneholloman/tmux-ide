@@ -109,6 +109,15 @@ colors, duplicate input listeners, and direct renderer-side tmux mutation.
 - `apps/electron-shell` and `app/` — future desktop work, outside the 2.9 product cut
 - `docs/` — marketing site and user documentation
 
+The SDK shares HTTP/retry behavior through the exported
+`@tmux-ide/daemon-client/owner-action-client` and `automation-client` subpaths.
+It may not import the client package root or other client implementations.
+These Web-platform-only transports are build-time SDK dependencies. The SDK
+bundles private workspace code and declarations; `test:pack` verifies the actual
+tarball with an isolated Node consumer, strict TypeScript and a browser bundle.
+Automation execution retries carry the same daemon-minted handle. Expiry or
+uncertainty never triggers a new reservation or a direct tmux fallback.
+
 ## Public daemon boundary
 
 The command center exposes a reusable protocol:

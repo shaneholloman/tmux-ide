@@ -1,87 +1,87 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`production ApplicationShellView retains shell, window strip, pane chrome, and canvas at %sx%s 1`] = `
-"  ⌂  ●❯                                                                    live
+" F1   F2                                                           Local · main
   tmux              ● main    ● workin…                                       +
- ● main               ● Codex                  ● working  ⋯
+ ● main               ● Codex                  ● Working  ⋯
  ○ website          CANONICAL-CELL
 
  Agents
- • Codex [WORKING]
+ ● Codex [WORKING]
 
 
 
 …
 
-                     main  Live                                              F5"
+                     F6 Sessions  F7 Attention  F10 Sidebar         F5 Commands"
 `;
 
 exports[`production ApplicationShellView retains shell, window strip, pane chrome, and canvas at %sx%s 2`] = `
-"   tmux-ide   ⌂ Home  ●❯ Terminals                                                                                 live
+"   tmux-ide  F1 Home    F2 Terminals                                                                       Local · main
   tmux-ide                  ● main    ● workin…                                                            + New window
- ● main                       ● Codex                  ● working  ⋯
+ ● main                       ● Codex                  ● Working  ⋯
  ○ website                  CANONICAL-CELL
 
  Agents
- • Codex [WORKING]
+ ● Codex [WORKING]
 
 
 
 …
 
-                             main  Terminals  Live                                                          F5 Commands"
+                             F6 Sessions  F7 Attention  F10 Sidebar                                         F5 Commands"
 `;
 
 exports[`production ApplicationShellView retains shell, window strip, pane chrome, and canvas at %sx%s 3`] = `
-"   tmux-ide  F1  ⌂ Home  F2 ●❯ Terminals                                                                                                                                                           live
+"   tmux-ide  F1 Home    F2 Terminals                                                                                                                                                       Local · main
   tmux-ide                  ● main    ● workin…                                                                                                                                            + New window
- ● main                       ● Codex                  ● working  ⋯
+ ● main                       ● Codex                  ● Working  ⋯
  ○ website                  CANONICAL-CELL
 
  Agents
- • Codex [WORKING]
+ ● Codex [WORKING]
 
 
 
 …
 
-                             tmux-ide  main  Terminals  Live                                                                                                                                F5 Commands"
+                             F6 Sessions  F7 Attention  F10 Sidebar                                                                                                                         F5 Commands"
 `;
 
 exports[`production ApplicationShellView reacts palette geometry through narrow live resizes 1`] = `
-"  ⌂  ●❯                live
- t╭──────────────────────╮
- m│ Command palette      │
- 2│ / Search commands…   │
- C│ › F1 Home            │…
-  │   F2 Terminals       │
-  │   New terminal wind… │
-  ╰──────────────────────╯
- main  Live              F5"
+" F1   F2
+ t  Command palette  esc
+ m  ┃ Search commands…
+ 2    Home            F1
+ C    Terminals       F2  …
+      New terminal wind…
+
+
+ ↑↓ Select      F5 Commands"
 `;
 
 exports[`production ApplicationShellView reacts palette geometry through narrow live resizes 2`] = `
-"  ⌂  ●❯        live
- t╭──────────────╮
- m│ Commands     │
- 2│ / Search co… │w
- C│ › F1 Home    │…
-  ╰──────────────╯…
-  ○ Commands F5"
+" F1   F2
+ tCommand palette
+ m┃ …ch commands…
+ 2  Home        F1w
+ C                …
+                  …
+  Commands F5"
 `;
 
 exports[`production ApplicationShellView preserves canonical attention while prioritizing mixed window activity 1`] = `
-"   tmux-ide   ⌂ Home  ●❯ Terminals                                                                                 live
+"   tmux-ide  F1 Home    F2 Terminals                                                                       Local · main
   tmux-ide                  ! main    ! workin…                                                            + New window
- ● main                       ● Codex                  ● working  ⋯   ! Scout                     ! idle
+ ● main                       ● Codex                  ● Working  ⋯   ! Scout              ! Needs input  ⋯
                             CANONICAL-CELL                          CANONICAL-CELL
  Agents
- • Codex [WORKING]
+ ● Codex [WORKING]
  ! Scout ! [IDLE]
 
 
 
 …
 
-                             main  Terminals  Live                                                          F5 Commands"
+                             F6 Sessions  F7 Attention  F10 Sidebar                                         F5 Commands"
 `;

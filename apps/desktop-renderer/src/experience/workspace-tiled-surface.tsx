@@ -25,9 +25,14 @@ import {
   createSignal,
   onCleanup,
 } from "solid-js";
-import type { SemanticIconId, WorkspaceMultiplexerMutationResult } from "@tmux-ide/contracts";
+import type {
+  InteractionPaneEndpoint,
+  SemanticIconId,
+  WorkspaceMultiplexerMutationResult,
+} from "@tmux-ide/contracts";
 import {
   INTERACTION_PRESENCE_MS,
+  interactionPaneEndpointKey,
   interactionPresenceIsFresh,
   paneInteractionPresence,
   paneInteractionRelationshipLabel,
@@ -105,7 +110,9 @@ export const PANE_COMMUNICATION_HIGHLIGHT_MS = INTERACTION_PRESENCE_MS;
 
 export function paneCommunicationCopy(
   interaction: PaneInteractionProjection,
-  paneLabel: (semanticPaneId: string) => string = (semanticPaneId) => semanticPaneId,
+  paneLabel: (endpoint: Extract<InteractionPaneEndpoint, { kind: "pane" }>) => string = (
+    endpoint,
+  ) => endpoint.semanticPaneId,
 ): {
   readonly headline: string;
   readonly detail: string;
@@ -194,6 +201,7 @@ export interface WorkspaceTiledSurfaceProps {
    * daemon knows perfectly well what it is called.
    */
   readonly paneTitles?: ReadonlyMap<string, string>;
+  readonly paneEndpoints?: ReadonlyMap<string, Extract<InteractionPaneEndpoint, { kind: "pane" }>>;
   /**
    * The panes the daemon currently reports as attachable. A window with none of
    * them left has been closed — the pane-stream wire carries no "window closed"
@@ -330,18 +338,25 @@ export function WorkspaceTiledSurface(props: WorkspaceTiledSurfaceProps) {
   let communicationTimer: ReturnType<typeof setTimeout> | null = null;
   let observedInteractionSequence = 0;
 
+  const currentInteractions = () =>
+    Object.values(props.paneInteractions ?? {}).filter((interaction) => {
+      const endpoint = props.paneEndpoints?.get(interaction.paneId);
+      return (
+        endpoint &&
+        interactionPaneEndpointKey(endpoint) === interactionPaneEndpointKey(interaction.endpoint)
+      );
+    });
+
   createEffect(() => {
     // Pane presence has its own revision lane. A newer unrelated receipt (for
     // example resize) must not erase a still-fresh read/send relationship.
     const sequence = Math.max(
       0,
-      ...Object.values(props.paneInteractions ?? {}).map((interaction) => interaction.sequence),
+      ...currentInteractions().map((interaction) => interaction.sequence),
     );
     if (sequence <= observedInteractionSequence) return;
     observedInteractionSequence = sequence;
-    const latest = Object.values(props.paneInteractions ?? {}).find(
-      (interaction) => interaction.sequence === sequence,
-    );
+    const latest = currentInteractions().find((interaction) => interaction.sequence === sequence);
     if (!latest || !interactionPresenceIsFresh(latest)) {
       if (communicationTimer !== null) clearTimeout(communicationTimer);
       communicationTimer = null;
@@ -1771,7 +1786,16 @@ export function WorkspaceTiledSurface(props: WorkspaceTiledSurfaceProps) {
               const rect = createMemo(() => tile().rect);
               const placement = createMemo(() => placementFor(paneId));
               const compositorNode = createMemo(() => compositorNodes().get(paneId));
-              const interaction = createMemo(() => props.paneInteractions?.[paneId] ?? null);
+              const interaction = createMemo(() => {
+                const endpoint = props.paneEndpoints?.get(paneId);
+                if (!endpoint) return null;
+                const current = props.paneInteractions?.[interactionPaneEndpointKey(endpoint)];
+                return current &&
+                  interactionPaneEndpointKey(current.endpoint) ===
+                    interactionPaneEndpointKey(endpoint)
+                  ? current
+                  : null;
+              });
               const interactionPresence = createMemo(() => {
                 const value = interaction();
                 return value ? paneInteractionPresence(value) : null;
@@ -1865,7 +1889,14 @@ export function WorkspaceTiledSurface(props: WorkspaceTiledSurfaceProps) {
                   <Show when={communicationActive() && interaction()}>
                     {(activeInteraction) => {
                       const copy = createMemo(() =>
-                        paneCommunicationCopy(activeInteraction(), titleFor),
+                        paneCommunicationCopy(activeInteraction(), (endpoint) => {
+                          const current = props.paneEndpoints?.get(endpoint.semanticPaneId);
+                          return current &&
+                            interactionPaneEndpointKey(current) ===
+                              interactionPaneEndpointKey(endpoint)
+                            ? titleFor(endpoint.semanticPaneId)
+                            : endpoint.semanticPaneId;
+                        }),
                       );
                       return (
                         <span

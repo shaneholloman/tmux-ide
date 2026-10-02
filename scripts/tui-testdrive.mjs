@@ -31,6 +31,10 @@ import { promisify } from "node:util";
 import { buildTuiHostPublicationEvidence } from "./lib/tui-host-publication.mjs";
 import { runBoundedChildCommand } from "./lib/bounded-child-command.mjs";
 import {
+  startupLaunchDiagnostic,
+  retainStartupParentState,
+} from "./lib/startup-launch-diagnostic.mjs";
+import {
   acquireClipboardPaneHook,
   ensureClipboardAcquisitionRollback,
   retireClipboardPaneHook,
@@ -1523,7 +1527,10 @@ async function start(args) {
     )
       fail("Card5 host-focus control root was not private and owned");
   }
-  if (!existsSync(launch.cwd)) fail(`test-drive cwd does not exist: ${launch.cwd}`);
+  // Compiled launches use our private stateHome, created below after retiring
+  // any previous owned process. Only caller/source directories must pre-exist.
+  if (runtime !== "compiled" && !existsSync(launch.cwd))
+    fail(`test-drive cwd does not exist: ${launch.cwd}`);
   if (
     options.publicEntry &&
     [join(launch.cwd, ".tmux-ide", "workspace.yml"), join(launch.cwd, "ide.yml")].some(existsSync)
@@ -1547,7 +1554,16 @@ async function start(args) {
   rmSync(perfLogPath, { force: true });
 
   const launchEpochMs = Date.now();
+  const launchMonotonicNs = process.env.TMUX_IDE_TESTDRIVE_STARTUP_DIAGNOSTIC_ROOT
+    ? process.hrtime.bigint()
+    : undefined;
   const launchId = randomUUID();
+  const startupDiagnosticRoot = process.env.TMUX_IDE_TESTDRIVE_STARTUP_DIAGNOSTIC_ROOT;
+  if (startupDiagnosticRoot && runtime !== "compiled")
+    fail("Startup launch diagnostics require the compiled target path");
+  const startupDiagnostic = startupLaunchDiagnostic(startupDiagnosticRoot, launchId);
+  startupDiagnostic?.mark("launch-epoch", launchEpochMs, launchMonotonicNs);
+  const execLaunch = startupDiagnostic?.wrap(launch) ?? launch;
   const environment = [
     // Clipboard fixtures observe their private tmux buffer, never the user's pasteboard.
     "TMUX_IDE_CLIPBOARD_BACKEND=osc52",
@@ -1609,6 +1625,7 @@ async function start(args) {
         ...(options.debug ? { TMUX_IDE_MIRROR_DEBUG: "1" } : {}),
       }
     : null;
+  startupDiagnostic?.mark("launcher-write-start");
   writeFileSync(
     launcherPath,
     [
@@ -1625,16 +1642,18 @@ async function start(args) {
       buildTestdriveExecCommand({
         clean: Boolean(publicEnvironment),
         environment: publicExecEnvironment ?? {},
-        binary: launch.binary,
-        binaryArgs: launch.binaryArgs,
+        binary: execLaunch.binary,
+        binaryArgs: execLaunch.binaryArgs,
         stderrPath: logPath,
       }),
       "",
     ].join("\n"),
   );
   chmodSync(launcherPath, 0o700);
+  startupDiagnostic?.mark("launcher-write-end");
 
   const launchStartedAt = performance.now();
+  startupDiagnostic?.mark("tmux-start");
   const hostIdentity = parseHostPaneIdentity(
     tmux([
       "new-session",
@@ -1659,6 +1678,7 @@ async function start(args) {
       launcherPath,
     ]),
   );
+  startupDiagnostic?.mark("tmux-return");
   const processId = hostIdentity.processId;
   const launchReceipt = Object.freeze({
     launchId,
@@ -1678,7 +1698,28 @@ async function start(args) {
     launchId,
     processId,
     hostIdentity,
+    ...(startupDiagnostic ? { startupDiagnosticPath: startupDiagnostic.path } : {}),
   };
+  // Retain the parent launch witness before readiness waits or later launches
+  // overwrite state.json. This is diagnostic overhead, never acceptance evidence.
+  if (startupDiagnostic) {
+    retainStartupParentState(startupDiagnosticRoot, {
+      version: 1,
+      timingQualification: false,
+      launchId,
+      parentPid: process.pid,
+      launchEpochMs,
+      launchMonotonicNs: launchMonotonicNs.toString(),
+      processId,
+      hostIdentity,
+      target,
+      runtime,
+      entry: launch.entry,
+      startedAt: metadataBase.startedAt,
+      startupDiagnosticPath: startupDiagnostic.path,
+      startedAtSemantics: "parent wall time after tmux returned; not child exec time",
+    });
+  }
   writeFileSync(
     metadataPath,
     `${JSON.stringify(

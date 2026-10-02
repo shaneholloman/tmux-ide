@@ -1,5 +1,18 @@
+const endpoint = (semanticPaneId: string) => ({
+  kind: "pane" as const,
+  environmentId: "00000000-0000-4000-8000-000000000001",
+  serverScope: {
+    serverId: `tmux-server.${"a".repeat(32)}`,
+    generation: "00000000-0000-4000-8000-000000000001",
+  },
+  workspaceName: "alpha",
+  paneLifetimeId: "00000000-0000-4000-8000-000000000002",
+  semanticPaneId,
+});
 import { createApplicationPaneActivityOwner } from "../runtime/application-pane-activity-owner.ts";
-import type { OpenTuiGenerationHostSnapshot } from "../runtime/open-tui-generation-host.ts";
+import type { ApplicationInteractionSource } from "../runtime/application-pane-activity-owner.ts";
+import { interactionPaneEndpointKey } from "@tmux-ide/core";
+import type { subscribeTmuxServerInteractions } from "@tmux-ide/daemon-client/tmux-server-interaction-events";
 import type { InteractionReceipt } from "@tmux-ide/contracts";
 /* @jsxImportSource @opentui/solid */
 import { MouseButtons } from "@opentui/core/testing";
@@ -12,6 +25,7 @@ import { renderForTest, stableFrame } from "../testing/renderer-harness.test.ts"
 import { componentPalette } from "../ui/index.ts";
 import { createKeyboardRouteOwner, KeyboardRouteProvider } from "../ui/keyboard-router.tsx";
 import { PaneTitleBar, type PaneTitleBarProps } from "./terminal-pane-header.tsx";
+import { AgentRow } from "../ui/agent-row.tsx";
 import { PaneActionMenu, type PaneMenuActionId } from "./pane-action-menu.tsx";
 import { expectFrameBounds } from "../testing/renderer-harness.test.ts";
 
@@ -69,16 +83,16 @@ describe("pane title hierarchy polish", () => {
         activity: "running",
       });
       expectFrameBounds(setup.captureCharFrame(), width, 2);
-      if (width >= 26) expect(setup.captureCharFrame()).toContain("working");
+      if (width >= 26) expect(setup.captureCharFrame()).toContain("Working");
       setup.renderer.destroy();
     }
   });
   for (const mode of ["dark", "light"] as const) {
-    it(`${mode}: live pointer hover reveals actions without moving the title or selecting the pane`, async () => {
+    it(`${mode}: keeps a visible menu button while hover emphasizes only the title`, async () => {
       let selected = 0;
       const { setup, theme, title } = await header(mode, { onSelectIntent: () => selected++ });
       const before = stableFrame(setup.captureCharFrame());
-      expect(before).not.toContain("⋯");
+      expect(before).toContain("⋯");
       await setup.mockMouse.moveTo(8, 0);
       await setup.renderOnce();
       const hover = stableFrame(setup.captureCharFrame());
@@ -95,6 +109,49 @@ describe("pane title hierarchy polish", () => {
       await setup.renderOnce();
       expect(stableFrame(setup.captureCharFrame())).toBe(before);
       setup.renderer.destroy();
+    });
+
+    it(`${mode}: separates selected title, status, and menu surfaces`, async () => {
+      let opened = 0;
+      const { setup, theme, title } = await header(mode, {
+        selected: true,
+        paneName: () => "Codex",
+        activity: "idle",
+        width: 80,
+        onMenuIntent: () => opened++,
+        interaction: {
+          paneId: "pane.polish",
+          direction: "incoming",
+          sourcePaneId: "pane.reader",
+          destinationPaneId: "pane.polish",
+          endpoint: endpoint("pane.polish"),
+          sourceEndpoint: endpoint("pane.reader"),
+          destinationEndpoint: endpoint("pane.polish"),
+          effect: { kind: "input-enqueued" },
+          operationKey: "test",
+          operationKind: "workspace.pane.send",
+          operationId: "input",
+          phase: "observed",
+          origin: "external",
+          label: "input observed",
+          sequence: 1,
+          at: new Date().toISOString(),
+        },
+      });
+      try {
+        const spans = setup.captureSpans().lines[0]!.spans;
+        const receipt = spans.find((span) => span.text.includes("Input from Codex"))!;
+        const menu = spans.find((span) => span.text.includes("⋯"))!;
+        expect(colorKey(title().bg)).toBe(colorKey(theme.roles.selection.selection));
+        expect(colorKey(receipt.bg)).toBe(colorKey(theme.roles.surfaces.panel));
+        expect(colorKey(menu.bg)).toBe(colorKey(theme.roles.surfaces.panelRaised));
+        expect(colorKey(menu.fg)).toBe(colorKey(theme.roles.text.primary));
+        expect(setup.captureCharFrame()).toContain("Input from Codex");
+        await setup.mockMouse.click(78, 0, MouseButtons.LEFT);
+        expect(opened).toBe(1);
+      } finally {
+        setup.renderer.destroy();
+      }
     });
 
     it(`${mode}: menu state and disabled state keep the title/action geometry fixed`, async () => {
@@ -154,7 +211,14 @@ describe("pane title hierarchy polish", () => {
       expect(row).toBeDefined();
       await setup.mockMouse.moveTo(row.x + 4, row.y);
       await setup.renderOnce();
-      expect(rename()).toContain("›");
+      expect(rename()).not.toContain("›");
+      expect(
+        setup
+          .captureSpans()
+          .lines[
+            row.y
+          ]!.spans.some((span) => colorKey(span.bg) === colorKey(theme.roles.selection.selection)),
+      ).toBe(true);
       expect(rename().indexOf("Rename pane")).toBe(before.indexOf("Rename pane"));
       select("split-down");
       await setup.renderOnce();
@@ -162,7 +226,14 @@ describe("pane title hierarchy polish", () => {
       expect(setup.renderer.root.findDescendantById("ui-overlay-row:rename-pane")).toBe(row);
       await setup.mockMouse.moveTo(row.x + 5, row.y);
       await setup.renderOnce();
-      expect(rename()).toContain("›");
+      expect(rename()).not.toContain("›");
+      expect(
+        setup
+          .captureSpans()
+          .lines[
+            row.y
+          ]!.spans.some((span) => colorKey(span.bg) === colorKey(theme.roles.selection.selection)),
+      ).toBe(true);
       await setup.mockMouse.click(row.x + 5, row.y, MouseButtons.LEFT);
       expect(actions).toEqual(["rename-pane"]);
       expect(stableFrame(setup.captureCharFrame())).toMatchSnapshot();
@@ -212,8 +283,8 @@ describe("pane title hierarchy polish", () => {
           selected,
         });
         const spans = setup.captureSpans().lines[0]!.spans;
-        const badge = spans.find((span) => span.text.includes("block"))!;
-        const palette = componentPalette(theme, { selected, status: "blocked", attention: true });
+        const badge = spans.find((span) => span.text.includes("Needs input"))!;
+        const palette = componentPalette(theme, { status: "blocked", attention: true });
         expect(badge).toBeDefined();
         expect(colorKey(badge.bg)).toBe(colorKey(palette.background));
         expect(stableFrame(setup.captureCharFrame()).split("\n")[0]).toContain("!");
@@ -258,7 +329,8 @@ describe("persistent native zoom state", () => {
     const { setup } = await header("dark", { zoomed: true, onRestoreIntent: () => restores++ });
     try {
       const line = stableFrame(setup.captureCharFrame()).split("\n")[0]!;
-      expect(line).toContain("Zoomed · Restore");
+      expect(line).toContain("Expanded");
+      expect(line).toContain("Restore");
       await setup.mockMouse.click(line.indexOf("Restore"), 0, MouseButtons.LEFT);
       expect(restores).toBe(1);
     } finally {
@@ -268,7 +340,7 @@ describe("persistent native zoom state", () => {
   it("keeps a compact zoom indication at narrow widths", async () => {
     const { setup } = await header("dark", { zoomed: true, width: 12 });
     try {
-      expect(stableFrame(setup.captureCharFrame()).split("\n")[0]).toContain(" Z");
+      expect(stableFrame(setup.captureCharFrame()).split("\n")[0]).toContain(" Re");
     } finally {
       setup.renderer.destroy();
     }
@@ -278,35 +350,79 @@ describe("persistent native zoom state", () => {
 describe("receipt presence lifetime", () => {
   it("expires badges without polling and clears subscriptions on generation replacement", async () => {
     let receipt: InteractionReceipt | null = null;
-    const subscribers = new Set<() => void>();
-    const client = {
-      getSnapshot: () => ({ generation: 1, operations: { lastObservedReceipt: receipt } }),
-      subscribe: (_scope: string, callback: () => void) => {
-        subscribers.add(callback);
-        return () => subscribers.delete(callback);
+    let batchHandler: Parameters<typeof subscribeTmuxServerInteractions>[0]["onBatch"];
+    let closed = 0;
+    const [host, setHost] = createSignal<readonly ApplicationInteractionSource[]>([
+      {
+        environmentId: "00000000-0000-4000-8000-000000000001",
+        server: endpoint("pane.alpha").serverScope,
+        baseUrl: "http://localhost",
+        ownerToken: "token",
       },
-    };
-    const [host, setHost] = createSignal({
-      status: "live",
-      client,
-    } as unknown as OpenTuiGenerationHostSnapshot | null);
+    ]);
     let visible!: ReturnType<typeof createApplicationPaneActivityOwner>;
     const setup = await renderForTest(
       () => {
-        visible = createApplicationPaneActivityOwner(host);
-        return <text>{visible().get("pane.alpha")?.phase ?? "quiet"}</text>;
+        visible = createApplicationPaneActivityOwner(host, (options) => {
+          batchHandler = options.onBatch;
+          return {
+            ready: Promise.resolve(),
+            done: new Promise<void>(() => {}),
+            close: () => {
+              closed++;
+            },
+            getCursor: () => undefined,
+          };
+        });
+        return (
+          <text>
+            {visible().get(interactionPaneEndpointKey(endpoint("pane.alpha")))?.phase ?? "quiet"}
+          </text>
+        );
       },
       { width: 20, height: 1 },
     );
     await setup.renderOnce();
     const notify = () => {
-      for (const listener of subscribers) listener();
+      if (receipt)
+        batchHandler!(
+          {
+            version: 1,
+            type: "batch",
+            server: endpoint("pane.alpha").serverScope,
+            after: receipt.sequence - 1,
+            cursor: receipt.sequence,
+            gap: false,
+            receipts: [receipt],
+          },
+          new AbortController().signal,
+        );
     };
     receipt = {
       type: "interaction.receipt",
+      evidence: {
+        schemaVersion: 1,
+        interactionId: "10000000-0000-4000-8000-000000000001",
+        revision: 0,
+        actor: {
+          kind: "cooperative",
+          bindingId: "00000000-0000-4000-8000-000000000001",
+          agentRunId: null,
+        },
+        endpoints: { source: endpoint("pane.reader"), destination: endpoint("pane.alpha") },
+        observation: {
+          kind: "cooperative-completion",
+          operationId: "10000000-0000-4000-8000-000000000001",
+          verification: "daemon-input-enqueue",
+        },
+        effect: { kind: "input-enqueued" },
+        occurredAt: null,
+        timeBasis: "unknown",
+        receivedAt: new Date().toISOString(),
+      },
       sequence: 1,
       operationId: "10000000-0000-4000-8000-000000000001",
-      origin: "external",
+      origin: "sdk",
       workspaceName: "alpha",
       sourceSemanticPaneId: null,
       target: { kind: "pane", semanticPaneId: "pane.alpha" },
@@ -318,7 +434,9 @@ describe("receipt presence lifetime", () => {
       resourceRevision: null,
     };
     notify();
-    expect(visible().get("pane.alpha")?.phase).toBe("observed");
+    expect(visible().get(interactionPaneEndpointKey(endpoint("pane.alpha")))?.phase).toBe(
+      "observed",
+    );
     await new Promise((resolve) => setTimeout(resolve, 130));
     expect(visible().size).toBe(0);
     notify();
@@ -326,14 +444,23 @@ describe("receipt presence lifetime", () => {
     receipt = {
       ...receipt,
       sequence: 2,
+      evidence: {
+        ...receipt.evidence!,
+        interactionId: "10000000-0000-4000-8000-000000000002",
+        observation: {
+          kind: "cooperative-completion",
+          operationId: "10000000-0000-4000-8000-000000000002",
+          verification: "daemon-input-enqueue",
+        },
+      },
       operationId: "10000000-0000-4000-8000-000000000002",
       at: new Date().toISOString(),
     };
     notify();
-    expect(visible().size).toBe(1);
-    setHost(null);
+    expect(visible().size).toBe(2);
+    setHost([]);
     expect(visible().size).toBe(0);
-    expect(subscribers.size).toBe(0);
+    expect(closed).toBe(1);
     setup.renderer.destroy();
   });
 });
@@ -343,8 +470,13 @@ describe("pane activity labels", () => {
     const [interaction, setInteraction] = createSignal<PaneTitleBarProps["interaction"]>({
       paneId: "pane.alpha",
       direction: "incoming",
-      sourcePaneId: null,
+      sourcePaneId: "pane.reader",
       destinationPaneId: "pane.alpha",
+      endpoint: endpoint("pane.alpha"),
+      sourceEndpoint: endpoint("pane.reader"),
+      destinationEndpoint: endpoint("pane.alpha"),
+      effect: { kind: "input-enqueued" },
+      operationKey: "test",
       operationKind: "workspace.pane.read",
       operationId: "read",
       phase: "observed",
@@ -365,6 +497,7 @@ describe("pane activity labels", () => {
           terminalFocused={false}
           keyboardFocused={false}
           interaction={interaction()}
+          paneName={() => "Codex"}
           menuAnchor={{ x: 79, y: 0 }}
           onSelectIntent={() => {}}
           onMenuIntent={() => {}}
@@ -374,16 +507,26 @@ describe("pane activity labels", () => {
     );
     try {
       await setup.renderOnce();
-      expect(setup.captureCharFrame()).toContain("READ");
-      const badge = setup.renderer.root.findDescendantById("ui-badge:READ · External tmux");
+      expect(setup.captureCharFrame()).toContain("Read by Codex");
+      const badge = setup.renderer.root.findDescendantById("ui-badge:Read by Codex");
       expect(badge).toBeDefined();
       setInteraction({ ...interaction()!, sequence: 2, operationId: "next-read" });
       await setup.renderOnce();
-      expect(setup.renderer.root.findDescendantById("ui-badge:READ · External tmux")).toBe(badge);
+      expect(setup.renderer.root.findDescendantById("ui-badge:Read by Codex")).toBe(badge);
       setInteraction({ ...interaction()!, operationKind: "workspace.pane.send", sequence: 3 });
       await setup.renderOnce();
-      expect(setup.captureCharFrame()).toContain("RECEIVED · External tmux");
-      expect(setup.captureCharFrame()).not.toContain("READ");
+      expect(setup.captureCharFrame()).toContain("Input from Codex");
+      expect(setup.captureCharFrame()).not.toContain("Read by Codex");
+      setInteraction({
+        ...interaction()!,
+        sourceEndpoint: null,
+        effect: { kind: "unknown" },
+        sequence: 4,
+      });
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).not.toContain("Send command");
+      expect(setup.captureCharFrame()).not.toContain("Details");
+      expect(setup.captureCharFrame()).toContain("Shell");
       setInteraction({ ...interaction()!, phase: "accepted", sequence: 4 });
       await setup.renderOnce();
       expect(() =>
@@ -393,7 +536,7 @@ describe("pane activity labels", () => {
         }),
       ).not.toThrow();
       await setup.renderOnce();
-      expect(setup.captureCharFrame()).not.toContain("READ");
+      expect(setup.captureCharFrame()).not.toContain("Read by Codex");
       expect(setup.captureCharFrame()).toContain("Shell");
     } finally {
       setup.renderer.destroy();
@@ -411,13 +554,19 @@ describe("pane activity labels", () => {
           selected={false}
           terminalFocused={false}
           keyboardFocused={false}
+          paneName={() => "Codex"}
           zoomed
           activity="failed"
           interaction={{
             paneId: "pane.alpha",
             direction: "incoming",
-            sourcePaneId: null,
+            sourcePaneId: "pane.reader",
             destinationPaneId: "pane.alpha",
+            endpoint: endpoint("pane.alpha"),
+            sourceEndpoint: endpoint("pane.reader"),
+            destinationEndpoint: endpoint("pane.alpha"),
+            effect: { kind: "input-enqueued" },
+            operationKey: "test",
             operationKind: "workspace.pane.send",
             operationId: "op",
             phase: "observed",
@@ -435,9 +584,9 @@ describe("pane activity labels", () => {
     );
     await setup.renderOnce();
     const rows = setup.captureCharFrame().split("\n");
-    expect(rows[0]).toContain("RECEIVED · External tmux");
-    expect(rows[0]).toContain("failed");
-    expect(rows[0]).toContain("Zoomed");
+    expect(rows[0]).toContain("Input from Codex");
+    expect(rows[0]).toContain("Failed");
+    expect(rows[0]).toContain("Expanded");
     expect(rows[1]!.trim()).toBe("");
     setup.renderer.destroy();
   });
@@ -464,9 +613,109 @@ describe("pane activity labels", () => {
       );
       await setup.renderOnce();
       const rows = setup.captureCharFrame().split("\n");
-      if (width === 40) expect(rows[0]).toContain("disconnected");
+      if (width === 40) expect(rows[0]).toContain("Unknown");
       expect(rows[1]!.trim()).toBe("");
       setup.renderer.destroy();
+    }
+  });
+});
+
+describe("shared status presentation", () => {
+  for (const mode of ["dark", "light"] as const) {
+    it(`${mode}: uses the same attention label in pane chrome and Home/sidebar rows`, async () => {
+      const theme = createSemanticThemeSnapshot({ mode });
+      const setup = await renderForTest(
+        () => (
+          <box width={80} height={4}>
+            <PaneTitleBar
+              theme={theme}
+              paneId="pane.status"
+              title="Claude"
+              width={80}
+              selected={false}
+              terminalFocused={false}
+              keyboardFocused={false}
+              activity="running"
+              attention
+              menuAnchor={{ x: 79, y: 0 }}
+              onSelectIntent={() => {}}
+              onMenuIntent={() => {}}
+            />
+            <box position="absolute" top={2}>
+              <AgentRow
+                theme={theme}
+                id="agent.status"
+                name="Claude"
+                context="Local · main"
+                activity="running"
+                attention
+                width={36}
+                onOpen={() => {}}
+              />
+            </box>
+          </box>
+        ),
+        { width: 80, height: 4 },
+      );
+      await setup.renderOnce();
+      const rows = setup.captureCharFrame().split("\n");
+      expect(rows[0]).toContain("Needs input");
+      expect(rows[2]).toContain("Needs input");
+      expect(rows[3]).toContain("Local · main");
+      expect(setup.captureCharFrame()).not.toContain("Working");
+    });
+    it(`${mode}: returns from scrollback once without selecting the pane or restoring zoom`, async () => {
+      let back = 0,
+        selected = 0,
+        restored = 0;
+      const { setup } = await header(mode, {
+        width: 80,
+        scrollback: true,
+        zoomed: true,
+        activity: "running",
+        onBackToLiveIntent: () => back++,
+        onRestoreIntent: () => restored++,
+        onSelectIntent: () => selected++,
+      });
+      const line = setup.captureCharFrame().split("\n")[0]!;
+      expect(line).toContain("Scrollback");
+      expect(line).toContain("Back to live");
+      expect(line).not.toContain("Working");
+      await setup.mockMouse.click(line.indexOf("Back to live"), 0, MouseButtons.LEFT);
+      expect([back, selected, restored]).toEqual([1, 0, 0]);
+    });
+  }
+  it("replaces stale working status through reconnect and read-only transitions", async () => {
+    const [connection, setConnection] = createSignal("live");
+    const setup = await renderForTest(
+      () => (
+        <PaneTitleBar
+          theme={createSemanticThemeSnapshot({ mode: "dark" })}
+          paneId="pane.status"
+          title="Claude"
+          width={80}
+          selected={false}
+          terminalFocused={false}
+          keyboardFocused={false}
+          activity="running"
+          connectionStatus={connection()}
+          menuAnchor={{ x: 79, y: 0 }}
+          onSelectIntent={() => {}}
+          onMenuIntent={() => {}}
+        />
+      ),
+      { width: 80, height: 1 },
+    );
+    for (const [state, label] of [
+      ["live", "Working"],
+      ["rebinding", "Reconnecting…"],
+      ["read-only", "Read-only"],
+      ["live", "Working"],
+    ]) {
+      setConnection(state!);
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).toContain(label!);
+      if (state !== "live") expect(setup.captureCharFrame()).not.toContain("Working");
     }
   });
 });

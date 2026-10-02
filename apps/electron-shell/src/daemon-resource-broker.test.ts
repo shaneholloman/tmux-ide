@@ -1,4 +1,8 @@
 import {
+  PANE_STREAM_PROTOCOL_VERSION,
+  PANE_STREAM_WEBSOCKET_SUBPROTOCOL,
+} from "@tmux-ide/contracts";
+import {
   APPLICATION_SHELL_RESOURCE_V2_VERSION,
   APPLICATION_SHELL_RESOURCE_V3_VERSION,
   APP_WINDOW_MAX_ID_LENGTH,
@@ -217,6 +221,8 @@ function maximumApplicationShellV3Envelope() {
           kind: "terminal",
           active: false,
           attachability: { status: "unavailable", reason: "invalid-runtime-proof" },
+          interactionEndpoint: null,
+          nativeIdentity: null,
         })),
       },
       appWindows,
@@ -2225,6 +2231,8 @@ describe("Electron main daemon workspace read resources", () => {
               activity: "running",
               attention: false,
               statusSource: "authority",
+              interactionEndpoint: null,
+              nativeIdentity: null,
             },
           ],
         },
@@ -2479,10 +2487,10 @@ describe("Electron main pane-stream issuance (m43 card 3)", () => {
 
   function paneStreamDescriptor(overrides: Record<string, unknown> = {}) {
     return {
-      protocolVersion: 1 as const,
-      webSocketUrl: "ws://127.0.0.1:6060/v1/terminal/pane-streams/redeem",
-      subprotocol: "tmux-ide-pane-stream.v1" as const,
-      redemptionTicket: `ps1_${"B".repeat(43)}`,
+      protocolVersion: PANE_STREAM_PROTOCOL_VERSION,
+      webSocketUrl: "ws://127.0.0.1:6060/v2/terminal/pane-streams/redeem",
+      subprotocol: PANE_STREAM_WEBSOCKET_SUBPROTOCOL,
+      redemptionTicket: `ps2_${"B".repeat(43)}`,
       daemonInstanceId: IDENTITY.instanceId,
       requestId,
       expiresAt: now + 15_000,
@@ -2497,7 +2505,7 @@ describe("Electron main pane-stream issuance (m43 card 3)", () => {
       requestId,
       expectedDaemonInstanceId: IDENTITY.instanceId,
       stream: {
-        protocolVersion: 1 as const,
+        protocolVersion: PANE_STREAM_PROTOCOL_VERSION,
         workspaceName: "product",
         panes: [...panes],
         viewerMode: "read-only" as const,

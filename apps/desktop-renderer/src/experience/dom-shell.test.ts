@@ -144,6 +144,8 @@ describe("DOM application-shell projection", () => {
               title: agent.name,
               kind: "agent" as const,
               active: agent.paneId === "pane.implementer",
+              interactionEndpoint: null,
+              nativeIdentity: null,
               attachability: {
                 status: "available" as const,
                 semanticPaneId: agent.paneId,
@@ -162,6 +164,8 @@ describe("DOM application-shell projection", () => {
             title: "Plain shell",
             kind: "terminal",
             active: false,
+            interactionEndpoint: null,
+            nativeIdentity: null,
             attachability: { status: "unavailable", reason: "missing-semantic-stamp" },
           },
         ],
