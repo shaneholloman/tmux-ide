@@ -22,12 +22,17 @@ the processes, PTYs, sessions, windows, panes, and persistence; tmux-ide adds
 Home, clickable pane and window chrome, agent indicators, memorable names, and
 direct controls. Close the app and the underlying sessions keep running.
 
-## Install the OpenTUI beta
+## Install
 
 ```bash
-npm install -g tmux-ide@beta
+curl -fsSL https://tmux.thijsverreck.com/install.sh | sh
 tmux-ide app
 ```
+
+The installer supports macOS 26+ on ARM64, macOS 15+ on x64, and glibc Linux (Ubuntu 24.04 or newer baseline) on ARM64/x64. It installs a private
+Node runtime, bundled tmux, and the verified TUI under `~/.local`, without sudo.
+Add `~/.local/bin` to your PATH if prompted. Existing tmux sessions are preserved.
+With Node.js 20+ already installed, you can also use `npm install -g tmux-ide`.
 
 Open a particular session directly:
 
@@ -127,7 +132,7 @@ put your work behind a proprietary session format.
 
 - tmux 3.0 or newer; 3.2+ recommended
 - Node.js 20 or newer
-- macOS arm64/x64 or Linux arm64/x64 for the downloadable OpenTUI runtime
+- macOS 26+ on ARM64, macOS 15+ on x64, or Linux arm64/x64 for the downloadable OpenTUI runtime
 - Bun only when developing or compiling the TUI from a checkout
 
 Run `tmux-ide doctor --json` for an environment report.

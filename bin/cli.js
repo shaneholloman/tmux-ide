@@ -11932,7 +11932,7 @@ var require_package = __commonJS({
   "package.json"(exports, module) {
     module.exports = {
       name: "tmux-ide",
-      version: "2.9.0-beta.50",
+      version: "2.9.0",
       description: "A visual, agent-aware IDE for any tmux session, with optional workspace presets",
       type: "module",
       bin: {
@@ -11987,7 +11987,7 @@ var require_package = __commonJS({
         "test:pane-frame-package": "pnpm --filter @tmux-ide/presentation run test",
         "typecheck:workspace": "turbo run typecheck",
         "docs:build": "turbo run build --filter=@tmux-ide/docs",
-        "pack:check": "node --test scripts/lib/npm-release-tag.test.mjs && node scripts/pack-tui-check.mjs",
+        "pack:check": "pnpm test:installer && node --test scripts/lib/npm-release-tag.test.mjs && node scripts/pack-tui-check.mjs",
         "pack:web:check": "pnpm build:web && node scripts/pack-web-check.mjs",
         "test:pack-installed": "node scripts/pack-check-run.mjs",
         "release:opentui:check": "node scripts/opentui-release-check.mjs",
@@ -12031,7 +12031,8 @@ var require_package = __commonJS({
         "gallery:tui": "bun --preload @opentui/solid/preload scripts/tui-gallery/index.tsx",
         "test:tui-gallery": "bun test --preload @opentui/solid/preload --preload ./packages/daemon/test-support/opentui-renderer-preload.ts ./scripts/tui-gallery/gallery.test.tsx",
         "typecheck:tui-gallery": "tsc --noEmit -p scripts/tsconfig.tui-gallery.json",
-        "test:spark-qualification": "node --import tsx --test scripts/lib/spark-*.test.ts scripts/lib/spark-*.test.mjs"
+        "test:spark-qualification": "node --import tsx --test scripts/lib/spark-*.test.ts scripts/lib/spark-*.test.mjs",
+        "test:installer": "node --test scripts/install.test.mjs"
       },
       keywords: [
         "tmux",

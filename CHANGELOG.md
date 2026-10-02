@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2.9.0
+
+- Promote the terminal-first Home and Terminals experience to the stable channel.
+- Bring local and SSH-connected agents together with consistent names, team groups, and pane activity.
+- Ship shared dialogs, command search, keyboard controls, light/dark themes, and optional automatic contrast correction enabled by default.
+- Support scoped CLI/MCP pane reads and sends, with named interactions where attribution is verified. Raw tmux observation remains experimental and opt-in.
+- Add a user-owned one-command installer with a private Node runtime, bundled tmux, verified TUI downloads, and staged upgrades.
+- Package and qualify native tmux for macOS and Linux on ARM64/x64. Linux bundles use the Ubuntu 24.04 baseline.
+
+This release covers Home and Terminals; experimental web and desktop surfaces remain outside the stable product scope. Existing tmux servers are preserved. Claude owns its team orchestration; in-process teammates are not separate panes. Performance qualification limits documented in beta.46 remain applicable.
+
+## 2.9.0-beta.50
+
+- Keep the resize guide visible throughout continuous drags while confirmed tmux layouts arrive.
+- Avoid invalidating session inventory for geometry-only layout changes, reducing avoidable pauses during resizing.
+- Preserve identity fences for membership, zoom, and structural changes.
+
 ## 2.9.0-beta.49
 
 - Carry verified native Claude teammate names and team membership into Home and the sidebar through a read-only adapter.

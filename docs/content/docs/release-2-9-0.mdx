@@ -1,0 +1,57 @@
+---
+title: tmux-ide 2.9
+description: A terminal-first workspace for local and remote tmux sessions
+---
+
+Version `2.9.0` brings the Home and Terminals experience to the stable channel.
+tmux continues to own your processes, panes, windows, and persistence. Closing
+tmux-ide leaves those sessions running.
+
+## Your agents, across machines
+
+Home and the sidebar bring agents together across local and SSH-connected machines.
+Shared names, team groups, and activity indicators carry through to pane headers.
+Claude split-pane teammate names are discovered through a read-only adapter;
+Claude retains responsibility for spawning, messaging, and task coordination.
+Explicit names and mixed-harness team assignments take precedence over defaults.
+
+## A calmer terminal workspace
+
+A shared design system brings consistent dialogs, command search, shortcuts,
+buttons, and surface colors. Light and dark themes apply automatic contrast
+correction by default, with an off switch. Scrollback and live views have distinct
+controls. Pane interactions show brief attributed activity instead of noisy
+indicators for your own keystrokes.
+
+## Smoother pane resizing
+
+Continuous drags preserve the divider guide while confirmed layouts arrive.
+Geometry-only updates no longer invalidate unrelated session inventory. Terminal
+contents follow confirmed tmux geometry; this is not speculative terminal resizing.
+Performance varies with the host, terminal emulator, network, and tmux workload.
+
+## One-command installation
+
+```bash
+curl -fsSL https://tmux.thijsverreck.com/install.sh | sh
+```
+
+The user-owned installer supplies Node.js, bundled tmux, and the exact-version TUI
+for macOS 26+ on ARM64, macOS 15+ on x64, and glibc Linux (Ubuntu 24.04 or newer baseline) platforms on ARM64/x64. Existing tmux servers
+are preserved. See [Getting started](/docs/getting-started) for requirements,
+manual npm installation, updates, and removal.
+
+## Scope and known limits
+
+This release focuses on Home and Terminals. Experimental web and desktop surfaces
+are not part of the stable product commitment. Native observation of raw tmux
+interactions remains opt-in; unknown callers are not guessed into named agents.
+In-process Claude teammates do not become separate panes. Cross-machine team
+groups and a graphical team-management dialog are not included.
+
+Apple Silicon and Linux ARM received the most performance validation. Intel Mac
+performance qualification remains incomplete. Linux Intel metadata-tail measurements
+were about 55–58 ms against an original 50 ms target. A Spark resource test passed
+its terminal assertions but retained a process-exit observation failure, with
+container cleanup confirmed. These are qualification limits, not claims about
+ordinary typing latency or universal parity with native tmux.
