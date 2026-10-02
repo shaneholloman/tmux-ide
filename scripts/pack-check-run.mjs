@@ -1481,12 +1481,16 @@ async function runPackedGoldenJourney(installedCli, initialOwner) {
   await selectPaletteCommand(one, "Split pane right");
   await observe("split pane right", 10_000, () => paneCount("journey-beta") === 2, one.diagnostics);
   // Native pane creation precedes the owner's metadata verification/commit.
-  // Do not rename its provisional pane until the UI has received success:
+  // Do not rename its provisional pane until both headers are published:
   // doing so races inspectMatches and correctly causes the split to roll back.
+  // A success toast is transient and may be cleared by the layout rebind.
   await observe(
-    "split operation committed",
+    "split layout published",
     10_000,
-    () => capture(one.targetPane).includes("split pane right"),
+    () =>
+      capture(one.targetPane)
+        .split("\n")
+        .some((line) => (line.match(/⋯/gu) ?? []).length >= 2),
     one.diagnostics,
   );
   // Adoption above deliberately exercises unnamed ordinary tmux panes. For
